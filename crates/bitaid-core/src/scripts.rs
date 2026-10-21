@@ -1,6 +1,6 @@
 //! Leaf scripts used by the funding, bond and buffer outputs.
 use bitcoin::opcodes::all::{
-    OP_CHECKSIG, OP_CHECKSIGADD, OP_CHECKSIGVERIFY, OP_CLTV, OP_DROP, OP_NUMEQUALVERIFY,
+    OP_CHECKSIG, OP_CHECKSIGADD, OP_CHECKSIGVERIFY, OP_CLTV, OP_CSV, OP_DROP, OP_NUMEQUALVERIFY,
 };
 use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::XOnlyPublicKey;
@@ -73,6 +73,19 @@ pub fn after_height(height: u32, x: &XOnlyPublicKey) -> ScriptBuf {
     Builder::new()
         .push_int(height as i64)
         .push_opcode(OP_CLTV)
+        .push_opcode(OP_DROP)
+        .push_x_only_key(x)
+        .push_opcode(OP_CHECKSIG)
+        .into_script()
+}
+
+/// One key after a relative timelock (BIP68/112): `<n> OP_CSV OP_DROP <x> OP_CHECKSIG`.
+/// `n` is a raw BIP68 value: a block count below 65,536, or `(1 << 22) | units` for 512-second units
+/// (one year on Liquid, whose block count would not fit, is `(1 << 22) | 61_594`).
+pub fn after_relative(n: u32, x: &XOnlyPublicKey) -> ScriptBuf {
+    Builder::new()
+        .push_int(n as i64)
+        .push_opcode(OP_CSV)
         .push_opcode(OP_DROP)
         .push_x_only_key(x)
         .push_opcode(OP_CHECKSIG)

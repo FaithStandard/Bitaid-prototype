@@ -68,6 +68,12 @@ alone or without the oracle, completed with both and the oracle. A caller's 2-of
 (phone, node, delegate): with the phone lost, node + delegate + oracle accept the incident; one device
 is refused.
 
+`examples/regtest_seizure.rs` (8/8): where seized money goes (Specification §12, B.1). A pre-signed
+bond forfeiture pays restitution directly and the rest to the case's seizure output; only the oracle
+pool together with a majority of the case's archivists can distribute it (the pool alone, archivists
+alone, or too few archivists are refused); the harmed party's key alone takes it after the relative
+timelock.
+
 ### Found while building
 
 * **Event ordering within a block height** (§7.2). The Specification orders events that end something
@@ -75,6 +81,11 @@ is refused.
   it accepts, at the same height, were ordered by hash, so the acceptance could be dropped. `eventlog`
   orders by kind in dependency order (endings, postings, alerts, acceptances and seats, commitments,
   reveals); the Specification is updated to match.
+* **Seized money with no destination** (§12). Pre-signed forfeitures can only pay keys known when the
+  exposure begins, so reviewers, panels, dissenters and the old "subsidy pool" could not be paid on
+  chain. The seizure output (`outputs::seizure`) fixes it; the Specification now describes it.
+* **Liquid's one-year relative timelock** does not fit BIP68's 65,535-block limit at one-minute blocks;
+  it must be time-based (`scripts::after_relative` takes a raw BIP68 value).
 
 ## Licence
 

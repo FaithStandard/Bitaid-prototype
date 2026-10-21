@@ -1,6 +1,6 @@
 //! The script outputs of Specification Appendix B.1. None has a key path; every leaf that can
 //! move funds before the fallback needs two keys, one of them the oracle pool's.
-use crate::scripts::{after_height, nums, policy_and, two_keys, KeyPolicy};
+use crate::scripts::{after_height, after_relative, nums, policy_and, two_keys, KeyPolicy};
 use crate::tree::ScriptTree;
 use bitcoin::secp256k1::{Secp256k1, Verification};
 use bitcoin::XOnlyPublicKey;
@@ -126,6 +126,35 @@ pub fn bond_with<C: Verification>(
             policy_and(scoped, oracle),
             two_keys(cold, oracle),
             after_height(fallback_height, cold),
+        ],
+    )
+}
+
+/// Leaf indices of a case's seizure output.
+pub mod seizure_leaf {
+    /// k of the case's archivists + the oracle pool: the distribution of Specification §12.
+    pub const DISTRIBUTE: usize = 0;
+    /// The harmed parties' key alone after the relative timelock (one year).
+    pub const FALLBACK: usize = 1;
+}
+
+/// A case's seizure output (Specification §12, Appendix B.1): seized money that cannot be paid
+/// directly when the forfeiture is pre-signed waits here. Spending it needs two independent groups —
+/// a threshold of the case's archivists and the oracle pool — or, after `relative_lock`, the harmed
+/// parties' (aggregate) key alone.
+pub fn seizure<C: Verification>(
+    secp: &Secp256k1<C>,
+    archivists: &KeyPolicy,
+    oracle: &XOnlyPublicKey,
+    harmed: &XOnlyPublicKey,
+    relative_lock: u32,
+) -> ScriptTree {
+    ScriptTree::new(
+        secp,
+        nums(),
+        vec![
+            policy_and(archivists, oracle),
+            after_relative(relative_lock, harmed),
         ],
     )
 }
