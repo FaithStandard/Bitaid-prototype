@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/bitaid-core"]
+
+[workspace.package]
+edition = "2021"
+repository = "https://github.com/FaithStandard/bitaid-prototype"
