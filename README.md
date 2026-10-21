@@ -69,3 +69,7 @@ oracle's co-signature; the funding fallback refused before its height and accept
   it accepts, at the same height, were ordered by hash, so the acceptance could be dropped. `eventlog`
   orders by kind in dependency order (endings, postings, alerts, acceptances and seats, commitments,
   reveals); the Specification is updated to match.
+
+## Licence
+
+Apache License 2.0 (see `LICENSE`). Every contributor grants a patent licence for their contribution, and anyone who sues claiming the code infringes a patent loses that licence. The licence grants no rights to the Bitaid name.

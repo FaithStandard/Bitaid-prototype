@@ -3,6 +3,7 @@ name = "bitaid-core"
 version = "0.1.0"
 edition = "2021"
 description = "Bitaid escrow core: outputs, endings, pre-signed adaptor payouts, oracle attestation, event-log replay"
+license.workspace = true
 repository.workspace = true
 
 [dependencies]
