@@ -1,6 +1,6 @@
 //! The script outputs of Specification Appendix B.1. None has a key path; every leaf that can
 //! move funds before the fallback needs two keys, one of them the oracle pool's.
-use crate::scripts::{after_height, nums, two_keys};
+use crate::scripts::{after_height, nums, policy_and, two_keys, KeyPolicy};
 use crate::tree::ScriptTree;
 use bitcoin::secp256k1::{Secp256k1, Verification};
 use bitcoin::XOnlyPublicKey;
@@ -88,6 +88,44 @@ pub fn buffer<C: Verification>(
             two_keys(client_scoped, oracle),
             two_keys(insurer, oracle),
             after_height(fallback_height, insurer),
+        ],
+    )
+}
+
+/// Funding output whose scoped key is held on several devices (e.g. any 2 of phone, node, delegate).
+pub fn funding_with<C: Verification>(
+    secp: &Secp256k1<C>,
+    wallet: &XOnlyPublicKey,
+    scoped: &KeyPolicy,
+    oracle: &XOnlyPublicKey,
+    fallback_height: u32,
+) -> ScriptTree {
+    ScriptTree::new(
+        secp,
+        nums(),
+        vec![
+            two_keys(wallet, oracle),
+            policy_and(scoped, oracle),
+            after_height(fallback_height, wallet),
+        ],
+    )
+}
+
+/// Bond whose scoped key is held on several devices (e.g. both of an arbitrator's node and phone).
+pub fn bond_with<C: Verification>(
+    secp: &Secp256k1<C>,
+    scoped: &KeyPolicy,
+    cold: &XOnlyPublicKey,
+    oracle: &XOnlyPublicKey,
+    fallback_height: u32,
+) -> ScriptTree {
+    ScriptTree::new(
+        secp,
+        nums(),
+        vec![
+            policy_and(scoped, oracle),
+            two_keys(cold, oracle),
+            after_height(fallback_height, cold),
         ],
     )
 }

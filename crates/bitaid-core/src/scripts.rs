@@ -1,5 +1,7 @@
 //! Leaf scripts used by the funding, bond and buffer outputs.
-use bitcoin::opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CLTV, OP_DROP};
+use bitcoin::opcodes::all::{
+    OP_CHECKSIG, OP_CHECKSIGADD, OP_CHECKSIGVERIFY, OP_CLTV, OP_DROP, OP_NUMEQUALVERIFY,
+};
 use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::XOnlyPublicKey;
 
@@ -19,6 +21,48 @@ pub fn two_keys(a: &XOnlyPublicKey, b: &XOnlyPublicKey) -> ScriptBuf {
     Builder::new()
         .push_x_only_key(a)
         .push_opcode(OP_CHECKSIGVERIFY)
+        .push_x_only_key(b)
+        .push_opcode(OP_CHECKSIG)
+        .into_script()
+}
+
+/// A key policy for a scoped key held on several devices: `threshold` of `devices` must sign.
+/// One device with threshold 1 is the plain scoped key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyPolicy {
+    pub devices: Vec<XOnlyPublicKey>,
+    pub threshold: usize,
+}
+
+impl KeyPolicy {
+    pub fn single(k: XOnlyPublicKey) -> Self {
+        KeyPolicy {
+            devices: vec![k],
+            threshold: 1,
+        }
+    }
+    pub fn of(threshold: usize, devices: Vec<XOnlyPublicKey>) -> Self {
+        assert!(threshold >= 1 && threshold <= devices.len());
+        KeyPolicy { devices, threshold }
+    }
+}
+
+/// `threshold` of the device keys, then a second party (the oracle):
+/// `<d1> CHECKSIG <d2> CHECKSIGADD … <t> NUMEQUALVERIFY <b> CHECKSIG`.
+/// Witness (bottom to top): `[sig_b, sig_dn or empty, …, sig_d1 or empty, script, control]`.
+/// A single device with threshold 1 gives the same script as [`two_keys`].
+pub fn policy_and(p: &KeyPolicy, b: &XOnlyPublicKey) -> ScriptBuf {
+    if p.devices.len() == 1 {
+        return two_keys(&p.devices[0], b);
+    }
+    let mut s = Builder::new()
+        .push_x_only_key(&p.devices[0])
+        .push_opcode(OP_CHECKSIG);
+    for d in &p.devices[1..] {
+        s = s.push_x_only_key(d).push_opcode(OP_CHECKSIGADD);
+    }
+    s.push_int(p.threshold as i64)
+        .push_opcode(OP_NUMEQUALVERIFY)
         .push_x_only_key(b)
         .push_opcode(OP_CHECKSIG)
         .into_script()

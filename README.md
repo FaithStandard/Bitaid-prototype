@@ -62,6 +62,12 @@ height; three payouts completed by attestations and confirmed; the refund path w
 attests; a bond the cold key alone cannot move and whose pre-signed forfeiture completes with the
 oracle's co-signature; the funding fallback refused before its height and accepted after.
 
+`examples/regtest_two_devices.rs` (8/8): scoped keys held on several devices (`scripts::KeyPolicy`,
+Specification B.4). An arbitrator's 2-of-2 bond (node and phone): forfeiture refused with either device
+alone or without the oracle, completed with both and the oracle. A caller's 2-of-3 funding output
+(phone, node, delegate): with the phone lost, node + delegate + oracle accept the incident; one device
+is refused.
+
 ### Found while building
 
 * **Event ordering within a block height** (§7.2). The Specification orders events that end something
