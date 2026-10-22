@@ -28,7 +28,11 @@ fn main() {
     let t: u16 = arg("--t").expect("--t").parse().unwrap();
     let batch_size: usize = arg("--batch").unwrap_or("8".into()).parse().unwrap();
     let (stall, liar) = (flag("--stall"), flag("--liar"));
-    let wait = Duration::from_secs(120);
+    let wait = Duration::from_secs(
+        arg("--setup-wait")
+            .map(|s| s.parse().unwrap())
+            .unwrap_or(900),
+    );
     let secp = Secp256k1::new();
     let sk = SecretKey::new(&mut rand::thread_rng());
     let mut c = Conn::connect(&hub).expect("connect to hub");

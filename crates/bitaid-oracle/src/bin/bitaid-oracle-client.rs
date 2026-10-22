@@ -162,10 +162,13 @@ fn main() {
     let mut rep = common::Report(0, 0);
 
     // the pool's public data, from the relay's history
+    let setup: u64 = arg("--setup-wait")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(900);
     let readies = conn.collect(
         |m| matches!(m, Msg::Ready { .. }),
         n as usize,
-        Duration::from_secs(60),
+        Duration::from_secs(setup),
     );
     let Some(Msg::Ready {
         q,
