@@ -10,6 +10,7 @@ use bitcoin::{OutPoint, ScriptBuf, Txid, XOnlyPublicKey};
 use musig2::secp::{Point, Scalar, G};
 use musig2::{AggNonce, PartialSignature, PubNonce, SecNonce};
 use serde_json::Value;
+use std::convert::TryInto;
 use std::str::FromStr;
 
 fn sc(h: &Value) -> Scalar {
@@ -113,7 +114,10 @@ fn matches_python_reference() {
     );
     // payouts
     let xp = x * G;
-    let case = v["case"].as_str().unwrap();
+    let case_id: [u8; 32] = hex::decode(v["case_id"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
     for p in v["payouts"].as_array().unwrap() {
         let label = p["label"].as_str().unwrap();
         let pot = p["pot"].as_str().unwrap();
@@ -142,7 +146,28 @@ fn matches_python_reference() {
             p["digest"].as_str().unwrap(),
             "{label} digest"
         );
-        let m = outcome_msg(case, pot, label);
+        let split: Vec<u8> = p["split"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_u64().unwrap() as u8)
+            .collect();
+        let m = outcome_msg(
+            &case_id,
+            0,
+            vout as u8,
+            p["class"].as_u64().unwrap() as u8,
+            &split,
+        );
+        let ending = bitaid_core::endings::endings(5)
+            .into_iter()
+            .find(|e| e.pot.name() == pot && e.label == label)
+            .expect("ending exists");
+        assert_eq!(
+            ending.message(&case_id, 0),
+            m,
+            "{label}: ending encodes the same message"
+        );
         assert_eq!(
             hex::encode(m),
             p["outcome_msg"].as_str().unwrap(),

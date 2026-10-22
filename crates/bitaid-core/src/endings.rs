@@ -41,11 +41,58 @@ pub enum EndingKind {
     GoodFaith(Vec<u32>),
 }
 
+/// Outcome classes as encoded in the outcome message (one byte each).
+pub mod class {
+    pub const DEPOSIT_RETURNED: u8 = 0;
+    pub const DEPOSIT_SEIZED_BY_MERIT: u8 = 1;
+    pub const DEPOSIT_SEIZED_TO_HARMED: u8 = 2;
+    pub const REWARD_PAID: u8 = 3;
+    pub const REWARD_GOOD_FAITH: u8 = 4;
+    pub const REWARD_WITHHELD: u8 = 5;
+    pub const BOUNTY_SPLIT: u8 = 6;
+    pub const BOUNTY_RETURNED: u8 = 7;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ending {
     pub pot: Pot,
+    /// Human-readable label (logs, apps); the oracle signs the encoded class and split, not this.
     pub label: String,
     pub kind: EndingKind,
+}
+
+impl Ending {
+    pub fn class(&self) -> u8 {
+        use class::*;
+        match (&self.pot, &self.kind) {
+            (Pot::Deposit, EndingKind::ToCaller) => DEPOSIT_RETURNED,
+            (Pot::Deposit, EndingKind::SeizedByMerit) => DEPOSIT_SEIZED_BY_MERIT,
+            (Pot::Deposit, EndingKind::SeizedToHarmed(_)) => DEPOSIT_SEIZED_TO_HARMED,
+            (Pot::Reward, EndingKind::Split(_)) => REWARD_PAID,
+            (Pot::Reward, EndingKind::GoodFaith(_)) => REWARD_GOOD_FAITH,
+            (Pot::Reward, EndingKind::ToCaller) => REWARD_WITHHELD,
+            (Pot::Bounty, EndingKind::Split(_)) => BOUNTY_SPLIT,
+            (Pot::Bounty, EndingKind::ToCaller) => BOUNTY_RETURNED,
+            _ => unreachable!("no such ending"),
+        }
+    }
+    pub fn split(&self) -> Vec<u8> {
+        match &self.kind {
+            EndingKind::Split(v) | EndingKind::GoodFaith(v) => v.iter().map(|&x| x as u8).collect(),
+            EndingKind::SeizedToHarmed(i) => vec![*i as u8],
+            _ => vec![],
+        }
+    }
+    /// The message the oracle attests for this ending.
+    pub fn message(&self, case_id: &[u8; 32], set_version: u32) -> [u8; 32] {
+        crate::hashes::outcome_msg(
+            case_id,
+            set_version,
+            self.pot.index() as u8,
+            self.class(),
+            &self.split(),
+        )
+    }
 }
 
 /// Bucket step in percent for `k` signing responders.

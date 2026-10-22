@@ -9,7 +9,7 @@
 //!   cargo run --release --example regtest_incident
 mod common;
 use bitaid_core::endings::Pot;
-use bitaid_core::hashes::outcome_msg;
+use bitaid_core::hashes::case_id;
 use bitaid_core::oracle::{random_scalar, sign_bip340, Oracle};
 use bitaid_core::outputs::{self, bond_leaf, funding_leaf};
 use bitaid_core::payouts::Parties;
@@ -27,7 +27,10 @@ fn main() {
     let mut oracle = Oracle::new();
     let ox = xo(&oracle.secret_for_tests());
     let (w, k) = (random_scalar(), random_scalar());
-    let case = format!("case-{}", rpc.height());
+    let case = case_id(&format!("case-{}", rpc.height()));
+    let xpriv =
+        bitcoin::bip32::Xpriv::new_master(Network::Regtest, &random_scalar().serialize()).unwrap();
+    let refund_xpub = bitcoin::bip32::Xpub::from_priv(&secp, &xpriv); // committed in the template
 
     // ---------------------------------------------------------------- funding output
     let pots = [100_000u64, 600_000, 300_000];
@@ -79,11 +82,13 @@ fn main() {
     let acc_height = rpc.height();
 
     // ---------------------------------------------------------------- pre-signed set
-    let caller = rpc.new_spk();
+    // the caller's refund address for this case, derived from the descriptor committed in the template
+    let caller = bitaid_core::payouts::caller_refund_spk(&refund_xpub, &case);
     let responders: Vec<ScriptBuf> = (0..5).map(|_| rpc.new_spk()).collect();
     let nonces = Pot::ALL.map(|p| oracle.announce(&event_id(&case, p)));
     let terms = IncidentTerms {
-        case: case.clone(),
+        case_id: case,
+        set_version: 0,
         pots,
         parties: Parties {
             caller: caller.clone(),
@@ -127,7 +132,7 @@ fn main() {
     let reward_att = oracle
         .attest(
             &event_id(&case, Pot::Reward),
-            &outcome_msg(&case, "reward", &outcomes[1].1),
+            &set.message(Pot::Reward, &outcomes[1].1).unwrap(),
         )
         .unwrap();
     rep.check(
@@ -140,10 +145,7 @@ fn main() {
             reward_att
         } else {
             oracle
-                .attest(
-                    &event_id(&case, *pot),
-                    &outcome_msg(&case, pot.name(), label),
-                )
+                .attest(&event_id(&case, *pot), &set.message(*pot, label).unwrap())
                 .unwrap()
         };
         let tx = set.complete(*pot, label, s).expect("completes");
@@ -188,12 +190,13 @@ fn main() {
     ]);
     rpc.package(&inc2).unwrap();
     rpc.mine(1);
-    let case2 = format!("{case}-b");
+    let case2 = case_id(&format!("{}-b", hex::encode(case)));
     let terms2 = IncidentTerms {
-        case: case2.clone(),
+        case_id: case2,
+        set_version: 0,
         pots,
         parties: Parties {
-            caller: caller.clone(),
+            caller: bitaid_core::payouts::caller_refund_spk(&refund_xpub, &case2),
             responders: responders.clone(),
             merit: vec![1; 5],
             good_faith_pct: 50,

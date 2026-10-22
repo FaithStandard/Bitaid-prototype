@@ -36,20 +36,23 @@ fspk = trees['funding'].spk()
 V['incident'] = {'funding_txid': '11' * 32, 'pots': POTS, 'tx': inc.serialize(False).hex(), 'txid': inc.txid(),
                  'digest_accept_leaf': inc.sighash(0, [(total, fspk)], leaf=trees['funding'].scripts[1]).hex()}
 case = 'vector-case'
+case_id = hashlib.sha256(case.encode()).digest()
+def outcome(pot_i, cls, split):
+    return tagged('Bitaid/outcome', case_id + (0).to_bytes(4, 'little') + bytes([pot_i, cls, len(split)]) + bytes(split))
 pay = []
-specs = [('deposit', 'returned', 0, [(100_000, 'c0')]),
-         ('reward', 'paid (2, 1, 1, 1, 0)', 1, [(240_000, 'r0'), (120_000, 'r1'), (120_000, 'r2'), (120_000, 'r3')]),
-         ('bounty', 'split (0, 0, 0, 0, 5)', 2, [(300_000, 'r4')])]
+specs = [('deposit', 'returned', 0, [(100_000, 'c0')], 0, []),
+         ('reward', 'paid (2, 1, 1, 1, 0)', 1, [(240_000, 'r0'), (120_000, 'r1'), (120_000, 'r2'), (120_000, 'r3')], 3, [2, 1, 1, 1, 0]),
+         ('bounty', 'split (0, 0, 0, 0, 5)', 2, [(300_000, 'r4')], 6, [0, 0, 0, 0, 5])]
 caller_spk = b'\x51\x20' + bytes([0xcc]) * 32
 rspk = [b'\x51\x20' + bytes([0xa0 + i]) * 32 for i in range(5)]
 def dest(tag): return caller_spk if tag == 'c0' else rspk[int(tag[1])]
-for pot, label, vout, outs in specs:
+for pot, label, vout, outs, cls, split in specs:
     tx = Tx(version=3); tx.add_in(inc.txid(), vout)
     for v, tag in outs: tx.add_out(v, dest(tag))
     tx.add_out(0, P2A)
     digest = tx.sighash(0, [(POTS[vout], ispk)])
     k = even(sec(f'oracle-nonce|{pot}')); R = point_mul(G, k)
-    m = outcome_msg(case, pot, label)
+    m = outcome(vout, cls, split)
     e = b2i(tagged('BIP0340/challenge', xonly(R) + xonly(XP) + m)) % n
     T = point_add(R, point_mul(XP, e)); att = (k + e * X) % n
     nonces = []
@@ -61,12 +64,12 @@ for pot, label, vout, outs in specs:
     pre = partial_agg(ctx, agg, digest, parts, T)
     final = adapt(pre, att)
     assert schnorr_verify(digest, xonly(ctx['Q']), final)
-    pay.append({'pot': pot, 'label': label, 'vout': vout, 'outputs': [[v, dest(t).hex()] for v, t in outs],
+    pay.append({'pot': pot, 'label': label, 'vout': vout, 'class': cls, 'split': split, 'outputs': [[v, dest(t).hex()] for v, t in outs],
                 'tx': tx.serialize(False).hex(), 'digest': digest.hex(),
                 'oracle_nonce': i2b(k).hex(), 'outcome_msg': m.hex(), 'point': cbytes(T).hex(), 'attestation': i2b(att).hex(),
                 'nonces': [[i2b(a).hex(), i2b(b).hex()] for (a, b), _ in nonces],
                 'partials': [i2b(p).hex() for p in parts], 'presig_rx': pre['rx'].hex(), 'presig_s': i2b(pre['s']).hex(),
                 'final_sig': final.hex()})
-V['case'] = case; V['payouts'] = pay
+V['case'] = case; V['case_id'] = case_id.hex(); V['payouts'] = pay
 json.dump(V, open(__import__('os').path.join(__import__('os').path.dirname(__file__), '..', 'crates', 'bitaid-core', 'tests', 'vectors.json'), 'w'), indent=1)
 print('wrote', len(pay), 'payout vectors')

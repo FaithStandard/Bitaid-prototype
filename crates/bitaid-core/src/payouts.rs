@@ -94,3 +94,37 @@ mod tests {
         }
     }
 }
+
+/// The caller's refund address for one case (Specification B.4): the template commits an extended
+/// public key, and each case pays the BIP86 taproot address at the unhardened child index taken from
+/// the case id, so no refund address is ever reused and none can be redirected by a hot key.
+pub fn caller_refund_spk(xpub: &bitcoin::bip32::Xpub, case_id: &[u8; 32]) -> ScriptBuf {
+    let secp = bitcoin::secp256k1::Secp256k1::verification_only();
+    let idx = u32::from_le_bytes([case_id[0], case_id[1], case_id[2], case_id[3]]) & 0x7fff_ffff;
+    let child = xpub
+        .derive_pub(
+            &secp,
+            &[bitcoin::bip32::ChildNumber::from_normal_idx(idx).unwrap()],
+        )
+        .expect("unhardened derivation");
+    ScriptBuf::new_p2tr(&secp, child.to_x_only_pub(), None)
+}
+
+#[cfg(test)]
+mod refund_tests {
+    use super::*;
+    #[test]
+    fn refund_address_is_fresh_per_case_and_deterministic() {
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let xpriv =
+            bitcoin::bip32::Xpriv::new_master(bitcoin::Network::Regtest, &[9u8; 32]).unwrap();
+        let xpub = bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);
+        let a = caller_refund_spk(&xpub, &crate::hashes::case_id("case A"));
+        let b = caller_refund_spk(&xpub, &crate::hashes::case_id("case B"));
+        assert_ne!(a, b);
+        assert_eq!(
+            a,
+            caller_refund_spk(&xpub, &crate::hashes::case_id("case A"))
+        );
+    }
+}

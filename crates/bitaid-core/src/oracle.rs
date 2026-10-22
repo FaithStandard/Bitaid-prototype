@@ -133,14 +133,14 @@ mod tests {
     fn attestation_is_bip340_signature_and_matches_point() {
         let mut o = Oracle::new();
         let r = o.announce("c|deposit");
-        let m = crate::hashes::outcome_msg("c", "deposit", "returned");
+        let m = crate::hashes::outcome_msg(&[7; 32], 0, 0, 0, &[]);
         let s = o.attest("c|deposit", &m).unwrap();
         assert_eq!(s * G, attestation_point(&r, &o.pubkey(), &m));
         let mut sig = [0u8; 64];
         sig[..32].copy_from_slice(&r.serialize_xonly());
         sig[32..].copy_from_slice(&s.serialize());
         assert!(verify_bip340(&o.pubkey().serialize_xonly(), &m, &sig));
-        let m2 = crate::hashes::outcome_msg("c", "deposit", "seized by merit weight");
+        let m2 = crate::hashes::outcome_msg(&[7; 32], 0, 0, 1, &[]);
         assert!(
             o.attest("c|deposit", &m2).is_err(),
             "second outcome under one nonce must be refused"

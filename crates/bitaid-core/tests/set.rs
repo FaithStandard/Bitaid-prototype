@@ -2,7 +2,7 @@
 //! every partial signature verified, every pre-signature checked against its attestation point, the
 //! right attestation completing its payout and every other outcome's attestation failing.
 use bitaid_core::endings::Pot;
-use bitaid_core::hashes::outcome_msg;
+use bitaid_core::hashes::case_id;
 use bitaid_core::oracle::{random_scalar, Oracle};
 use bitaid_core::payouts::Parties;
 use bitaid_core::presign::{event_id, IncidentSet, IncidentTerms};
@@ -20,10 +20,11 @@ fn full_set_six_signers() {
     let secrets: Vec<_> = (0..6).map(|_| random_scalar()).collect();
     let signers: Vec<Point> = secrets.iter().map(|s| *s * G).collect();
     let mut oracle = Oracle::new();
-    let case = "case-rust-1";
-    let nonces = Pot::ALL.map(|p| oracle.announce(&event_id(case, p)));
+    let case = case_id("case-rust-1");
+    let nonces = Pot::ALL.map(|p| oracle.announce(&event_id(&case, p)));
     let terms = IncidentTerms {
-        case: case.into(),
+        case_id: case,
+        set_version: 0,
         pots: [100_000, 600_000, 300_000],
         parties: Parties {
             caller: spk(0),
@@ -47,8 +48,8 @@ fn full_set_six_signers() {
     assert!(set.verify_all());
     // settle the reward on one ending: only its attestation completes it
     let label = "paid (2, 1, 1, 1, 0)";
-    let m = outcome_msg(case, "reward", label);
-    let s = oracle.attest(&event_id(case, Pot::Reward), &m).unwrap();
+    let m = set.message(Pot::Reward, label).unwrap();
+    let s = oracle.attest(&event_id(&case, Pot::Reward), &m).unwrap();
     assert!(set.complete(Pot::Reward, label, s).is_some());
     let wrong = set
         .payouts
@@ -65,8 +66,8 @@ fn full_set_six_signers() {
     // a second, different attestation under the same nonce is refused by the oracle
     assert!(oracle
         .attest(
-            &event_id(case, Pot::Reward),
-            &outcome_msg(case, "reward", "withheld")
+            &event_id(&case, Pot::Reward),
+            &set.message(Pot::Reward, "withheld").unwrap()
         )
         .is_err());
     assert!(set.refund(Pot::Deposit).is_some());

@@ -158,3 +158,22 @@ pub fn seizure<C: Verification>(
         ],
     )
 }
+
+/// Insurer buffer whose client's scoped key is held on several devices.
+pub fn buffer_with<C: Verification>(
+    secp: &Secp256k1<C>,
+    client_scoped: &KeyPolicy,
+    insurer: &XOnlyPublicKey,
+    oracle: &XOnlyPublicKey,
+    fallback_height: u32,
+) -> ScriptTree {
+    ScriptTree::new(
+        secp,
+        nums(),
+        vec![
+            policy_and(client_scoped, oracle),
+            two_keys(insurer, oracle),
+            after_height(fallback_height, insurer),
+        ],
+    )
+}

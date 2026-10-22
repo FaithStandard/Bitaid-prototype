@@ -3,7 +3,6 @@
 //! the attestation point of that ending, plus one refund per pot valid after the refund height.
 //! Settlement then needs only the oracle's attestation for the ending the case reached.
 use crate::endings::{endings, Ending, Pot};
-use crate::hashes::outcome_msg;
 use crate::musig::{self, Signed};
 use crate::oracle::attestation_point;
 use crate::payouts::{outputs, Parties};
@@ -16,7 +15,9 @@ use musig2::KeyAggContext;
 /// Everything fixed at acceptance.
 #[derive(Clone, Debug)]
 pub struct IncidentTerms {
-    pub case: String,
+    pub case_id: [u8; 32],
+    /// Incremented whenever the signing set changes (a seat filled or given up) and the set is re-signed.
+    pub set_version: u32,
     /// Values of the deposit, reward and bounty pots in sats.
     pub pots: [u64; 3],
     pub parties: Parties,
@@ -55,8 +56,9 @@ pub struct IncidentSet {
     pub refunds: Vec<Refund>,
 }
 
-pub fn event_id(case: &str, pot: Pot) -> String {
-    format!("{case}|{}", pot.name())
+/// The oracle's nonce event for one pot of one case.
+pub fn event_id(case_id: &[u8; 32], pot: Pot) -> String {
+    format!("{}|{}", hex::encode(case_id), pot.name())
 }
 
 impl IncidentSet {
@@ -93,7 +95,7 @@ impl IncidentSet {
                     script_pubkey: pot_spk.clone(),
                 }],
             );
-            let m = outcome_msg(&terms.case, e.pot.name(), &e.label);
+            let m = e.message(&terms.case_id, terms.set_version);
             let point = attestation_point(&terms.oracle_nonces[i], &terms.oracle, &m);
             payouts.push(Payout {
                 ending: e,
@@ -163,6 +165,14 @@ impl IncidentSet {
             p.presig
                 .map(|a| musig::verify_presig(&self.ctx, &a, &p.digest, p.point))
                 .unwrap_or(false)
+        })
+    }
+
+    /// The outcome message the oracle must attest for the ending `label` of `pot`.
+    pub fn message(&self, pot: Pot, label: &str) -> Option<[u8; 32]> {
+        self.find(pot, label).map(|p| {
+            p.ending
+                .message(&self.terms.case_id, self.terms.set_version)
         })
     }
 
