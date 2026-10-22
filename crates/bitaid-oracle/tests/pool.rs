@@ -77,7 +77,7 @@ fn pool_end_to_end() {
     // member 2 attests a different outcome under the same nonce: a valid share, but for the wrong message
     let liar = attest::share(&keys[1], views.get_mut(&2).unwrap(), 1, &wrong).unwrap();
     assert!(
-        attest::verify(&keys[0], &views[&1], &liar),
+        attest::verify(&keys[0].pool(), &views[&1].public(), &liar),
         "the share verifies against member 2's public shares"
     );
     assert_ne!(
@@ -85,15 +85,20 @@ fn pool_end_to_end() {
         "so it is signed evidence that member 2 attested an outcome the log does not support"
     );
     assert!(
-        attest::combine(&keys[0], &views[&1], &shares, t).is_err(),
+        attest::combine(&keys[0].pool(), &views[&1].public(), &shares, &m, t).is_err(),
         "three shares are not enough"
     );
     shares.push(attest::share(&keys[2], views.get_mut(&3).unwrap(), 1, &m).unwrap());
     // a corrupted share is rejected by anyone
     let mut forged = shares[0].clone();
     forged.s = (forged.s + musig2::secp::Scalar::one()).not_zero().unwrap();
-    assert!(!attest::verify(&keys[0], &views[&1], &forged));
-    let s = attest::combine(&keys[0], &views[&1], &shares, t).expect("four valid shares combine");
+    assert!(!attest::verify(
+        &keys[0].pool(),
+        &views[&1].public(),
+        &forged
+    ));
+    let s = attest::combine(&keys[0].pool(), &views[&1].public(), &shares, &m, t)
+        .expect("four valid shares combine");
     assert!(
         set.complete(Pot::Reward, label, s).is_some(),
         "the pool's attestation completes the pre-signed payout"

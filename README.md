@@ -11,7 +11,7 @@ never hold real funds.**
 | | Milestone | Status |
 |---|---|---|
 | M1 | `bitaid-core`: outputs, endings, pre-signed adaptor payouts, oracle attestation, event-log replay | **done** — see below |
-| M2 | Oracle node: FROST key generation, nonce batches, attestation, ROAST co-signing across machines | next |
+| M2 | Oracle node: FROST key generation, nonce batches, attestation, ROAST co-signing across machines | **in progress** — works across processes; next: across machines |
 | M3 | Node daemon: caller, responder and archivist flows; messages over Nostr; evidence on Blossom | |
 | M4 | Minimal Android app over the same core | |
 | M5 | Testnet pilot with independent operators, Tor, attack scripts | |
@@ -86,6 +86,33 @@ timelock.
   chain. The seizure output (`outputs::seizure`) fixes it; the Specification now describes it.
 * **Liquid's one-year relative timelock** does not fit BIP68's 65,535-block limit at one-minute blocks;
   it must be time-based (`scripts::after_relative` takes a raw BIP68 value).
+
+## M2 — `crates/bitaid-oracle`
+
+The oracle pool of Specification §3.3 and Appendix B.3.
+
+| Module | What it does |
+|---|---|
+| `keygen` | Pool key by distributed key generation (Zcash Foundation FROST DKG: verifiable shares, proofs of knowledge), BIP86-tweaked |
+| `nonces` | Batches of one-time nonces generated jointly in advance (Feldman-verified); a dealer whose share fails is disqualified |
+| `attest` | Public attestation shares `s_i = k_{j,i} + e·x_i`, verifiable by anyone against the member's public shares; any t combine to the scalar that completes one pre-signed payout; a nonce never attests two outcomes |
+| `cosign` | FROST co-signatures for the scoped-key leaves, with a ROAST-style coordinator that replaces members who stall |
+| `net` + binaries | `bitaid-hub` (relay, stand-in for Nostr in M3), `bitaid-oracle-node` (one member per process; `--stall`, `--liar` for tests), `bitaid-oracle-client` (coordinator and requester); shares to one member are encrypted to it (ECDH + ChaCha20-Poly1305) |
+
+Tests:
+
+* `tests/pool.rs` — 7 members, threshold 4: one DKG, a nonce batch with a cheating dealer disqualified,
+  attestation with three members offline completing a real pre-signed payout from `bitaid-core` and no
+  other, a member caught attesting a different outcome, a forged share rejected, co-signing with two
+  offline and one stalling (replaced in a second session), and nothing signed below threshold.
+* `examples/regtest_pool.rs` — the same pool on Bitcoin Core regtest: acceptance co-signed and confirmed,
+  three payouts completed by four members' attestation shares and confirmed (7/7).
+* `scripts/pool_local.sh` — 7 members as **separate processes** over the relay (member 5 stalls,
+  member 6 lies, members 1 and 2 go offline after setup); with `BITAID_CLI` set, a whole incident on
+  regtest with the networked pool as its oracle (6/6): acceptance co-signed over the network in two
+  sessions (the staller replaced after a 3 s timeout), each payout attested over the network in 2–3 ms
+  and confirmed, the liar's share recognised as signed evidence against it. At 21 members, threshold 11,
+  50 nonces per batch: setup (DKG + batch) 4 s, co-signing 18 ms without a staller, attestation 14 ms.
 
 ## Licence
 

@@ -14,6 +14,7 @@ pub mod attest;
 pub mod conv;
 pub mod cosign;
 pub mod keygen;
+pub mod net;
 pub mod nonces;
 
 /// Lagrange coefficient at zero for member `i` within the set `ids` (identifiers are 1-based).

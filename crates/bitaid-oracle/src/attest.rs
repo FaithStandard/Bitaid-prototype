@@ -4,8 +4,8 @@
 //! the log does not support is therefore signed evidence against the member who released it. Any t
 //! valid shares interpolate to `s`, and `(R_j, s)` is a BIP340 signature on m under Q: the scalar that
 //! completes the pre-signed payout for m and no other.
-use crate::keygen::MemberKey;
-use crate::nonces::Batch;
+use crate::keygen::{MemberKey, PoolPublic};
+use crate::nonces::{Batch, BatchPublic};
 use bitaid_core::oracle::challenge;
 use musig2::secp::{MaybePoint, MaybeScalar, Point, Scalar, G};
 use serde::{Deserialize, Serialize};
@@ -48,26 +48,30 @@ pub fn share(
 }
 
 /// Checks a published share against the member's public key share and public nonce share.
-pub fn verify(key: &MemberKey, batch: &Batch, sh: &Share) -> bool {
-    let q = key.pool_key();
-    let q = if q.has_even_y() { q } else { -q };
-    let e = challenge(&batch.r[sh.index], &q, &sh.message);
+pub fn verify(pool: &PoolPublic, batch: &BatchPublic, sh: &Share) -> bool {
+    let q = pool.even_key();
+    let Some(rj) = batch.r.get(sh.index) else {
+        return false;
+    };
+    let e = challenge(rj, &q, &sh.message);
     let Some(rji) = batch.public[sh.index].get(&sh.member) else {
         return false;
     };
-    MaybePoint::from(sh.s * G) == MaybePoint::from(*rji) + e * key.attest_public(sh.member)
+    MaybePoint::from(sh.s * G) == MaybePoint::from(*rji) + e * pool.attest_public(sh.member)
 }
 
-/// Combines t valid shares into the attestation scalar s, checked against `S_m = R_j + e·Q`.
+/// Combines t valid shares for message `m` into the attestation scalar s, checked against `S_m = R_j + e·Q`.
+/// Shares for other messages are ignored (and are evidence against whoever released them).
 pub fn combine(
-    key: &MemberKey,
-    batch: &Batch,
+    pool: &PoolPublic,
+    batch: &BatchPublic,
     shares: &[Share],
+    m: &[u8; 32],
     t: usize,
 ) -> Result<Scalar, &'static str> {
     let valid: Vec<&Share> = shares
         .iter()
-        .filter(|s| verify(key, batch, s))
+        .filter(|s| &s.message == m && verify(pool, batch, s))
         .take(t)
         .collect();
     if valid.len() < t {
@@ -79,10 +83,8 @@ pub fn combine(
         s += crate::lagrange(sh.member, &ids) * sh.s;
     }
     let s = s.not_zero().map_err(|_| "zero")?;
-    let q = key.pool_key();
-    let q = if q.has_even_y() { q } else { -q };
-    let m = &valid[0].message;
-    let point: Point = bitaid_core::oracle::attestation_point(&batch.r[valid[0].index], &q, m);
+    let point: Point =
+        bitaid_core::oracle::attestation_point(&batch.r[valid[0].index], &pool.even_key(), m);
     if s * G != point {
         return Err("combined scalar does not match the attestation point");
     }

@@ -9,6 +9,39 @@ use frost_secp256k1_tr as frost;
 use musig2::secp::{Point, Scalar};
 use std::collections::BTreeMap;
 
+/// The pool's public data: what anyone needs to verify attestation shares and co-signatures.
+#[derive(Clone)]
+pub struct PoolPublic {
+    pub public: frost::keys::PublicKeyPackage,
+}
+
+impl PoolPublic {
+    pub fn pool_key(&self) -> Point {
+        conv::group_key(&self.public)
+    }
+    /// The pool key with even y, as BIP340 attestations use it.
+    pub fn even_key(&self) -> Point {
+        let q = self.pool_key();
+        if q.has_even_y() {
+            q
+        } else {
+            -q
+        }
+    }
+    /// Member `i`'s public share, sign-adjusted to interpolate to the even-y key.
+    pub fn attest_public(&self, i: u16) -> Point {
+        let p = conv::verifying_share(&self.public, i);
+        if self.pool_key().has_even_y() {
+            p
+        } else {
+            -p
+        }
+    }
+    pub fn xonly(&self) -> [u8; 32] {
+        self.pool_key().serialize_xonly()
+    }
+}
+
 /// One member's result: its secret share and the pool's public data.
 #[derive(Clone)]
 pub struct MemberKey {
@@ -18,6 +51,11 @@ pub struct MemberKey {
 }
 
 impl MemberKey {
+    pub fn pool(&self) -> PoolPublic {
+        PoolPublic {
+            public: self.public.clone(),
+        }
+    }
     /// The pool key Q as used in scripts (x-only) and for attestations (with even y).
     pub fn pool_key(&self) -> Point {
         conv::group_key(&self.public)

@@ -114,7 +114,8 @@ fn main() {
                 .unwrap(),
             );
         }
-        let s = attest::combine(&keys[0], &views[&1], &shares, t).expect("combine");
+        let s =
+            attest::combine(&keys[0].pool(), &views[&1].public(), &shares, &m, t).expect("combine");
         let tx = set.complete(pot, label, s).expect("completes");
         let r = rpc.package(&tx);
         rep.check(

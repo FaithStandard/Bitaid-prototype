@@ -35,6 +35,17 @@ pub struct Dealer {
     poly: Vec<Vec<Scalar>>, // [j][k]
 }
 
+impl Batch {
+    pub fn public(&self) -> BatchPublic {
+        BatchPublic {
+            batch: self.batch,
+            qualified: self.qualified.clone(),
+            r: self.r.clone(),
+            public: self.public.clone(),
+        }
+    }
+}
+
 impl Dealer {
     pub fn new(id: u16, batch_size: usize, t: u16) -> Self {
         let poly = (0..batch_size)
@@ -97,6 +108,54 @@ pub fn verify_share(c: &Commitments, s: &Shares) -> bool {
             .all(|(cj, sj)| eval_commit(cj, s.to) == MaybePoint::from(*sj * G))
 }
 
+/// The public side of a batch: nonce points and every member's public nonce shares.
+#[derive(Clone, Debug)]
+pub struct BatchPublic {
+    pub batch: u64,
+    pub qualified: BTreeSet<u16>,
+    pub r: Vec<Point>,
+    pub public: Vec<BTreeMap<u16, Point>>,
+}
+
+/// Computes the public side of a batch from the dealers' broadcast commitments alone.
+pub fn public_view(
+    members: &[u16],
+    commits: &BTreeMap<u16, Commitments>,
+    qualified: &BTreeSet<u16>,
+) -> BatchPublic {
+    let b = commits.values().next().unwrap();
+    let mut r = Vec::new();
+    let mut public = Vec::new();
+    for j in 0..b.c.len() {
+        // sum the qualified dealers' commitments coefficient by coefficient, then evaluate once per member
+        let t = b.c[j].len();
+        let agg: Vec<Point> = (0..t)
+            .map(|k| {
+                let mut acc = MaybePoint::Infinity;
+                for d in qualified {
+                    acc += commits[d].c[j][k];
+                }
+                acc.not_inf().expect("commitment")
+            })
+            .collect();
+        let rj = agg[0];
+        let flip = !rj.has_even_y();
+        let mut pubs = BTreeMap::new();
+        for &i in members {
+            let p = eval_commit(&agg, i).not_inf().expect("public share");
+            pubs.insert(i, if flip { -p } else { p });
+        }
+        r.push(if flip { -rj } else { rj });
+        public.push(pubs);
+    }
+    BatchPublic {
+        batch: b.batch,
+        qualified: qualified.clone(),
+        r,
+        public,
+    }
+}
+
 /// One member's view of a completed batch.
 #[derive(Clone, Debug)]
 pub struct Batch {
@@ -122,41 +181,31 @@ pub fn finish(
     received: &BTreeMap<u16, Shares>,
     qualified: &BTreeSet<u16>,
 ) -> Batch {
-    let b = commits.values().next().unwrap();
-    let size = b.c.len();
-    let mut r = Vec::with_capacity(size);
-    let mut mine = Vec::with_capacity(size);
-    let mut public = Vec::with_capacity(size);
-    for j in 0..size {
-        let mut rj = MaybePoint::Infinity;
+    let pv = public_view(members, commits, qualified);
+    let mut mine = Vec::with_capacity(pv.r.len());
+    for j in 0..pv.r.len() {
         let mut kj = MaybeScalar::Zero;
         for d in qualified {
-            rj += commits[d].c[j][0];
             kj += received[d].s[j];
         }
-        let rj = rj.not_inf().expect("nonce point");
-        let flip = !rj.has_even_y();
-        let mut pubs = BTreeMap::new();
-        for &i in members {
-            let mut p = MaybePoint::Infinity;
-            for d in qualified {
-                p += eval_commit(&commits[d].c[j], i);
-            }
-            let p = p.not_inf().expect("public share");
-            pubs.insert(i, if flip { -p } else { p });
-        }
         let kj = kj.not_zero().expect("share");
-        r.push(if flip { -rj } else { rj });
-        mine.push(if flip { -kj } else { kj });
-        public.push(pubs);
+        // R_j was negated in the public view if it had odd y; negate the share to match
+        let raw: MaybePoint = qualified
+            .iter()
+            .fold(MaybePoint::Infinity, |a, d| a + commits[d].c[j][0]);
+        mine.push(if raw == MaybePoint::from(pv.r[j]) {
+            kj
+        } else {
+            -kj
+        });
     }
     Batch {
-        batch: b.batch,
+        batch: pv.batch,
         me,
         qualified: qualified.clone(),
-        r,
+        r: pv.r,
         mine,
-        public,
+        public: pv.public,
         spent: BTreeMap::new(),
     }
 }
