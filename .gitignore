@@ -1,3 +1,5 @@
 target/
 *.log
 __pycache__/
+lan_result.txt
+lanlogs/
