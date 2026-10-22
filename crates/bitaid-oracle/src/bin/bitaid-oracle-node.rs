@@ -198,18 +198,15 @@ fn main() {
 
     // ---------------------------------------------------------------- serving
     let mut sessions: BTreeMap<u64, frost::round1::SigningNonces> = BTreeMap::new();
-    loop {
-        let Some(m) = c.wait(
-            |m| {
-                matches!(
-                    m,
-                    Msg::AttestReq { .. } | Msg::CosignReq { .. } | Msg::Package { .. }
-                )
-            },
-            Duration::from_secs(3600),
-        ) else {
-            break;
-        };
+    while let Some(m) = c.wait(
+        |m| {
+            matches!(
+                m,
+                Msg::AttestReq { .. } | Msg::CosignReq { .. } | Msg::Package { .. }
+            )
+        },
+        Duration::from_secs(3600),
+    ) {
         match m {
             Msg::AttestReq {
                 req,

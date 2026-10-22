@@ -5,7 +5,6 @@
 //! With BITAID_CLI set to a regtest bitcoin-cli command line, it runs a whole incident on chain with the
 //! networked pool as its oracle; otherwise it attests and co-signs test messages.
 #[path = "../../../bitaid-core/examples/common/mod.rs"]
-#[allow(dead_code)]
 mod common;
 use bitaid_core::endings::Pot;
 use bitaid_core::hashes::{case_id, tagged};
