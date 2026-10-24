@@ -11,7 +11,7 @@ never hold real funds.**
 | | Milestone | Status |
 |---|---|---|
 | M1 | `bitaid-core`: outputs, endings, pre-signed adaptor payouts, oracle attestation, event-log replay | **done** — see below |
-| M2 | Oracle node: FROST key generation, nonce batches, attestation, ROAST co-signing across machines | **in progress** — works across processes; next: across machines |
+| M2 | Oracle node: FROST key generation, nonce batches, attestation, ROAST co-signing across machines | **done** — across two machines on a LAN, see below |
 | M3 | Node daemon: caller, responder and archivist flows; messages over Nostr; evidence on Blossom | |
 | M4 | Minimal Android app over the same core | |
 | M5 | Testnet pilot with independent operators, Tor, attack scripts | |
@@ -113,6 +113,13 @@ Tests:
   sessions (the staller replaced after a 3 s timeout), each payout attested over the network in 2–3 ms
   and confirmed, the liar's share recognised as signed evidence against it. At 21 members, threshold 11,
   50 nonces per batch: setup (DKG + batch) 4 s, co-signing 18 ms without a staller, attestation 14 ms.
+* **Two machines** (`scripts/lan_build.sh`, `lan_pi.sh`, `lan_phone.sh`): members 1–4 and the relay on
+  a Raspberry Pi (32-bit ARM), members 5–7 on an Android phone in Termux, over a home network. Member 1
+  goes offline after setup, member 4 stalls, member 6 lies. Result 3/3 (`results/lan_2026-10-24.txt`):
+  all seven agree the pool key and qualified dealers, 20 nonces ready in 0.6 s; two co-signing sessions
+  in 3.2 s (the staller replaced); attestation in 110 ms, member 6's share valid for a different outcome
+  and kept as signed evidence. Both devices build natively (Pi 10 min, phone 15 min; Termux needs
+  `CARGO_BUILD_JOBS=1`, now the default). A firewall on the relay machine must allow port 7400 from the LAN.
 
 ## Licence
 

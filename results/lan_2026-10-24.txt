@@ -1,0 +1,16 @@
+Bitaid oracle pool across two machines — 2026-10-24 09:49 UTC — client on myNode armv7l
+[member 2 2914.26s] pool key 9cae7087e5194b13483c87d55959cba662eb31e8cb44528e51cec13614b0efa0
+[member 2 2914.58s] ready: 20 nonces, qualified dealers {1, 2, 3, 4, 5, 6, 7}
+[PASS] 7 members ready, all agreeing on the pool key and the qualified dealers — 9cae7087e5194b13483c87d55959cba662eb31e8cb44528e51cec13614b0efa0
+[PASS] Co-signature over the network — 2 session(s), signers [3, 2, 6, 7], 3240 ms
+[PASS] Attestation over the network — 110 ms; member 6: valid share for a different outcome — signed evidence against it
+3 passed, 0 failed
+
+--- phone side (Redmi, Termux, members 5-7; member 6 lies) ---
+[member 7   0.24s] pool key 9cae7087e5194b13483c87d55959cba662eb31e8cb44528e51cec13614b0efa0
+[member 5   0.55s] ready: 20 nonces, qualified dealers {1, 2, 3, 4, 5, 6, 7}
+[member 5   4.27s] co-signed session 1
+[member 6   7.37s] co-signed session 2
+[member 7   7.37s] co-signed session 2
+[member 6   7.51s] attested request 3 (nonce 0) — a different outcome
+[member 7   7.51s] attested request 3 (nonce 0)
