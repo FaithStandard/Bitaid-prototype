@@ -309,9 +309,12 @@ fn oracle(mut n: Node) -> i32 {
 
 fn archivist(mut n: Node) -> i32 {
     let listen = arg("--listen").unwrap_or("0.0.0.0:7480".into());
-    let dir = std::path::PathBuf::from(
-        arg("--dir").unwrap_or(format!("/tmp/bitaid-archive-{}", &n.me()[..8])),
-    );
+    let dir = arg("--dir")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            // the system temporary folder (TMPDIR), which on Android/Termux is not /tmp
+            std::env::temp_dir().join(format!("bitaid-archive-{}", &n.me()[..8]))
+        });
     let srv = blossom::spawn(&listen, dir, blossom::Policy::default()).expect("listen");
     let port = srv.url.rsplit(':').next().unwrap_or("7480").to_string();
     let url = match arg("--public-url").as_deref() {
