@@ -14,5 +14,6 @@ if ! command -v cc >/dev/null 2>&1; then
   echo "No C compiler found. On the Pi run:  sudo apt install -y build-essential   then run this again."; exit 1
 fi
 echo "Building (10-30 minutes on a Pi or phone the first time)..."
-cargo build --release -p bitaid-oracle
+# One job at a time: avoids Android's "Text file busy" race on build scripts, and fits a Pi's memory.
+CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1} cargo build --release -p bitaid-oracle
 echo BUILD_DONE
