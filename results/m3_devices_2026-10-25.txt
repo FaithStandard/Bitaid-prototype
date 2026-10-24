@@ -1,0 +1,10 @@
+Bitaid M3 across three devices — 2026-10-25, home network, regtest (Bitcoin Core 31.1 on the phone)
+Phone (Redmi, Termux): caller            9/10  (evidence pinned on 1/2: tablet archivist unreachable, Wi-Fi client isolation)
+Tablet (Samsung, Termux): responder r1   8/8   documenter, 270000 sats
+Raspberry Pi 4 (armv7): responder r3     8/8   intervener, 630000 sats
+Raspberry Pi 4: responder r4 (cheats)    2/2   bad partial signature caught, seat given up
+Pi also: relay (38 events, 0 rejected), oracle, archivist
+Case c4fc0374: alert → 3 accepts in 1.1–2.5 s → roster v0 (3 seats) → signer 3 invalid → roster v1 (2 seats)
+→ set 39 payouts + 3 refunds in 0.7 s → oracle co-signed incident e099a25a → zero-fee package accepted
+→ evidence → ballots (2/2 revealed) → deemed consent after 10 s → deposit returned, reward paid (7,3), bounty split (7,3), all confirmed.
+Alert to funded, pre-signed incident: 23.7 s (joining window 20 s).

@@ -12,7 +12,7 @@ never hold real funds.**
 |---|---|---|
 | M1 | `bitaid-core`: outputs, endings, pre-signed adaptor payouts, oracle attestation, event-log replay | **done** — see below |
 | M2 | Oracle node: FROST key generation, nonce batches, attestation, ROAST co-signing across machines | **done** — across two machines on a LAN, see below |
-| M3 | Node daemon: caller, responder and archivist flows; messages over Nostr; evidence on Blossom | |
+| M3 | Node daemon: caller, responder and archivist flows; messages over Nostr; evidence on Blossom | **first incident across three devices** — see below |
 | M4 | Minimal Android app over the same core | |
 | M5 | Testnet pilot with independent operators, Tor, attack scripts | |
 | M6 | Review package: frozen spec, test vectors, threat model, external review | |
@@ -120,6 +120,31 @@ Tests:
   in 3.2 s (the staller replaced); attestation in 110 ms, member 6's share valid for a different outcome
   and kept as signed evidence. Both devices build natively (Pi 10 min, phone 15 min; Termux needs
   `CARGO_BUILD_JOBS=1`, now the default). A firewall on the relay machine must allow port 7400 from the LAN.
+
+## M3 — `crates/bitaid-node`
+
+One daemon, four roles (`--role caller|responder|oracle|archivist`), exchanging the messages of
+Specification B.2 over Nostr relays, with evidence on Blossom-compatible servers.
+
+| Module | What it does |
+|---|---|
+| `nostr`, `relay` | NIP-01 events signed with the identity key (BIP340); a client over several relays (ws/wss) deduplicating by id; a minimal in-memory relay (`bitaid-relay`) that checks every signature and forwards ephemeral kinds without storing them |
+| `wire` | The B.2 messages as signed CBOR (`tagged_hash("Bitaid/msg", body)`), carried in events signed by the same key; case traffic encrypted with a case key sealed to each signer (ECDH + ChaCha20-Poly1305) |
+| `case` | Every party rebuilds the incident from the alert (which carries the signed registration) and the roster, and checks the funding output on chain |
+| `presign` (core) | `round1`/`round2`/`finish`: the whole set signed in two rounds across machines, every partial verified, a bad signer named |
+| `blossom` | BUD-01/02 server and client: uploads only with a Nostr authorisation naming the blob and a live case, from a party to it; range requests; slice roots |
+| `settle` | Deemed consent from blind ballots (commit, reveal): class per seat by 80%, the 70/30 split into buckets, the reward following the bounty; misuse or no supermajority escalates |
+| `chain` | Bitcoin Core JSON-RPC over HTTP, so a phone can use a node elsewhere; zero-fee version-3 packages with a fee-paying child |
+
+Runs:
+
+* `scripts/m3_local.sh` — all roles as separate processes on one machine (28/28, `results/m3_local_2026-10-24.txt`).
+* Three devices (`scripts/m3_pi.sh`, `m3_device.sh`, `m3_chain.sh`, `tcp_forward.py`): caller on an
+  Android phone that also hosts the regtest node; responder and archivist on an Android tablet; relay,
+  oracle, archivist, an honest and a cheating responder on a Raspberry Pi 4. 27/28
+  (`results/m3_devices_2026-10-25.txt`): the cheater dropped and the set re-signed, incident at zero fee,
+  three payouts confirmed, 630,000 / 270,000 sats to the intervener and the documenter. The failure: the
+  phone could not reach the tablet's archivist (router isolates Wi-Fi clients). Needs Bitcoin Core 28+.
 
 ## Licence
 
