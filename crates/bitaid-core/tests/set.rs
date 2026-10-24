@@ -72,3 +72,74 @@ fn full_set_six_signers() {
         .is_err());
     assert!(set.refund(Pot::Deposit).is_some());
 }
+
+/// The same set signed the way separate machines sign it: each signer builds the set on its own,
+/// publishes its nonces, signs once it has everyone's, and every signer aggregates and checks the
+/// others' partial signatures. A signer who sends a bad partial is named; a nonce is never reused.
+#[test]
+fn distributed_signing_matches_and_catches_bad_partials() {
+    let secrets: Vec<_> = (0..4).map(|_| random_scalar()).collect();
+    let signers: Vec<Point> = secrets.iter().map(|s| *s * G).collect();
+    let mut oracle = Oracle::new();
+    let case = case_id("case-rust-dist");
+    let nonces = Pot::ALL.map(|p| oracle.announce(&event_id(&case, p)));
+    let terms = IncidentTerms {
+        case_id: case,
+        set_version: 0,
+        pots: [100_000, 600_000, 300_000],
+        parties: Parties {
+            caller: spk(0),
+            responders: (1..=3).map(spk).collect(),
+            merit: vec![1, 1, 1],
+            good_faith_pct: 50,
+        },
+        signers,
+        oracle: oracle.pubkey(),
+        oracle_nonces: nonces,
+        refund_height: 1_000,
+    };
+    // each "machine" builds its own copy
+    let mut copies: Vec<IncidentSet> = (0..4)
+        .map(|_| IncidentSet::build(terms.clone(), Txid::all_zeros()))
+        .collect();
+    let mut st: Vec<_> = copies
+        .iter()
+        .zip(&secrets)
+        .map(|(c, s)| c.round1(s))
+        .collect();
+    let all_nonces: Vec<_> = st.iter().map(|s| s.pubnonces.clone()).collect();
+    let t0 = Instant::now();
+    let mut parts: Vec<_> = (0..4)
+        .map(|j| {
+            copies[j]
+                .round2(&secrets[j], &mut st[j], &all_nonces)
+                .unwrap()
+        })
+        .collect();
+    assert!(
+        copies[0]
+            .round2(&secrets[0], &mut st[0], &all_nonces)
+            .is_err(),
+        "nonces used once"
+    );
+    for c in copies.iter_mut() {
+        c.finish(&all_nonces, &parts).unwrap();
+        assert!(c.verify_all());
+    }
+    eprintln!(
+        "distributed: 4 signers, {} messages, {:.2} s",
+        copies[0].messages().len(),
+        t0.elapsed().as_secs_f64()
+    );
+    let label = "paid (4, 3, 3)";
+    let m = copies[2].message(Pot::Reward, label).unwrap();
+    let s = oracle.attest(&event_id(&case, Pot::Reward), &m).unwrap();
+    assert!(copies[2].complete(Pot::Reward, label, s).is_some());
+    assert!(copies[1].refund(Pot::Bounty).is_some());
+    // a signer swaps two of its partials: caught and named
+    parts[2].swap(5, 6);
+    let mut fresh = IncidentSet::build(terms, Txid::all_zeros());
+    let err = fresh.finish(&all_nonces, &parts).unwrap_err();
+    assert!(err.starts_with("signer 2"), "{err}");
+    assert!(fresh.payouts.iter().all(|p| p.presig.is_none()));
+}

@@ -3,3 +3,5 @@ target/
 __pycache__/
 lan_result.txt
 lanlogs/
+m3logs/
+m3_result.txt

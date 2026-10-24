@@ -10,7 +10,7 @@ use crate::txbuild::{self, keyspend_digest};
 use bitcoin::{OutPoint, ScriptBuf, Transaction, TxOut, Txid, Witness};
 use musig2::adaptor::AdaptorSignature;
 use musig2::secp::{Point, Scalar};
-use musig2::KeyAggContext;
+use musig2::{AggNonce, KeyAggContext, PartialSignature, PubNonce, SecNonce};
 
 /// Everything fixed at acceptance.
 #[derive(Clone, Debug)]
@@ -201,5 +201,131 @@ impl IncidentSet {
         let mut tx = r.tx.clone();
         tx.input[0].witness = Witness::from_slice(&[r.sig?.to_vec()]);
         Some(tx)
+    }
+}
+
+/// One signer's state between the two rounds of signing a whole set across machines.
+/// Secret nonces are used once: round 2 consumes them.
+pub struct SetSigner {
+    secnonces: Vec<Option<SecNonce>>,
+    pub pubnonces: Vec<PubNonce>,
+}
+
+impl IncidentSet {
+    /// Every message of the set in signing order: the payouts, then the refunds, each with the
+    /// adaptor point it is bound to (none for a refund).
+    pub fn messages(&self) -> Vec<([u8; 32], Option<Point>)> {
+        let mut v: Vec<([u8; 32], Option<Point>)> = self
+            .payouts
+            .iter()
+            .map(|p| (p.digest, Some(p.point)))
+            .collect();
+        v.extend(self.refunds.iter().map(|r| (r.digest, None)));
+        v
+    }
+
+    /// Round 1: a fresh nonce for every message. Publish `pubnonces`; keep the signer.
+    pub fn round1(&self, seckey: &Scalar) -> SetSigner {
+        let secnonces: Vec<SecNonce> = self
+            .messages()
+            .iter()
+            .map(|(m, _)| musig::nonce(seckey, m))
+            .collect();
+        let pubnonces = secnonces.iter().map(|s| s.public_nonce()).collect();
+        SetSigner {
+            secnonces: secnonces.into_iter().map(Some).collect(),
+            pubnonces,
+        }
+    }
+
+    fn agg_nonces(&self, all: &[Vec<PubNonce>]) -> Result<Vec<AggNonce>, String> {
+        let n = self.messages().len();
+        if all.len() != self.terms.signers.len() || all.iter().any(|v| v.len() != n) {
+            return Err(format!(
+                "need {} nonce vectors of {} entries",
+                self.terms.signers.len(),
+                n
+            ));
+        }
+        Ok((0..n)
+            .map(|i| musig::agg_nonce(&all.iter().map(|v| v[i].clone()).collect::<Vec<_>>()))
+            .collect())
+    }
+
+    /// Round 2: given every signer's nonces in signer order, this signer's partial signatures.
+    pub fn round2(
+        &self,
+        seckey: &Scalar,
+        signer: &mut SetSigner,
+        all: &[Vec<PubNonce>],
+    ) -> Result<Vec<PartialSignature>, String> {
+        let aggs = self.agg_nonces(all)?;
+        let msgs = self.messages();
+        let mut out = Vec::with_capacity(msgs.len());
+        for (i, (m, t)) in msgs.iter().enumerate() {
+            let sn = signer.secnonces[i].take().ok_or("nonce already used")?;
+            out.push(musig::partial(&self.ctx, seckey, sn, &aggs[i], *t, m));
+        }
+        Ok(out)
+    }
+
+    /// Verifies every signer's every partial signature and aggregates the set. Fails, naming the
+    /// signer, if any partial is invalid; nothing is filled in then.
+    pub fn finish(
+        &mut self,
+        all_nonces: &[Vec<PubNonce>],
+        all_partials: &[Vec<PartialSignature>],
+    ) -> Result<(), String> {
+        let aggs = self.agg_nonces(all_nonces)?;
+        let msgs = self.messages();
+        if all_partials.len() != self.terms.signers.len()
+            || all_partials.iter().any(|v| v.len() != msgs.len())
+        {
+            return Err("wrong number of partial signatures".into());
+        }
+        let mut presigs = Vec::new();
+        let mut sigs = Vec::new();
+        for (i, (m, t)) in msgs.iter().enumerate() {
+            for (j, pk) in self.terms.signers.iter().enumerate() {
+                if !musig::verify(
+                    &self.ctx,
+                    all_partials[j][i],
+                    &aggs[i],
+                    *t,
+                    *pk,
+                    &all_nonces[j][i],
+                    m,
+                ) {
+                    return Err(format!(
+                        "signer {j}: invalid partial signature on message {i}"
+                    ));
+                }
+            }
+            let parts: Vec<PartialSignature> = all_partials.iter().map(|v| v[i]).collect();
+            match t {
+                Some(t) => presigs.push(
+                    musig2::adaptor::aggregate_partial_signatures(
+                        &self.ctx, &aggs[i], *t, parts, m,
+                    )
+                    .map_err(|e| e.to_string())?,
+                ),
+                None => sigs.push(
+                    {
+                        let s: [u8; 64] =
+                            musig2::aggregate_partial_signatures(&self.ctx, &aggs[i], parts, m)
+                                .map_err(|e| e.to_string())?;
+                        Ok::<_, String>(s)
+                    }
+                    .map_err(|e| e.to_string())?,
+                ),
+            }
+        }
+        for (p, a) in self.payouts.iter_mut().zip(presigs) {
+            p.presig = Some(a);
+        }
+        for (r, s) in self.refunds.iter_mut().zip(sigs) {
+            r.sig = Some(s);
+        }
+        Ok(())
     }
 }

@@ -1,0 +1,25 @@
+[package]
+name = "bitaid-node"
+version = "0.1.0"
+edition = "2021"
+description = "Bitaid node daemon: caller, responder, archivist and oracle roles over Nostr, evidence on Blossom"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitaid-core = { path = "../bitaid-core" }
+bitaid-oracle = { path = "../bitaid-oracle" }
+bitcoin = { version = "0.32", features = ["rand-std", "serde"] }
+musig2 = { version = "0.4.1", features = ["serde"] }
+rand = "0.8"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+ciborium = "0.2"
+chacha20poly1305 = "0.10"
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tiny_http = "0.12"
+ureq = "2"
+h3o = "0.6"
