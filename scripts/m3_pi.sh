@@ -22,11 +22,13 @@ setup)
     SB=$(dirname "$(command -v bitcoind || echo /usr/local/bin/bitcoind)")
     V2=$($SB/bitcoind -version 2>/dev/null | head -1 | sed -n 's/.*v\([0-9]*\)\..*/\1/p')
     echo "downloaded bitcoind cannot run here; system bitcoind at $SB is version ${V2:-none}"
-    if [ "${V2:-0}" -ge 28 ]; then B=$SB; CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"; else echo "NO_USABLE_BITCOIND"; fi
+    # 27 predates TRUC (v3) and pay-to-anchor standardness; on regtest it may accept them as non-standard
+    if [ "${V2:-0}" -ge 27 ]; then B=$SB; CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"; else echo "NO_USABLE_BITCOIND"; fi
+    [ "${V2:-0}" -lt 28 ] && EXTRA_BTC="-acceptnonstdtxn=1"
   fi
   mkdir -p $D
   pgrep -f "datadir=$D" >/dev/null || $B/bitcoind -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
-      -rpcbind=0.0.0.0 -rpcallowip=192.168.1.0/24 -rpcallowip=127.0.0.1 -port=18444 -listen=0 -fallbackfee=0.0001 -txindex=1 -dbcache=50 -daemon
+      -rpcbind=0.0.0.0 -rpcallowip=192.168.1.0/24 -rpcallowip=127.0.0.1 -port=18444 -listen=0 -fallbackfee=0.0001 -txindex=1 -dbcache=50 $EXTRA_BTC -daemon
   for i in $(seq 1 60); do $CLI getblockcount >/dev/null 2>&1 && break; sleep 2; done
   $CLI getblockcount >/dev/null 2>&1 || { echo "BITCOIND_NOT_RUNNING"; tail -20 $D/regtest/debug.log; wait; exit 1; }
   $CLI createwallet w >/dev/null 2>&1 || $CLI loadwallet w >/dev/null 2>&1
