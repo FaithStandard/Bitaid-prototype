@@ -9,6 +9,7 @@ V=31.1; D=$HOME/bitaid-regtest; B=$HOME/bitcoin-$V/bin
 CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
 case "$1" in
 setup)
+  ( CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} cargo build --release -p bitaid-node > $HOME/m3_build.log 2>&1 && echo BUILD_DONE >> $HOME/m3_build.log ) &
   if [ ! -x $B/bitcoind ]; then
     cd $HOME
     F=bitcoin-$V-arm-linux-gnueabihf.tar.gz
@@ -16,11 +17,18 @@ setup)
     grep " $F\$" SHA256SUMS | sha256sum -c - || { echo "CHECKSUM FAILED"; exit 1; }
     tar xzf $F && cd - >/dev/null
   fi
+  # this release needs glibc 2.29+; on an older system (e.g. Debian 10) use the system's bitcoind if it is 28 or newer
+  if ! $B/bitcoind -version >/dev/null 2>&1; then
+    SB=$(dirname "$(command -v bitcoind || echo /usr/local/bin/bitcoind)")
+    V2=$($SB/bitcoind -version 2>/dev/null | head -1 | sed -n 's/.*v\([0-9]*\)\..*/\1/p')
+    echo "downloaded bitcoind cannot run here; system bitcoind at $SB is version ${V2:-none}"
+    if [ "${V2:-0}" -ge 28 ]; then B=$SB; CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"; else echo "NO_USABLE_BITCOIND"; fi
+  fi
   mkdir -p $D
   pgrep -f "datadir=$D" >/dev/null || $B/bitcoind -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
       -rpcbind=0.0.0.0 -rpcallowip=192.168.1.0/24 -rpcallowip=127.0.0.1 -port=18444 -listen=0 -fallbackfee=0.0001 -txindex=1 -dbcache=50 -daemon
   for i in $(seq 1 60); do $CLI getblockcount >/dev/null 2>&1 && break; sleep 2; done
-  $CLI getblockcount >/dev/null 2>&1 || { echo "BITCOIND_NOT_RUNNING"; tail -20 $D/regtest/debug.log; exit 1; }
+  $CLI getblockcount >/dev/null 2>&1 || { echo "BITCOIND_NOT_RUNNING"; tail -20 $D/regtest/debug.log; wait; exit 1; }
   $CLI createwallet w >/dev/null 2>&1 || $CLI loadwallet w >/dev/null 2>&1
   H=$($CLI getblockcount); [ "$H" -lt 110 ] && $CLI -rpcwallet=w generatetoaddress 110 $($CLI -rpcwallet=w getnewaddress) >/dev/null
   for w in caller r1 r3 r4; do
@@ -29,7 +37,8 @@ setup)
   done
   $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null
   echo "regtest height $($CLI getblockcount), wallets: $($CLI listwallets | tr -d '\n ')"
-  CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} cargo build --release -p bitaid-node && echo BUILD_DONE
+  echo "BITCOIN=$B" > $HOME/.bitaid_bitcoin
+  wait
   ;;
 start)
   pkill -x bitaid-relay; pkill -x bitaid-node; sleep 1
