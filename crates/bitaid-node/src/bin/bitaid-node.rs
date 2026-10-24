@@ -55,6 +55,16 @@ fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
 }
 
+fn relay_host(url: &str) -> String {
+    let h = url.split("://").nth(1).unwrap_or(url).trim_end_matches('/');
+    let h = h.split('/').next().unwrap_or(h);
+    if h.contains(':') {
+        h.to_string()
+    } else {
+        format!("{h}:443")
+    }
+}
+
 fn cell_of(lat: f64, lon: f64) -> h3o::CellIndex {
     h3o::LatLng::new(lat, lon)
         .expect("lat/lon")
@@ -303,7 +313,21 @@ fn archivist(mut n: Node) -> i32 {
         arg("--dir").unwrap_or(format!("/tmp/bitaid-archive-{}", &n.me()[..8])),
     );
     let srv = blossom::spawn(&listen, dir, blossom::Policy::default()).expect("listen");
-    let url = arg("--public-url").unwrap_or(srv.url.clone());
+    let port = srv.url.rsplit(':').next().unwrap_or("7480").to_string();
+    let url = match arg("--public-url").as_deref() {
+        // the address this machine uses to reach the relay, which is the one other devices can reach
+        Some("auto") => {
+            let host = relay_host(&args_all("--relay")[0]);
+            let ip = std::net::UdpSocket::bind("0.0.0.0:0")
+                .and_then(|u| u.connect(&host).map(|_| u))
+                .and_then(|u| u.local_addr())
+                .map(|a| a.ip().to_string())
+                .unwrap_or("127.0.0.1".into());
+            format!("http://{ip}:{port}")
+        }
+        Some(u) => u.to_string(),
+        None => srv.url.clone(),
+    };
     n.subscribe("all", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
     std::thread::sleep(Duration::from_millis(300));
     let me = n.me();
@@ -538,7 +562,25 @@ fn settle(
                     } else {
                         match n.rpc.package(&tx) {
                             Ok(_) => (true, String::new()),
-                            Err(e) => (known(n), e),
+                            // if this node cannot pay the fee, another party's broadcast still settles it
+                            Err(e) => {
+                                let mut k = false;
+                                for _ in 0..20 {
+                                    if known(n) {
+                                        k = true;
+                                        break;
+                                    }
+                                    std::thread::sleep(Duration::from_millis(500));
+                                }
+                                (
+                                    k,
+                                    if k {
+                                        format!("broadcast by another party ({e})")
+                                    } else {
+                                        e
+                                    },
+                                )
+                            }
                         }
                     };
                     n.check(
