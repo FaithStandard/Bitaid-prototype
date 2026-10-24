@@ -45,15 +45,15 @@ setup)
 start)
   pkill -x bitaid-relay; pkill -x bitaid-node; sleep 1
   mkdir -p m3logs; rm -f m3logs/*
-  export BITAID_RPC=${BITAID_RPC:-http://bitaid:regtest@127.0.0.1:18443}
+  export BITAID_RPC=${BITAID_RPC:-http://bitaid:regtest@${CHAIN:-127.0.0.1}:18443}
   R="--relay ws://127.0.0.1:7447 $EXTRA_RELAYS"; X="--exit-after 3600"
-  nohup target/release/bitaid-relay 0.0.0.0:7447 2>m3logs/relay.log &
+  nohup target/release/bitaid-relay 0.0.0.0:7447 >/dev/null 2>m3logs/relay.log </dev/null &
   sleep 1
-  BITAID_WALLET=w nohup target/release/bitaid-node --role oracle --name oracle $R $X 2>m3logs/oracle.log &
-  BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pi $R --listen 0.0.0.0:7480 --public-url http://$(hostname -I | cut -d" " -f1):7480 $X 2>m3logs/archivist.log &
+  BITAID_WALLET=w nohup target/release/bitaid-node --role oracle --name oracle $R $X >/dev/null 2>m3logs/oracle.log </dev/null &
+  BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pi $R --listen 0.0.0.0:7480 --public-url http://$(hostname -I | cut -d" " -f1):7480 $X >/dev/null 2>m3logs/archivist.log </dev/null &
   sleep 2
-  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pi $R --archivists 2 --mine --ballot I,D --lat 13.6920 --lon -89.2170 $X >m3logs/r3.out 2>m3logs/r3.log &
-  BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pi-cheat $R --archivists 2 --mine --ballot I,D --bad-partial --accept-delay-ms 800 $X >m3logs/r4.out 2>m3logs/r4.log &
+  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pi $R --archivists 2 --mine --ballot I,D --lat 13.6920 --lon -89.2170 $X >m3logs/r3.out 2>m3logs/r3.log </dev/null &
+  BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pi-cheat $R --archivists 2 --mine --ballot I,D --bad-partial --accept-delay-ms 800 $X >m3logs/r4.out 2>m3logs/r4.log </dev/null &
   sleep 3; echo "Pi side running: relay :7447, oracle, archivist :7480, responders r3 and r4 (r4 cheats)"
   ;;
 report)

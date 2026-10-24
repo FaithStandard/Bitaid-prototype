@@ -591,6 +591,9 @@ fn settle(
                         ok,
                         &how,
                     );
+                    if !ok {
+                        continue;
+                    }
                 } else {
                     n.check(
                         &format!("{}: \"{label}\" completes with the attestation", p.name()),
@@ -1114,14 +1117,23 @@ fn caller(mut n: Node) -> i32 {
     if flag("--mine") {
         n.rpc.mine(1).ok();
     }
-    let spent = set
-        .pot_outpoints
+    // settled means: the incident confirmed, and a payout of every pot broadcast and confirmed
+    let pots = set.pot_outpoints.iter().flatten().count();
+    let confirmed = set
+        .payouts
         .iter()
-        .flatten()
-        .all(|op| n.rpc.utxo(op).is_none());
+        .filter(|x| {
+            paid.iter()
+                .any(|(p, l)| *p == x.ending.pot && *l == x.ending.label)
+        })
+        .filter(|x| n.rpc.confirmations(&x.tx.compute_txid()) > 0)
+        .count();
+    let spent = n.rpc.confirmations(&set.incident_txid) > 0 && confirmed == pots;
     n.check(
-        &format!("all {} pots settled on chain by deemed consent", paid.len()),
-        spent && !paid.is_empty(),
+        &format!(
+            "all {pots} pots settled on chain by deemed consent ({confirmed} payouts confirmed)"
+        ),
+        spent,
         &paid
             .iter()
             .map(|(p, l)| format!("{}: {l}", p.name()))

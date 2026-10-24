@@ -4,7 +4,8 @@
 #   sh scripts/m3_device.sh caller        phone: the caller, alerting once the others are listening
 cd "$(dirname "$0")/.."
 PI=${PI:-192.168.1.147}
-export BITAID_RPC=${BITAID_RPC:-http://bitaid:regtest@$PI:18443}
+CHAIN=${CHAIN:-$PI}
+export BITAID_RPC=${BITAID_RPC:-http://bitaid:regtest@$CHAIN:18443}
 R="--relay ws://$PI:7447 $EXTRA_RELAYS"
 BIN=target/release/bitaid-node
 case "$1" in
