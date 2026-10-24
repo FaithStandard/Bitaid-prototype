@@ -4,6 +4,7 @@
 #   sh scripts/m3_pi.sh start     relay, oracle, archivist, an honest responder and a cheating one
 # Regtest only, LAN only: the RPC credentials below guard nothing of value.
 cd "$(dirname "$0")/.."
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 V=31.1; D=$HOME/bitaid-regtest; B=$HOME/bitcoin-$V/bin
 CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
 case "$1" in
@@ -18,7 +19,8 @@ setup)
   mkdir -p $D
   pgrep -f "datadir=$D" >/dev/null || $B/bitcoind -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
       -rpcbind=0.0.0.0 -rpcallowip=192.168.1.0/24 -rpcallowip=127.0.0.1 -port=18444 -listen=0 -fallbackfee=0.0001 -txindex=1 -dbcache=50 -daemon
-  sleep 8
+  for i in $(seq 1 60); do $CLI getblockcount >/dev/null 2>&1 && break; sleep 2; done
+  $CLI getblockcount >/dev/null 2>&1 || { echo "BITCOIND_NOT_RUNNING"; tail -20 $D/regtest/debug.log; exit 1; }
   $CLI createwallet w >/dev/null 2>&1 || $CLI loadwallet w >/dev/null 2>&1
   H=$($CLI getblockcount); [ "$H" -lt 110 ] && $CLI -rpcwallet=w generatetoaddress 110 $($CLI -rpcwallet=w getnewaddress) >/dev/null
   for w in caller r1 r3 r4; do
