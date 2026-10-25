@@ -271,6 +271,8 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
     let r1: BTreeMap<frost::Identifier, _> =
         r1.into_iter().map(|(m, p)| (conv::id(m), p)).collect();
     let (s2, out) = frost::keys::dkg::part2(s1, &r1).map_err(|e| e.to_string())?;
+    // every other member's share, each sealed to it, in one message (relays rate-limit bursts)
+    let mut bundle = vec![];
     for (to, pkg) in out {
         let to_n = *members.iter().find(|&&i| conv::id(i) == to).unwrap();
         let aad = format!("{name}/dkg2/{me}/{to_n}");
@@ -280,29 +282,30 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
             aad.as_bytes(),
             &pkg.serialize().unwrap(),
         );
-        send_pool(
-            n,
-            &name,
-            Msg::PoolDkg2 {
-                pool: name.clone(),
-                from: me,
-                to: to_n,
-                sealed: hex::encode(sealed),
-            },
-        );
+        bundle.push((to_n, hex::encode(sealed)));
     }
+    send_pool(
+        n,
+        &name,
+        Msg::PoolDkg2 {
+            pool: name.clone(),
+            from: me,
+            sealed: bundle,
+        },
+    );
     let keys = n.keys;
     let r2 = collect_pool(n, &name, cfg.n as usize - 1, cfg.wait, |env| {
         match &env.msg {
-            Msg::PoolDkg2 {
-                from, to, sealed, ..
-            } if *to == me && ids.get(from) == Some(&env.sender) => {
+            Msg::PoolDkg2 { from, sealed, .. }
+                if *from != me && ids.get(from) == Some(&env.sender) =>
+            {
+                let mine = &sealed.iter().find(|(to, _)| *to == me)?.1;
                 let aad = format!("{name}/dkg2/{from}/{me}");
                 let pt = wire::unseal(
                     &keys,
                     &wire::xonly(&env.sender)?,
                     aad.as_bytes(),
-                    &hex::decode(sealed).ok()?,
+                    &hex::decode(mine).ok()?,
                 )?;
                 frost::keys::dkg::round2::Package::deserialize(&pt)
                     .ok()
@@ -332,23 +335,26 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
             commitments: serde_json::to_string(&mine_c).unwrap(),
         },
     );
+    let mut bundle = vec![];
     for &to in &members {
         if to != me {
             let sh = serde_json::to_vec(&dealer.shares_for(to, 1)).unwrap();
             let aad = format!("{name}/nonce/{me}/{to}");
-            let sealed = wire::seal(&n.keys, &idx(to), aad.as_bytes(), &sh);
-            send_pool(
-                n,
-                &name,
-                Msg::PoolNonceShare {
-                    pool: name.clone(),
-                    from: me,
-                    to,
-                    sealed: hex::encode(sealed),
-                },
-            );
+            bundle.push((
+                to,
+                hex::encode(wire::seal(&n.keys, &idx(to), aad.as_bytes(), &sh)),
+            ));
         }
     }
+    send_pool(
+        n,
+        &name,
+        Msg::PoolNonceShare {
+            pool: name.clone(),
+            from: me,
+            sealed: bundle,
+        },
+    );
     let mut commits = collect_pool(n, &name, cfg.n as usize - 1, cfg.wait, |env| {
         match &env.msg {
             Msg::PoolNonceCommit { commitments, .. } => {
@@ -361,15 +367,16 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
     commits.insert(me, mine_c);
     let shares = collect_pool(n, &name, cfg.n as usize - 1, cfg.wait, |env| {
         match &env.msg {
-            Msg::PoolNonceShare {
-                from, to, sealed, ..
-            } if *to == me && ids.get(from) == Some(&env.sender) => {
+            Msg::PoolNonceShare { from, sealed, .. }
+                if *from != me && ids.get(from) == Some(&env.sender) =>
+            {
+                let mine = &sealed.iter().find(|(to, _)| *to == me)?.1;
                 let aad = format!("{name}/nonce/{from}/{me}");
                 let pt = wire::unseal(
                     &keys,
                     &wire::xonly(&env.sender)?,
                     aad.as_bytes(),
-                    &hex::decode(sealed).ok()?,
+                    &hex::decode(mine).ok()?,
                 );
                 Some((
                     *from,

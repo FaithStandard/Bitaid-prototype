@@ -19,6 +19,10 @@ pub struct Node {
     /// encrypted case messages whose key has not arrived yet
     locked: Vec<Event>,
     pub t0: Instant,
+    last_sent: Instant,
+    pace_ms: u64,
+    height_cache: u32,
+    height_at: Option<Instant>,
     pub passed: u32,
     pub failed: u32,
 }
@@ -64,6 +68,13 @@ impl Node {
             backlog: VecDeque::new(),
             locked: vec![],
             t0: Instant::now(),
+            last_sent: Instant::now() - Duration::from_secs(10),
+            pace_ms: std::env::var("BITAID_PACE_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(400),
+            height_cache: 0,
+            height_at: None,
             passed: 0,
             failed: 0,
         }
@@ -109,7 +120,8 @@ impl Node {
         enc: Option<&str>,
     ) -> String {
         let name = msg.name();
-        let bytes = wire::sign(&self.keys, self.rpc.height(), msg);
+        let h = self.height();
+        let bytes = wire::sign(&self.keys, h, msg);
         let content = match enc {
             Some(case) => {
                 let key = self.case_keys[case];
@@ -120,8 +132,32 @@ impl Node {
         };
         tags.push(vec!["t".into(), name.into()]);
         let e = Event::new(&self.keys, k, tags, content);
+        // pace publishing: public relays rate-limit bursts from one key
+        let gap = Duration::from_millis(self.pace_ms);
+        let since = self.last_sent.elapsed();
+        if since < gap {
+            std::thread::sleep(gap - since);
+        }
         self.client.publish(&e);
+        self.last_sent = Instant::now();
         e.id
+    }
+
+    /// The chain height, refreshed at most every 10 s, so a slow chain connection never delays
+    /// sending a message (the height in an envelope is informational).
+    pub fn height(&mut self) -> u32 {
+        if self
+            .height_at
+            .map(|t| t.elapsed() > Duration::from_secs(10))
+            .unwrap_or(true)
+        {
+            let h = self.rpc.height();
+            if h > 0 || self.height_at.is_none() {
+                self.height_cache = h;
+            }
+            self.height_at = Some(Instant::now());
+        }
+        self.height_cache
     }
 
     pub fn send_case(&mut self, case: &str, to: &[String], msg: Msg, encrypted: bool) -> String {

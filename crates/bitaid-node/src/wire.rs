@@ -202,21 +202,21 @@ pub enum Msg {
         member: u16,
         package: String,
     },
+    /// One message per sender: the share for each other member, sealed to it.
     PoolDkg2 {
         pool: String,
         from: u16,
-        to: u16,
-        sealed: String,
+        sealed: Vec<(u16, String)>,
     },
     PoolNonceCommit {
         pool: String,
         commitments: String,
     },
+    /// One message per sender: the share for each other member, sealed to it.
     PoolNonceShare {
         pool: String,
         from: u16,
-        to: u16,
-        sealed: String,
+        sealed: Vec<(u16, String)>,
     },
     PoolNonceStatus {
         pool: String,
