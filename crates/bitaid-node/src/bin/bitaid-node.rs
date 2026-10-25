@@ -886,7 +886,7 @@ fn caller(mut n: Node) -> i32 {
     let Some(view) = pool::discover(
         &mut n,
         &arg("--pool").unwrap_or("bitaid".into()),
-        secs(num("--setup-wait", 300u64)),
+        secs(num("--setup-wait", 3600u64)),
     ) else {
         n.check("oracle pool found and checked on the relays", false, "");
         return n.summary();
@@ -1298,7 +1298,7 @@ fn responder(mut n: Node) -> i32 {
     let Some(view) = pool::discover(
         &mut n,
         &arg("--pool").unwrap_or("bitaid".into()),
-        secs(num("--setup-wait", 300u64)),
+        secs(num("--setup-wait", 3600u64)),
     ) else {
         n.check("oracle pool found and checked on the relays", false, "");
         return n.summary();

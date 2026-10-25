@@ -10,7 +10,7 @@ R="--relay ws://$PI:7447 $EXTRA_RELAYS"
 BIN=target/release/bitaid-node
 case "$1" in
 responder)
-  BITAID_WALLET=w $BIN --role pool-member --name pool3-tablet --id 3 --n 4 --t 3 $R --exit-after 3600 2>pool.log & PM=$!
+  BITAID_WALLET=w $BIN --role pool-member --name pool3-tablet --id 3 --n 4 --t 3 --setup-wait 3600 $R --exit-after 3600 2>pool.log & PM=$!
   # a second archivist here only if other devices can reach this one (not on routers that isolate Wi-Fi clients)
   [ -n "$ARCHIVIST" ] && BITAID_WALLET=w $BIN --role archivist --name archivist-$(uname -n) $R --listen 0.0.0.0:7481 --public-url auto --exit-after 3600 2>archivist.log & AR=$!
   sleep 2
@@ -18,7 +18,7 @@ responder)
   kill $PM $AR 2>/dev/null
   ;;
 caller)
-  BITAID_WALLET=w $BIN --role pool-member --name pool4-phone-liar --id 4 --n 4 --t 3 --liar $R --exit-after 3600 2>pool.log & PM=$!
+  BITAID_WALLET=w $BIN --role pool-member --name pool4-phone-liar --id 4 --n 4 --t 3 --liar --setup-wait 3600 $R --exit-after 3600 2>pool.log & PM=$!
   BITAID_WALLET=caller $BIN --role caller --name caller-phone $R --archivists ${ARCHIVISTS:-1} --mine --window 20 --dispute-window 10
   sleep 5; kill $PM 2>/dev/null
   ;;

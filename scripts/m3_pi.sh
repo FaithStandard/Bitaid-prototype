@@ -50,8 +50,8 @@ start)
   nohup target/release/bitaid-relay 0.0.0.0:7447 >/dev/null 2>m3logs/relay.log </dev/null &
   sleep 1
   # oracle pool members 1 and 2 (2 stalls on co-signing); 3 runs on the tablet, 4 on the phone (4 lies)
-  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pi --id 1 --n 4 --t 3 $R $X >/dev/null 2>m3logs/pool1.log </dev/null &
-  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pi-stall --id 2 --n 4 --t 3 --stall $R $X >/dev/null 2>m3logs/pool2.log </dev/null &
+  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pi --id 1 --n 4 --t 3 --setup-wait 3600 $R $X >/dev/null 2>m3logs/pool1.log </dev/null &
+  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pi-stall --id 2 --n 4 --t 3 --stall --setup-wait 3600 $R $X >/dev/null 2>m3logs/pool2.log </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pi $R --listen 0.0.0.0:7480 --public-url http://$(hostname -I | cut -d" " -f1):7480 $X >/dev/null 2>m3logs/archivist.log </dev/null &
   sleep 2
   BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pi $R --archivists ${ARCHIVISTS:-1} --mine --ballot I,D --lat 13.6920 --lon -89.2170 $X >m3logs/r3.out 2>m3logs/r3.log </dev/null &
