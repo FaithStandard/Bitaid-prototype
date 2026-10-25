@@ -19,8 +19,8 @@ fn free() -> String {
 fn flood_replay_and_forgery() {
     let core_addr = free();
     let core = Gossip::start(Some(&core_addr), &[], None).unwrap();
-    let mut a = Gossip::start(None, &[core_addr.clone()], None).unwrap();
-    let mut b = Gossip::start(None, &[core_addr.clone()], None).unwrap();
+    let mut a = Gossip::start(None, std::slice::from_ref(&core_addr), None).unwrap();
+    let mut b = Gossip::start(None, std::slice::from_ref(&core_addr), None).unwrap();
     assert_eq!(a.wait_links(1, Duration::from_secs(5)), 1);
     assert_eq!(b.wait_links(1, Duration::from_secs(5)), 1);
     assert_eq!(core.wait_links(2, Duration::from_secs(5)), 2);
@@ -58,7 +58,7 @@ fn flood_replay_and_forgery() {
         "forgery not forwarded"
     );
     // a late joiner gets the log replayed
-    let mut late = Gossip::start(None, &[core_addr.clone()], None).unwrap();
+    let mut late = Gossip::start(None, std::slice::from_ref(&core_addr), None).unwrap();
     late.wait_links(1, Duration::from_secs(5));
     late.subscribe("x", vec![Filter::kinds(&[kind::CASE])]);
     let (_, r) = late.next_event(Duration::from_secs(5)).expect("replayed");
