@@ -1,5 +1,5 @@
 #!/bin/sh
-# M3 end to end on one machine: relay, a 4-member oracle pool, two archivists, caller, three responders (one sends a
+# M3 end to end on one machine: a gossip Core, a 4-member oracle pool, two archivists, caller, three responders (one sends a
 # bad partial signature and is dropped), all separate processes, over Nostr, on Bitcoin Core regtest.
 #   BITAID_CLI="bitcoin-cli -regtest -rpcuser=u -rpcpassword=p -rpcport=18543" \
 #   BITAID_RPC=http://u:p@127.0.0.1:18543 sh scripts/m3_local.sh
@@ -12,8 +12,14 @@ for w in caller r1 r2 r3; do
   for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done
 done
 $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null
-R=--relay; RELAY=ws://127.0.0.1:7447
-$BIN/bitaid-relay 127.0.0.1:7447 2>m3logs/relay.log & PIDS="$!"
+# transport: gossip through a Core (Specification §7); RELAY_STANDIN=1 uses the earlier Nostr-relay stand-in
+if [ -n "$RELAY_STANDIN" ]; then
+  R=--relay; RELAY=ws://127.0.0.1:7447
+  $BIN/bitaid-relay 127.0.0.1:7447 2>m3logs/relay.log & PIDS="$!"
+else
+  R=--peer; RELAY=127.0.0.1:7700
+  BITAID_WALLET=w $BIN/bitaid-node --role core --name core --listen-gossip 127.0.0.1:7700 2>m3logs/core.log & PIDS="$!"
+fi
 sleep 0.5
 # oracle pool: 4 members, threshold 3; member 3 stalls on co-signing, member 4 attests a different outcome
 for i in 1 2 3 4; do

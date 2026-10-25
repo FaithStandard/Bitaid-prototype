@@ -46,7 +46,8 @@ impl Rpc {
             self.base.clone()
         };
         let body = json!({"jsonrpc": "1.0", "id": "bitaid", "method": method, "params": params});
-        let r = ureq::post(&url)
+        let r = crate::http_for(&url)
+            .post(&url)
             .set("Authorization", &self.auth)
             .send_string(&body.to_string());
         let text = match r {

@@ -193,7 +193,8 @@ pub fn auth_header(keys: &Keypair, case_id: &str, blob_hash: &str) -> String {
 /// Uploads; returns the blob hash the server confirmed.
 pub fn upload(server: &str, keys: &Keypair, case_id: &str, blob: &[u8]) -> Result<String, String> {
     let hash = hex::encode(sha256(blob));
-    let r = ureq::put(&format!("{server}/upload"))
+    let r = crate::http_for(server)
+        .put(&format!("{server}/upload"))
         .set("Authorization", &auth_header(keys, case_id, &hash))
         .send_bytes(blob);
     match r {
@@ -217,7 +218,8 @@ pub fn upload(server: &str, keys: &Keypair, case_id: &str, blob: &[u8]) -> Resul
 
 /// Fetches a blob and checks it against its hash.
 pub fn fetch(server: &str, hash: &str) -> Result<Vec<u8>, String> {
-    let resp = ureq::get(&format!("{server}/{hash}"))
+    let resp = crate::http_for(server)
+        .get(&format!("{server}/{hash}"))
         .call()
         .map_err(|e| e.to_string())?;
     let mut b = Vec::new();
@@ -232,7 +234,8 @@ pub fn fetch(server: &str, hash: &str) -> Result<Vec<u8>, String> {
 
 /// Fetches one 4 KiB slice by range request.
 pub fn fetch_slice(server: &str, hash: &str, i: usize) -> Result<Vec<u8>, String> {
-    let resp = ureq::get(&format!("{server}/{hash}"))
+    let resp = crate::http_for(server)
+        .get(&format!("{server}/{hash}"))
         .set(
             "Range",
             &format!("bytes={}-{}", i * SLICE, (i + 1) * SLICE - 1),

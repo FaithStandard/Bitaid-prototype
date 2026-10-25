@@ -78,10 +78,30 @@ fn chain_view(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBu
 fn main() {
     let role = arg("--role").expect("--role caller|responder|oracle|archivist");
     let relays = args_all("--relay");
-    assert!(!relays.is_empty(), "at least one --relay ws://host:port");
+    let peers = args_all("--peer");
+    let listen = arg("--listen-gossip");
     let name = arg("--name").unwrap_or(role.clone());
     let secret = arg("--secret").and_then(|s| h32(&s));
-    let node = Node::new(&name, &relays, Rpc::from_env(), secret);
+    // the Specification's transport: gossip between Cores (over Tor when --socks is given);
+    // --relay keeps the Nostr-relay stand-in of the earlier tests
+    let node = if !peers.is_empty() || listen.is_some() {
+        let socks = arg("--socks").or_else(|| std::env::var("BITAID_SOCKS").ok());
+        Node::gossip(
+            &name,
+            listen.as_deref(),
+            &peers,
+            socks.as_deref(),
+            Rpc::from_env(),
+            secret,
+            secs(num("--link-wait", 180u64)),
+        )
+    } else {
+        assert!(
+            !relays.is_empty(),
+            "give --peer HOST:PORT (gossip) or --relay ws://HOST:PORT (relay stand-in)"
+        );
+        Node::new(&name, &relays, Rpc::from_env(), secret)
+    };
     node.log(&format!(
         "{} on {} relay(s), identity {}",
         role,
@@ -89,6 +109,14 @@ fn main() {
         &node.me()[..16]
     ));
     let code = match role.as_str() {
+        // a Core that only carries gossip: the hub other Cores and apps dial
+        "core" => {
+            let mut n = node;
+            n.subscribe("all", vec![bitaid_node::nostr::Filter::default()]);
+            loop {
+                let _ = n.wait(secs(60), |_, _| Some(()));
+            }
+        }
         "pool-member" | "oracle" => pool_member(node),
         "archivist" => archivist(node),
         "caller" => caller(node),

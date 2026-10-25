@@ -1,6 +1,8 @@
-//! What every role shares: an identity, relays, a chain connection, case keys, and a mailbox that
+//! What every role shares: an identity, a transport (Core-to-Core gossip, or relays for the earlier
+//! tests), a chain connection, case keys, and a mailbox that
 //! keeps messages until the step that needs them asks for them.
 use crate::chain::Rpc;
+use crate::gossip::Gossip;
 use crate::nostr::{kind, Client, Event, Filter};
 use crate::wire::{self, b64, unb64, Envelope, Msg};
 use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey, XOnlyPublicKey};
@@ -8,10 +10,44 @@ use musig2::secp::{Point, Scalar};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+/// How messages travel: the Specification's gossip between Cores (over Tor onion services), or
+/// Nostr relays, kept only as the stand-in used by the earlier device tests.
+pub enum Net {
+    Gossip(Gossip),
+    Relays(Client),
+}
+
+impl Net {
+    pub fn publish(&self, e: &Event) {
+        match self {
+            Net::Gossip(g) => g.publish(e),
+            Net::Relays(c) => c.publish(e),
+        }
+    }
+    pub fn subscribe(&mut self, id: &str, f: Vec<Filter>) {
+        match self {
+            Net::Gossip(g) => g.subscribe(id, f),
+            Net::Relays(c) => c.subscribe(id, f),
+        }
+    }
+    pub fn next_event(&mut self, t: Duration) -> Option<(String, Event)> {
+        match self {
+            Net::Gossip(g) => g.next_event(t),
+            Net::Relays(c) => c.next_event(t),
+        }
+    }
+    pub fn relay_count(&self) -> usize {
+        match self {
+            Net::Gossip(g) => g.links(),
+            Net::Relays(c) => c.relay_count(),
+        }
+    }
+}
+
 pub struct Node {
     pub name: String,
     pub keys: Keypair,
-    pub client: Client,
+    pub client: Net,
     pub rpc: Rpc,
     pub case_keys: HashMap<String, [u8; 32]>,
     /// verified messages not yet asked for
@@ -44,7 +80,8 @@ impl Node {
             Some(s) => Keypair::from_secret_key(&secp, &SecretKey::from_slice(&s).unwrap()),
             None => Keypair::new(&secp, &mut rand::thread_rng()),
         };
-        let mut client = Client::new();
+        let mut c = Client::new();
+        let client = &mut c;
         for r in relays {
             eprintln!("[{name}] connecting to relay {r} …");
             let mut ok = false;
@@ -59,6 +96,48 @@ impl Node {
                 eprintln!("[{name}] could not reach relay {r}");
             }
         }
+        Self::with_net(name, Net::Relays(c), rpc, keys)
+    }
+
+    /// A node on Core-to-Core gossip: `listen` (if this is a Core others dial), `peers` to dial,
+    /// `socks` (Tor) for onion peers. Waits up to `wait` for at least one link.
+    pub fn gossip(
+        name: &str,
+        listen: Option<&str>,
+        peers: &[String],
+        socks: Option<&str>,
+        rpc: Rpc,
+        secret: Option<[u8; 32]>,
+        wait: Duration,
+    ) -> Node {
+        let g = Gossip::start(listen, peers, socks).expect("gossip listen");
+        if let Some(l) = listen {
+            eprintln!("[{name}] gossip: listening on {l}");
+        }
+        for p in peers {
+            eprintln!(
+                "[{name}] gossip: dialling {p}{} …",
+                if socks.is_some() { " through Tor" } else { "" }
+            );
+        }
+        if !peers.is_empty() {
+            let n = g.wait_links(1, wait);
+            if n == 0 {
+                eprintln!("[{name}] gossip: no peer reachable yet; continuing, links retry in the background");
+            }
+        }
+        Self::with_net(name, Net::Gossip(g), rpc, Self::keypair(secret))
+    }
+
+    fn keypair(secret: Option<[u8; 32]>) -> Keypair {
+        let secp = Secp256k1::new();
+        match secret {
+            Some(s) => Keypair::from_secret_key(&secp, &SecretKey::from_slice(&s).unwrap()),
+            None => Keypair::new(&secp, &mut rand::thread_rng()),
+        }
+    }
+
+    fn with_net(name: &str, client: Net, rpc: Rpc, keys: Keypair) -> Node {
         Node {
             name: name.into(),
             keys,
