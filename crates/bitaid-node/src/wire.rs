@@ -126,12 +126,16 @@ pub enum Msg {
         /// where this responder's shares are paid
         payout_spk: String,
     },
-    /// Caller asks the oracle for this case's nonces; the oracle answers with one point per pot.
+    /// Caller proposes one unused index of the pool's nonce batch per pot; each member that reserves
+    /// them for this case answers with the nonce points (B.2 "Nonce assignment").
     NonceRequest {
         case_id: Hex32,
+        indices: Vec<u32>,
     },
     NonceAssignment {
         case_id: Hex32,
+        member: u16,
+        indices: Vec<u32>,
         nonces: Vec<String>,
     },
     /// Caller, at the end of the joining window: the signing set, sealed case keys, the incident txid.
@@ -145,7 +149,7 @@ pub enum Msg {
         oracle_nonces: Vec<String>,
         refund_height: u32,
         incident_txid: String,
-        /// the case key sealed to each seat (hex), and to the oracle last
+        /// the case key sealed to each seat (hex), then to each pool member in member order
         sealed_keys: Vec<String>,
     },
     /// Every signer, round 1: nonces for every message of the set (encrypted with the case key).
@@ -162,14 +166,70 @@ pub enum Msg {
         signer: u8,
         partials: Vec<String>,
     },
-    /// Caller asks the oracle to co-sign the incident transaction once the set is complete.
+    /// Caller asks the pool to co-sign the incident transaction once the set is complete: a FROST
+    /// session per request; a member that commits but does not sign is replaced in the next session.
     CosignRequest {
         case_id: Hex32,
+        session: u32,
         tx: String,
     },
-    Cosign {
+    PoolCommit {
         case_id: Hex32,
-        sig: String,
+        session: u32,
+        member: u16,
+        commitment: String,
+    },
+    PoolPackage {
+        case_id: Hex32,
+        session: u32,
+        package: String,
+    },
+    PoolSigShare {
+        case_id: Hex32,
+        session: u32,
+        member: u16,
+        share: String,
+    },
+    /// Pool setup over the relays: key generation (FROST DKG) and one nonce batch (B.3).
+    PoolHello {
+        pool: String,
+        member: u16,
+        n: u16,
+        t: u16,
+    },
+    PoolDkg1 {
+        pool: String,
+        member: u16,
+        package: String,
+    },
+    PoolDkg2 {
+        pool: String,
+        from: u16,
+        to: u16,
+        sealed: String,
+    },
+    PoolNonceCommit {
+        pool: String,
+        commitments: String,
+    },
+    PoolNonceShare {
+        pool: String,
+        from: u16,
+        to: u16,
+        sealed: String,
+    },
+    PoolNonceStatus {
+        pool: String,
+        member: u16,
+        bad: Vec<u16>,
+    },
+    PoolReady {
+        pool: String,
+        member: u16,
+        key: Hex32,
+        public: String,
+        members: Vec<u16>,
+        qualified: Vec<u16>,
     },
     /// Caller, once the set is complete and the incident transaction confirmed.
     Incident {
@@ -193,12 +253,12 @@ pub enum Msg {
         ballot: Ballot,
         salt: Hex32,
     },
-    /// Oracle, once per pot: the outcome attested and the scalar that completes its payout.
-    Attestation {
+    /// Pool member, once per pot after replaying the case: its public attestation share for the outcome
+    /// it reads from the log. Any t valid shares for one outcome combine to the scalar that completes it.
+    AttestShare {
         case_id: Hex32,
         pot: u8,
-        outcome: Hex32,
-        s: Hex32,
+        share: String,
     },
 }
 
@@ -215,31 +275,50 @@ impl Msg {
             Msg::SigNonces { .. } => "sig-nonces",
             Msg::SigPartials { .. } => "sig-partials",
             Msg::CosignRequest { .. } => "cosign-request",
-            Msg::Cosign { .. } => "cosign",
+            Msg::PoolCommit { .. } => "pool-commit",
+            Msg::PoolPackage { .. } => "pool-package",
+            Msg::PoolSigShare { .. } => "pool-sig-share",
+            Msg::PoolHello { .. } => "pool-hello",
+            Msg::PoolDkg1 { .. } => "pool-dkg1",
+            Msg::PoolDkg2 { .. } => "pool-dkg2",
+            Msg::PoolNonceCommit { .. } => "pool-nonce-commit",
+            Msg::PoolNonceShare { .. } => "pool-nonce-share",
+            Msg::PoolNonceStatus { .. } => "pool-nonce-status",
+            Msg::PoolReady { .. } => "pool-ready",
             Msg::Incident { .. } => "incident",
             Msg::Evidence { .. } => "evidence",
             Msg::BallotCommit { .. } => "ballot-commit",
             Msg::BallotReveal { .. } => "ballot-reveal",
-            Msg::Attestation { .. } => "attestation",
+            Msg::AttestShare { .. } => "attest-share",
         }
     }
     pub fn case_id(&self) -> Option<&str> {
         match self {
-            Msg::Registration { .. } | Msg::Announce { .. } => None,
+            Msg::Registration { .. }
+            | Msg::Announce { .. }
+            | Msg::PoolHello { .. }
+            | Msg::PoolDkg1 { .. }
+            | Msg::PoolDkg2 { .. }
+            | Msg::PoolNonceCommit { .. }
+            | Msg::PoolNonceShare { .. }
+            | Msg::PoolNonceStatus { .. }
+            | Msg::PoolReady { .. } => None,
             Msg::Alert { case_id, .. }
             | Msg::Accept { case_id, .. }
-            | Msg::NonceRequest { case_id }
+            | Msg::NonceRequest { case_id, .. }
             | Msg::NonceAssignment { case_id, .. }
             | Msg::Roster { case_id, .. }
             | Msg::SigNonces { case_id, .. }
             | Msg::SigPartials { case_id, .. }
             | Msg::CosignRequest { case_id, .. }
-            | Msg::Cosign { case_id, .. }
+            | Msg::PoolCommit { case_id, .. }
+            | Msg::PoolPackage { case_id, .. }
+            | Msg::PoolSigShare { case_id, .. }
             | Msg::Incident { case_id, .. }
             | Msg::Evidence { case_id, .. }
             | Msg::BallotCommit { case_id, .. }
             | Msg::BallotReveal { case_id, .. }
-            | Msg::Attestation { case_id, .. } => Some(case_id),
+            | Msg::AttestShare { case_id, .. } => Some(case_id),
         }
     }
 }
@@ -382,6 +461,7 @@ mod tests {
             100,
             Msg::NonceRequest {
                 case_id: "ab".into(),
+                indices: vec![1, 2, 3],
             },
         );
         let env = verify(&b).unwrap();

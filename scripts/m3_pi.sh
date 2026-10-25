@@ -49,14 +49,16 @@ start)
   R="--relay ws://127.0.0.1:7447 $EXTRA_RELAYS"; X="--exit-after 3600"
   nohup target/release/bitaid-relay 0.0.0.0:7447 >/dev/null 2>m3logs/relay.log </dev/null &
   sleep 1
-  BITAID_WALLET=w nohup target/release/bitaid-node --role oracle --name oracle $R $X >/dev/null 2>m3logs/oracle.log </dev/null &
+  # oracle pool members 1 and 2 (2 stalls on co-signing); 3 runs on the tablet, 4 on the phone (4 lies)
+  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pi --id 1 --n 4 --t 3 $R $X >/dev/null 2>m3logs/pool1.log </dev/null &
+  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pi-stall --id 2 --n 4 --t 3 --stall $R $X >/dev/null 2>m3logs/pool2.log </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pi $R --listen 0.0.0.0:7480 --public-url http://$(hostname -I | cut -d" " -f1):7480 $X >/dev/null 2>m3logs/archivist.log </dev/null &
   sleep 2
-  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pi $R --archivists 2 --mine --ballot I,D --lat 13.6920 --lon -89.2170 $X >m3logs/r3.out 2>m3logs/r3.log </dev/null &
-  BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pi-cheat $R --archivists 2 --mine --ballot I,D --bad-partial --accept-delay-ms 800 $X >m3logs/r4.out 2>m3logs/r4.log </dev/null &
-  sleep 3; echo "Pi side running: relay :7447, oracle, archivist :7480, responders r3 and r4 (r4 cheats)"
+  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pi $R --archivists ${ARCHIVISTS:-1} --mine --ballot I,D --lat 13.6920 --lon -89.2170 $X >m3logs/r3.out 2>m3logs/r3.log </dev/null &
+  BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pi-cheat $R --archivists ${ARCHIVISTS:-1} --mine --ballot I,D --bad-partial --accept-delay-ms 800 $X >m3logs/r4.out 2>m3logs/r4.log </dev/null &
+  sleep 3; echo "Pi side running: relay :7447, pool members 1-2 (2 stalls), archivist :7480, responders r3 and r4 (r4 cheats)"
   ;;
 report)
-  cat m3logs/*.out; grep -h "attesting\|deemed\|stored\|seated\|escalation" m3logs/*.log
+  cat m3logs/*.out; grep -h "pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed\|seated\|escalation" m3logs/*.log
   ;;
 esac

@@ -8,6 +8,7 @@ pub mod case;
 pub mod chain;
 pub mod node;
 pub mod nostr;
+pub mod pool;
 pub mod relay;
 pub mod settle;
 pub mod wire;

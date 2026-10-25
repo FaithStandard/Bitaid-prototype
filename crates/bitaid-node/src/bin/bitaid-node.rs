@@ -6,15 +6,15 @@
 //! deemed consent → the oracle's attestations → payouts confirmed.
 use bitaid_core::endings::Pot;
 use bitaid_core::hashes::{case_id as hash_case, tagged};
-use bitaid_core::oracle::{even, random_scalar, sign_bip340, Oracle};
+use bitaid_core::oracle::{even, random_scalar, sign_bip340};
 use bitaid_core::outputs::{self, funding_leaf};
-use bitaid_core::presign::event_id;
 use bitaid_core::txbuild;
 use bitaid_node::blossom;
 use bitaid_node::case::{self, Alerted, Rostered};
 use bitaid_node::chain::Rpc;
 use bitaid_node::node::{point_from, point_hex, scalar_from, xo, Node};
 use bitaid_node::nostr::{kind, Filter};
+use bitaid_node::pool::{self, PoolView};
 use bitaid_node::settle::{decide, Decision};
 use bitaid_node::wire::{self, b64, h32, Act, Ballot, Class, Msg, Template};
 use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
@@ -89,7 +89,7 @@ fn main() {
         &node.me()[..16]
     ));
     let code = match role.as_str() {
-        "oracle" => oracle(node),
+        "pool-member" | "oracle" => pool_member(node),
         "archivist" => archivist(node),
         "caller" => caller(node),
         "responder" => responder(node),
@@ -109,15 +109,35 @@ fn announce(n: &mut Node, role: &str, key: &str, url: &str) {
     n.send(kind::ANNOUNCE, vec![vec!["r".into(), role.into()]], m, None);
 }
 
-fn oracle(mut n: Node) -> i32 {
-    let mut o = Oracle::from_secret(scalar_from(&hex::encode(n.keys.secret_bytes())).unwrap());
-    let okey = hex::encode(o.pubkey().serialize_xonly());
+/// One member of the oracle pool: joins key generation and the nonce batch, then serves cases.
+fn pool_member(mut n: Node) -> i32 {
+    let cfg = pool::MemberCfg {
+        name: arg("--pool").unwrap_or("bitaid".into()),
+        id: num("--id", 1u16),
+        n: num("--n", 4u16),
+        t: num("--t", 3u16),
+        batch: num("--batch", 60usize),
+        stall: flag("--stall"),
+        liar: flag("--liar"),
+        wait: secs(num("--setup-wait", 900u64)),
+    };
+    let me = cfg.id;
+    let mut m = match pool::setup(&mut n, cfg) {
+        Ok(m) => m,
+        Err(e) => {
+            n.log(&format!("pool setup failed: {e}"));
+            return 1;
+        }
+    };
+    let okey = m.view.key_hex();
     n.subscribe("all", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
-    std::thread::sleep(Duration::from_millis(300));
-    announce(&mut n, "oracle", &okey, "");
-    n.log(&format!("attestation key {}", &okey[..16]));
     let mut alerts: HashMap<String, Alerted> = HashMap::new();
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
+    let mut assigned: HashMap<String, Vec<u32>> = HashMap::new();
+    let mut taken: HashMap<u32, String> = HashMap::new();
+    let mut digests: HashMap<String, [u8; 32]> = HashMap::new();
+    let mut sessions: HashMap<(String, u32), frost_secp256k1_tr::round1::SigningNonces> =
+        HashMap::new();
     let mut commits: HashMap<String, BTreeMap<String, String>> = HashMap::new();
     let mut reveals: HashMap<String, BTreeMap<String, Ballot>> = HashMap::new();
     let mut ready_at: HashMap<String, Instant> = HashMap::new();
@@ -128,7 +148,8 @@ fn oracle(mut n: Node) -> i32 {
         if last.elapsed() > secs(idle) {
             return 0;
         }
-        // deemed consent: every seat revealed and the dispute window has passed
+        // deemed consent: every seat revealed and the dispute window has passed; each member reads
+        // the outcome from the ballots itself and releases its own share
         let due: Vec<String> = ready_at
             .iter()
             .filter(|(_, t)| Instant::now() >= **t)
@@ -141,17 +162,30 @@ fn oracle(mut n: Node) -> i32 {
             match decide(r.seats.len(), a.template.pots, &a.template, &ballots) {
                 Decision::Settled(ends) => {
                     for e in ends {
-                        let m = e.message(&a.case_id, r.set_version);
-                        match o.attest(&event_id(&a.case_id, e.pot), &m) {
-                            Ok(s) => {
-                                n.log(&format!("attesting {} \"{}\"", e.pot.name(), e.label));
-                                let msg = Msg::Attestation {
-                                    case_id: c.clone(),
-                                    pot: e.pot.index() as u8,
-                                    outcome: hex::encode(m),
-                                    s: hex::encode(s.serialize()),
-                                };
-                                n.send_case(&c, &[], msg, false);
+                        let msg = e.message(&a.case_id, r.set_version);
+                        let index = assigned[&c][e.pot.index()] as usize;
+                        match m.attest(index, &msg) {
+                            Ok(share) => {
+                                n.log(&format!(
+                                    "attestation share for {} \"{}\"{}",
+                                    e.pot.name(),
+                                    e.label,
+                                    if m.cfg.liar {
+                                        " (lying: a different outcome)"
+                                    } else {
+                                        ""
+                                    }
+                                ));
+                                n.send_case(
+                                    &c,
+                                    &[],
+                                    Msg::AttestShare {
+                                        case_id: c.clone(),
+                                        pot: e.pot.index() as u8,
+                                        share,
+                                    },
+                                    false,
+                                );
                             }
                             Err(err) => {
                                 n.log(&format!("refused to attest {}: {err}", e.pot.name()))
@@ -165,10 +199,9 @@ fn oracle(mut n: Node) -> i32 {
                 }
             }
         }
-        let got = n.wait(Duration::from_millis(500), |env, e| {
-            Some((env.clone(), e.clone()))
-        });
-        let Some((env, _ev)) = got else { continue };
+        let Some(env) = n.wait(Duration::from_millis(500), |env, _| Some(env.clone())) else {
+            continue;
+        };
         last = Instant::now();
         let s = env.sender.clone();
         match &env.msg {
@@ -183,26 +216,47 @@ fn oracle(mut n: Node) -> i32 {
                 }
                 Err(e) => n.log(&format!("alert ignored: {e}")),
             },
-            Msg::NonceRequest { case_id } => {
+            Msg::NonceRequest { case_id, indices } => {
                 let Some(a) = alerts.get(case_id) else {
                     continue;
                 };
-                if a.caller != s {
+                if a.caller != s || indices.len() != 3 || assigned.contains_key(case_id) {
                     continue;
                 }
-                let nonces = Pot::ALL
-                    .map(|p| point_hex(&o.announce(&event_id(&a.case_id, p))))
-                    .to_vec();
+                // reserve only indices this member has not given to another case
+                let free = indices.iter().all(|j| {
+                    (*j as usize) < m.batch.r.len()
+                        && taken.get(j).map(|c| c == case_id).unwrap_or(true)
+                });
+                if !free {
+                    n.log(&format!(
+                        "nonce indices {indices:?} already reserved; refused"
+                    ));
+                    continue;
+                }
+                for j in indices {
+                    taken.insert(*j, case_id.clone());
+                }
+                assigned.insert(case_id.clone(), indices.clone());
+                let nonces = indices
+                    .iter()
+                    .map(|j| point_hex(&m.batch.r[*j as usize]))
+                    .collect();
                 n.send_case(
                     case_id,
                     std::slice::from_ref(&s),
                     Msg::NonceAssignment {
                         case_id: case_id.clone(),
+                        member: me,
+                        indices: indices.clone(),
                         nonces,
                     },
                     false,
                 );
-                n.log(&format!("nonces assigned for {}", &case_id[..8]));
+                n.log(&format!(
+                    "nonces {indices:?} reserved for {}",
+                    &case_id[..8]
+                ));
             }
             Msg::Roster { case_id, .. } => {
                 let (Some(a), Some(r)) = (alerts.get(case_id), Rostered::from_msg(&env.msg)) else {
@@ -211,7 +265,19 @@ fn oracle(mut n: Node) -> i32 {
                 if a.caller != s {
                     continue;
                 }
-                if let Some(k) = r.sealed_keys.last().and_then(|k| hex::decode(k).ok()) {
+                // the roster must use the nonces this member reserved for the case
+                let mine: Option<Vec<String>> = assigned.get(case_id).map(|v| {
+                    v.iter()
+                        .map(|j| point_hex(&m.batch.r[*j as usize]))
+                        .collect()
+                });
+                let theirs: Vec<String> = r.oracle_nonces.iter().map(point_hex).collect();
+                if mine.as_ref() != Some(&theirs) {
+                    n.log("roster ignored: oracle nonces are not the ones reserved for this case");
+                    continue;
+                }
+                let pos = r.seats.len() + m.view.members.iter().position(|x| *x == me).unwrap();
+                if let Some(k) = r.sealed_keys.get(pos).and_then(|k| hex::decode(k).ok()) {
                     if let Some(key) =
                         wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
                     {
@@ -222,7 +288,11 @@ fn oracle(mut n: Node) -> i32 {
                 reveals.remove(case_id);
                 rosters.insert(case_id.clone(), r);
             }
-            Msg::CosignRequest { case_id, tx } => {
+            Msg::CosignRequest {
+                case_id,
+                session,
+                tx,
+            } => {
                 let (Some(a), Some(r)) = (alerts.get(case_id), rosters.get(case_id)) else {
                     continue;
                 };
@@ -233,8 +303,8 @@ fn oracle(mut n: Node) -> i32 {
                     continue;
                 };
                 // co-sign only the template's incident transaction for this roster
-                let expect = case::incident_tx(a, r);
-                if t.compute_txid() != expect.compute_txid() || t.compute_txid() != r.incident_txid
+                if t.compute_txid() != case::incident_tx(a, r).compute_txid()
+                    || t.compute_txid() != r.incident_txid
                 {
                     n.log("co-signature refused: not the template's incident transaction");
                     continue;
@@ -246,19 +316,59 @@ fn oracle(mut n: Node) -> i32 {
                     &[txbuild::txout(a.funding_value, tree.script_pubkey())],
                     &tree.scripts[funding_leaf::ACCEPT],
                 );
+                digests.insert(case_id.clone(), d);
+                let (nonces, commitment) = m.commit();
+                sessions.insert((case_id.clone(), *session), nonces);
                 n.send_case(
                     case_id,
                     std::slice::from_ref(&s),
-                    Msg::Cosign {
+                    Msg::PoolCommit {
                         case_id: case_id.clone(),
-                        sig: hex::encode(o.cosign(&d)),
+                        session: *session,
+                        member: me,
+                        commitment,
                     },
                     false,
                 );
-                n.log(&format!(
-                    "co-signed incident {}",
-                    &t.compute_txid().to_string()[..8]
-                ));
+            }
+            Msg::PoolPackage {
+                case_id,
+                session,
+                package,
+            } => {
+                let (Some(a), Some(d)) = (alerts.get(case_id), digests.get(case_id)) else {
+                    continue;
+                };
+                if a.caller != s {
+                    continue;
+                }
+                let Some(nonces) = sessions.remove(&(case_id.clone(), *session)) else {
+                    continue;
+                };
+                if m.cfg.stall {
+                    n.log(&format!("stalling on co-signing session {session} (test)"));
+                    continue;
+                }
+                match m.sign(package, &nonces, d) {
+                    Some(share) => {
+                        n.send_case(
+                            case_id,
+                            std::slice::from_ref(&s),
+                            Msg::PoolSigShare {
+                                case_id: case_id.clone(),
+                                session: *session,
+                                member: me,
+                                share,
+                            },
+                            false,
+                        );
+                        n.log(&format!(
+                            "co-signed incident for {} (session {session})",
+                            &case_id[..8]
+                        ));
+                    }
+                    None => n.log("package refused: not the digest this member checked"),
+                }
             }
             Msg::BallotCommit {
                 case_id,
@@ -505,36 +615,55 @@ fn settle(
     n: &mut Node,
     a: &Alerted,
     set: &bitaid_core::presign::IncidentSet,
-    oracle_key: &str,
-    oracle_id: &str,
+    view: &PoolView,
     broadcast: bool,
 ) -> Vec<(Pot, String)> {
-    let pots: Vec<Pot> = Pot::ALL
+    let pots: Vec<u8> = Pot::ALL
         .into_iter()
         .filter(|p| a.template.pots[p.index()] > 0)
+        .map(|p| p.index() as u8)
         .collect();
-    let c = a.case_hex.clone();
-    let oid = oracle_id.to_string();
-    let got = n.collect(
+    // the nonce index of each pot, from the points the set was signed against
+    let indices: Vec<u32> = set
+        .terms
+        .oracle_nonces
+        .iter()
+        .map(|r| {
+            view.batch
+                .r
+                .iter()
+                .position(|x| x == r)
+                .map(|j| j as u32)
+                .unwrap_or(u32::MAX)
+        })
+        .collect();
+    let (got, notes) = pool::attestations(
+        n,
+        view,
+        &a.case_hex,
+        &pots,
+        &indices,
         secs(num("--settle-wait", 300u64)),
-        |env, _| match &env.msg {
-            Msg::Attestation {
-                case_id,
-                pot,
-                outcome,
-                s,
-            } if *case_id == c && env.sender == oid => Some((*pot, outcome.clone(), s.clone())),
-            _ => None,
-        },
-        |v| v.len() >= pots.len(),
     );
-    let _ = oracle_key;
+    for note in &notes {
+        n.log(note);
+    }
+    let liars: Vec<&String> = notes
+        .iter()
+        .filter(|x| x.contains("different outcome"))
+        .collect();
+    if !liars.is_empty() {
+        n.check(
+            &format!("{} attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined", liars.len()),
+            got.len() == pots.len(),
+            "",
+        );
+    }
     let mut out = Vec::new();
-    for (pot, outcome, s) in got {
+    for (pot, (m, sc)) in got {
         let p = Pot::ALL[pot as usize];
         let Some(payout) = set.payouts.iter().find(|x| {
-            x.ending.pot == p
-                && hex::encode(x.ending.message(&a.case_id, set.terms.set_version)) == outcome
+            x.ending.pot == p && x.ending.message(&a.case_id, set.terms.set_version) == m
         }) else {
             n.check(
                 &format!(
@@ -547,7 +676,6 @@ fn settle(
             continue;
         };
         let label = payout.ending.label.clone();
-        let Some(sc) = scalar_from(&s) else { continue };
         match set.complete(p, &label, sc) {
             Some(tx) => {
                 if broadcast {
@@ -755,14 +883,29 @@ fn vote(n: &mut Node, a: &Alerted, r: &Rostered, ballot: Ballot) {
 fn caller(mut n: Node) -> i32 {
     let secp = Secp256k1::new();
     n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE])]);
-    let Some((oid, okey, _)) = n.find_service("oracle", secs(120)) else {
-        n.check("oracle found on the relays", false, "");
+    let Some(view) = pool::discover(
+        &mut n,
+        &arg("--pool").unwrap_or("bitaid".into()),
+        secs(num("--setup-wait", 300u64)),
+    ) else {
+        n.check("oracle pool found and checked on the relays", false, "");
         return n.summary();
     };
+    let okey = view.key_hex();
+    n.check(
+        &format!(
+            "oracle pool found and checked: {} members, threshold {}, {} nonces",
+            view.members.len(),
+            view.t,
+            view.batch.r.len()
+        ),
+        true,
+        &okey[..16],
+    );
     let want_arch = num("--archivists", 1usize);
     let archivists = n.all_services("archivist", want_arch, secs(60));
     n.log(&format!(
-        "oracle {}…, {} archivist(s)",
+        "pool {}…, {} archivist(s)",
         &okey[..12],
         archivists.len()
     ));
@@ -934,22 +1077,13 @@ fn caller(mut n: Node) -> i32 {
         return n.summary();
     }
 
-    // ------------------------------------------------ nonces from the oracle
-    n.send_case(
-        &c,
-        std::slice::from_ref(&oid),
-        Msg::NonceRequest { case_id: c.clone() },
-        false,
-    );
-    let oid2 = oid.clone();
-    let Some(nonces) = n.wait(secs(60), |env, _| match &env.msg {
-        Msg::NonceAssignment { case_id, nonces } if *case_id == c && env.sender == oid2 => {
-            Some(nonces.clone())
+    // ------------------------------------------------ nonces reserved by the pool
+    let nonces: Vec<String> = match pool::reserve_nonces(&mut n, &view, &c) {
+        Ok((_, pts)) => pts.iter().map(point_hex).collect(),
+        Err(e) => {
+            n.check("pool reserved nonces for the case", false, &e);
+            return n.summary();
         }
-        _ => None,
-    }) else {
-        n.check("oracle assigned nonces", false, "");
-        return n.summary();
     };
 
     // ------------------------------------------------ roster and signing, re-rolled if a signer fails
@@ -989,12 +1123,14 @@ fn caller(mut n: Node) -> i32 {
                 ))
             })
             .collect();
-        sealed.push(hex::encode(wire::seal(
-            &n.keys,
-            &wire::xonly(&oid).unwrap(),
-            c.as_bytes(),
-            &case_key,
-        )));
+        for id in view.identities() {
+            sealed.push(hex::encode(wire::seal(
+                &n.keys,
+                &wire::xonly(&id).unwrap(),
+                c.as_bytes(),
+                &case_key,
+            )));
+        }
         let msg = Msg::Roster {
             case_id: c.clone(),
             set_version: version,
@@ -1054,25 +1190,6 @@ fn caller(mut n: Node) -> i32 {
 
     // ------------------------------------------------ incident transaction
     let mut inc = case::incident_tx(&a, &roster);
-    n.send_case(
-        &c,
-        std::slice::from_ref(&oid),
-        Msg::CosignRequest {
-            case_id: c.clone(),
-            tx: serialize_hex(&inc),
-        },
-        false,
-    );
-    let oid2 = oid.clone();
-    let Some(osig) = n.wait(secs(60), |env, _| match &env.msg {
-        Msg::Cosign { case_id, sig } if *case_id == c && env.sender == oid2 => {
-            hex::decode(sig).ok()
-        }
-        _ => None,
-    }) else {
-        n.check("oracle co-signed the incident transaction", false, "");
-        return n.summary();
-    };
     let leaf = &tree.scripts[funding_leaf::ACCEPT];
     let dd = txbuild::scriptspend_digest(
         &inc,
@@ -1080,6 +1197,28 @@ fn caller(mut n: Node) -> i32 {
         &[txbuild::txout(total, tree.script_pubkey())],
         leaf,
     );
+    let t_co = Instant::now();
+    let osig = match pool::cosign(&mut n, &view, &c, &serialize_hex(&inc), &dd) {
+        Ok((sig, sessions, signers)) => {
+            n.check(
+                &format!(
+                    "pool co-signed the incident (FROST, {} of {} members)",
+                    signers.len(),
+                    view.members.len()
+                ),
+                bitaid_core::oracle::verify_bip340(&view.public.xonly(), &dd, &sig),
+                &format!(
+                    "{sessions} session(s), signers {signers:?}, {:.2} s",
+                    t_co.elapsed().as_secs_f64()
+                ),
+            );
+            sig.to_vec()
+        }
+        Err(e) => {
+            n.check("pool co-signed the incident transaction", false, &e);
+            return n.summary();
+        }
+    };
     inc.input[0].witness = Witness::from_slice(&[
         osig,
         sign_bip340(&k, &dd).to_vec(),
@@ -1116,7 +1255,7 @@ fn caller(mut n: Node) -> i32 {
         &archivists,
         num("--footage-kib", 512usize) * 1024,
     );
-    let paid = settle(&mut n, &a, &set, &okey, &oid, true);
+    let paid = settle(&mut n, &a, &set, &view, true);
     if flag("--mine") {
         n.rpc.mine(1).ok();
     }
@@ -1151,10 +1290,15 @@ fn caller(mut n: Node) -> i32 {
 fn responder(mut n: Node) -> i32 {
     let secp = Secp256k1::new();
     n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE])]);
-    let Some((oid, okey, _)) = n.find_service("oracle", secs(120)) else {
-        n.check("oracle found on the relays", false, "");
+    let Some(view) = pool::discover(
+        &mut n,
+        &arg("--pool").unwrap_or("bitaid".into()),
+        secs(num("--setup-wait", 300u64)),
+    ) else {
+        n.check("oracle pool found and checked on the relays", false, "");
         return n.summary();
     };
+    let okey = view.key_hex();
     let archivists = n.all_services("archivist", num("--archivists", 1usize), secs(60));
     // ------------------------------------------------ bond
     let (bond_scoped, bond_cold) = (random_scalar(), random_scalar());
@@ -1317,7 +1461,7 @@ fn responder(mut n: Node) -> i32 {
         num("--footage-kib", 512usize) * 1024,
     );
     vote(&mut n, &a, &r, ballot_from_args(r.seats.len(), my_seat));
-    let paid = settle(&mut n, &a, &set, &okey, &oid, flag("--broadcast"));
+    let paid = settle(&mut n, &a, &set, &view, flag("--broadcast"));
     if flag("--mine") {
         n.rpc.mine(1).ok();
     }

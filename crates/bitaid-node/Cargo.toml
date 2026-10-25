@@ -11,6 +11,7 @@ bitaid-core = { path = "../bitaid-core" }
 bitaid-oracle = { path = "../bitaid-oracle" }
 bitcoin = { version = "0.32", features = ["rand-std", "serde"] }
 musig2 = { version = "0.4.1", features = ["serde"] }
+frost-secp256k1-tr = "3.0.0"
 rand = "0.8"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }

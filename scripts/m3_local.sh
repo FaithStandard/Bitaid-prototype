@@ -1,5 +1,5 @@
 #!/bin/sh
-# M3 end to end on one machine: relay, oracle, two archivists, caller, three responders (one sends a
+# M3 end to end on one machine: relay, a 4-member oracle pool, two archivists, caller, three responders (one sends a
 # bad partial signature and is dropped), all separate processes, over Nostr, on Bitcoin Core regtest.
 #   BITAID_CLI="bitcoin-cli -regtest -rpcuser=u -rpcpassword=p -rpcport=18543" \
 #   BITAID_RPC=http://u:p@127.0.0.1:18543 sh scripts/m3_local.sh
@@ -15,7 +15,11 @@ $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/n
 R=--relay; RELAY=ws://127.0.0.1:7447
 $BIN/bitaid-relay 127.0.0.1:7447 2>m3logs/relay.log & PIDS="$!"
 sleep 0.5
-BITAID_WALLET=w $BIN/bitaid-node --role oracle --name oracle $R $RELAY --exit-after 120 2>m3logs/oracle.log & PIDS="$PIDS $!"
+# oracle pool: 4 members, threshold 3; member 3 stalls on co-signing, member 4 attests a different outcome
+for i in 1 2 3 4; do
+  extra=""; [ $i = 3 ] && extra="--stall"; [ $i = 4 ] && extra="--liar"
+  BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $extra $R $RELAY --exit-after 120 2>m3logs/pool$i.log & PIDS="$PIDS $!"
+done
 for a in 1 2; do
   BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist$a $R $RELAY --listen 127.0.0.1:748$a --exit-after 120 2>m3logs/archivist$a.log & PIDS="$PIDS $!"
 done

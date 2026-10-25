@@ -101,6 +101,7 @@ dependencies = [
  "bitcoin",
  "chacha20poly1305",
  "ciborium",
+ "frost-secp256k1-tr",
  "h3o",
  "hex",
  "musig2",
