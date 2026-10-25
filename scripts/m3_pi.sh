@@ -46,7 +46,9 @@ start)
   pkill -x bitaid-relay; pkill -x bitaid-node; sleep 1
   mkdir -p m3logs; rm -f m3logs/*
   export BITAID_RPC=${BITAID_RPC:-http://bitaid:regtest@${CHAIN:-127.0.0.1}:18443}
-  R="--relay ws://127.0.0.1:7447 $EXTRA_RELAYS"; X="--exit-after 3600"
+  # RELAYS="wss://a wss://b" replaces the Pi's own relay; POOL names a fresh pool per run
+  if [ -n "$RELAYS" ]; then R=""; for u in $RELAYS; do R="$R --relay $u"; done; else R="--relay ws://127.0.0.1:7447 $EXTRA_RELAYS"; fi
+  R="$R --pool ${POOL:-bitaid}"; X="--exit-after 3600"
   nohup target/release/bitaid-relay 0.0.0.0:7447 >/dev/null 2>m3logs/relay.log </dev/null &
   sleep 1
   # oracle pool members 1 and 2 (2 stalls on co-signing); 3 runs on the tablet, 4 on the phone (4 lies)

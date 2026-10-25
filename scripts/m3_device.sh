@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 PI=${PI:-192.168.1.147}
 CHAIN=${CHAIN:-$PI}
 export BITAID_RPC=${BITAID_RPC:-http://bitaid:regtest@$CHAIN:18443}
-R="--relay ws://$PI:7447 $EXTRA_RELAYS"
+if [ -n "$RELAYS" ]; then R=""; for u in $RELAYS; do R="$R --relay $u"; done; else R="--relay ws://$PI:7447 $EXTRA_RELAYS"; fi
+R="$R --pool ${POOL:-bitaid}"
 BIN=target/release/bitaid-node
 case "$1" in
 responder)

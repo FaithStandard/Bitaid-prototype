@@ -60,7 +60,10 @@ fn send_pool(n: &mut Node, name: &str, m: Msg) {
 /// Reads the pool's setup from the relays and checks it: every listed member ready with the same key
 /// and qualified dealers, the nonce batch rebuilt from the dealers' commitments.
 pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView> {
-    n.subscribe("pool-view", vec![Filter::kinds(&[kind::ANNOUNCE])]);
+    n.subscribe(
+        "pool-view",
+        vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)],
+    );
     let nm = name.to_string();
     let end = Instant::now() + timeout;
     let mut hello: BTreeMap<u16, (String, u16)> = BTreeMap::new(); // member -> (identity, t)
@@ -210,7 +213,10 @@ fn collect_pool<T>(
 pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
     let name = cfg.name.clone();
     let me = cfg.id;
-    n.subscribe("pool-setup", vec![Filter::kinds(&[kind::ANNOUNCE])]);
+    n.subscribe(
+        "pool-setup",
+        vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)],
+    );
     std::thread::sleep(Duration::from_millis(300));
     send_pool(
         n,

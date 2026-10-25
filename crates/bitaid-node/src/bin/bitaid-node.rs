@@ -882,7 +882,7 @@ fn vote(n: &mut Node, a: &Alerted, r: &Rostered, ballot: Ballot) {
 
 fn caller(mut n: Node) -> i32 {
     let secp = Secp256k1::new();
-    n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE])]);
+    n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)]);
     let Some(view) = pool::discover(
         &mut n,
         &arg("--pool").unwrap_or("bitaid".into()),
@@ -1296,7 +1296,7 @@ fn caller(mut n: Node) -> i32 {
 
 fn responder(mut n: Node) -> i32 {
     let secp = Secp256k1::new();
-    n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE])]);
+    n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)]);
     let Some(view) = pool::discover(
         &mut n,
         &arg("--pool").unwrap_or("bitaid".into()),

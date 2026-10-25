@@ -156,6 +156,11 @@ impl Filter {
             ..Default::default()
         }
     }
+    /// Only events from the last `secs` seconds: public relays keep announcements of earlier runs.
+    pub fn recent(mut self, secs: u64) -> Filter {
+        self.since = Some(now().saturating_sub(secs));
+        self
+    }
     pub fn tag(mut self, name: char, values: &[String]) -> Filter {
         self.tags.insert(format!("#{name}"), values.to_vec());
         self
@@ -341,6 +346,18 @@ impl Client {
                     if self.seen.insert(e.id.clone()) && e.verify() {
                         return Some((sub, e));
                     }
+                }
+                // a relay refusing an event, or warning us, is worth seeing when public relays are used
+                Ok((i, RelayMsg::Ok(id, false, why))) => {
+                    let url = self.relays.get(i).map(|r| r.url.as_str()).unwrap_or("?");
+                    eprintln!(
+                        "relay {url} refused event {}: {why}",
+                        &id[..id.len().min(8)]
+                    );
+                }
+                Ok((i, RelayMsg::Notice(why))) | Ok((i, RelayMsg::Closed(_, why))) => {
+                    let url = self.relays.get(i).map(|r| r.url.as_str()).unwrap_or("?");
+                    eprintln!("relay {url}: {why}");
                 }
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => return None,
