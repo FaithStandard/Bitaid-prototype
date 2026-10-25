@@ -366,6 +366,20 @@ impl Client {
         }
     }
 
+    /// The first relay's answer to event `id`, as text (for diagnostics).
+    pub fn raw_ok(&mut self, id: &str, timeout: Duration) -> String {
+        let end = Instant::now() + timeout;
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            match self.rx.recv_timeout(left) {
+                Ok((_, RelayMsg::Ok(eid, acc, why))) if eid == id => return format!("{acc} {why}"),
+                Ok((_, RelayMsg::Notice(w))) => return format!("notice: {w}"),
+                Ok(_) => {}
+                Err(_) => return "no answer".into(),
+            }
+        }
+    }
+
     /// Waits for every relay's OK for event `id`; returns how many accepted it.
     pub fn wait_ok(&mut self, id: &str, timeout: Duration) -> usize {
         let end = Instant::now() + timeout;
