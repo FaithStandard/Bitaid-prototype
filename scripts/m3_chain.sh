@@ -1,5 +1,5 @@
 #!/bin/sh
-# Regtest Bitcoin node for the M3 device test, on a phone in Termux (Bitcoin Core 28+ needed for
+# Regtest Bitcoin node for the M3 device test, on a phone in Termux (Bitcoin Core 29+ needed for
 # zero-fee version-3 transactions with pay-to-anchor outputs). Test coins only, home network only.
 #   sh scripts/m3_chain.sh          install if needed, start, fund the test wallets
 #   sh scripts/m3_chain.sh stop
@@ -8,7 +8,7 @@ CLI="bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcp
 if [ "$1" = stop ]; then $CLI stop; exit; fi
 command -v bitcoind >/dev/null || pkg install -y bitcoin
 V=$(bitcoind -version | head -1 | sed -n 's/.*v\([0-9]*\)\..*/\1/p')
-echo "Bitcoin Core $V"; [ "${V:-0}" -ge 28 ] || { echo "NEED_CORE_28"; exit 1; }
+echo "Bitcoin Core $V"; [ "${V:-0}" -ge 29 ] || { echo "NEED_CORE_29"; exit 1; }
 mkdir -p $D
 $CLI getblockcount >/dev/null 2>&1 || bitcoind -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
   -rpcbind=0.0.0.0 -rpcallowip=192.168.1.0/24 -rpcallowip=127.0.0.1 -port=18444 -listen=0 \

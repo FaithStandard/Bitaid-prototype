@@ -144,7 +144,7 @@ Runs:
   oracle, archivist, an honest and a cheating responder on a Raspberry Pi 4. 27/28
   (`results/m3_devices_2026-10-25.txt`): the cheater dropped and the set re-signed, incident at zero fee,
   three payouts confirmed, 630,000 / 270,000 sats to the intervener and the documenter. The failure: the
-  phone could not reach the tablet's archivist (router isolates Wi-Fi clients). Needs Bitcoin Core 28+.
+  phone could not reach the tablet's archivist (router isolates Wi-Fi clients). Needs Bitcoin Core 29+ (zero-value anchors, ephemeral dust).
 
 ## Licence
 

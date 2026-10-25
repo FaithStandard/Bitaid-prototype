@@ -1,6 +1,6 @@
 //! Transactions of an incident: acceptance (the incident transaction), payouts and refunds.
 //! All are version 3 with zero fee and a pay-to-anchor output; whoever broadcasts one pays the
-//! fee with a child spending the anchor (package relay, Bitcoin Core 28+).
+//! fee with a child spending the anchor (package relay with TRUC and ephemeral dust, Bitcoin Core 29+).
 use crate::scripts::p2a;
 use bitcoin::absolute::LockTime;
 use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
