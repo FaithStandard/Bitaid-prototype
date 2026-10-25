@@ -910,6 +910,11 @@ fn caller(mut n: Node) -> i32 {
         archivists.len()
     ));
 
+    // responders find the pool at the same moment; give them time to post bonds and listen
+    let delay = num("--alert-delay", 15u64);
+    n.log(&format!("pool ready; alerting in {delay} s so responders can start listening"));
+    std::thread::sleep(secs(delay));
+
     // ------------------------------------------------ registration
     let (w, k) = (random_scalar(), even(random_scalar()));
     let xpriv =
