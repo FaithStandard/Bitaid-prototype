@@ -42,6 +42,7 @@ impl Node {
         };
         let mut client = Client::new();
         for r in relays {
+            eprintln!("[{name}] connecting to relay {r} …");
             let mut ok = false;
             for _ in 0..60 {
                 if client.add_relay(r).is_ok() {

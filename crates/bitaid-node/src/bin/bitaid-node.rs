@@ -912,7 +912,9 @@ fn caller(mut n: Node) -> i32 {
 
     // responders find the pool at the same moment; give them time to post bonds and listen
     let delay = num("--alert-delay", 15u64);
-    n.log(&format!("pool ready; alerting in {delay} s so responders can start listening"));
+    n.log(&format!(
+        "pool ready; alerting in {delay} s so responders can start listening"
+    ));
     std::thread::sleep(secs(delay));
 
     // ------------------------------------------------ registration

@@ -1,0 +1,13 @@
+Bitaid M3 with the oracle pool behind the node — 2026-10-25, home network, regtest (Core 31.1 on the phone)
+Pool: 4 members, threshold 3, 60 nonces — members 1, 2 (stalls) on a Raspberry Pi 4, 3 on a Samsung tablet, 4 (lies) on a Redmi phone
+Phone: caller + pool member 4      13/13
+Tablet: responder r1 + member 3      9/9   documenter, 270000 sats
+Pi: relay, members 1-2, archivist, responders r3 (intervener) and r4 (sends a bad partial signature)
+Case 34c39784: pool found and checked from the relays (2.1 s) → alert → 3 accepts in 0.9–2.2 s → nonces [57, 54, 17]
+reserved by 4/4 members → roster v0 → signer 3 invalid → roster v1 → set (39 payouts + 3 refunds) in 0.7 s
+→ incident co-signed by members [1, 4, 3] (FROST, 1 session, 0.41 s) → zero-fee package accepted → evidence
+→ ballots → deemed consent → member 4's three shares for a different outcome caught by phone and tablet as signed
+evidence; three honest shares combined per pot → deposit returned, reward paid (7,3), bounty split (7,3), confirmed.
+Alert to funded, pre-signed incident 23.1 s (joining window 20 s).
+Not exercised on devices this run: replacing a stalling co-signer (member 2 was not among the first three to commit);
+covered by scripts/m3_local.sh (33/33).

@@ -133,6 +133,7 @@ Specification B.2 over Nostr relays, with evidence on Blossom-compatible servers
 | `case` | Every party rebuilds the incident from the alert (which carries the signed registration) and the roster, and checks the funding output on chain |
 | `presign` (core) | `round1`/`round2`/`finish`: the whole set signed in two rounds across machines, every partial verified, a bad signer named |
 | `blossom` | BUD-01/02 server and client: uploads only with a Nostr authorisation naming the blob and a live case, from a party to it; range requests; slice roots |
+| `pool` | The M2 oracle pool behind the node: FROST key generation and a Feldman-verified nonce batch over the relays (stored events, so late nodes check the setup themselves); nonce indices reserved by t members per case; ROAST-style FROST co-signing of the incident, each member checking the transaction first; members attest from the ballots on their own and anyone combines t public shares |
 | `settle` | Deemed consent from blind ballots (commit, reveal): class per seat by 80%, the 70/30 split into buckets, the reward following the bounty; misuse or no supermajority escalates |
 | `chain` | Bitcoin Core JSON-RPC over HTTP, so a phone can use a node elsewhere; zero-fee version-3 packages with a fee-paying child |
 
@@ -145,6 +146,10 @@ Runs:
   (`results/m3_devices_2026-10-25.txt`): the cheater dropped and the set re-signed, incident at zero fee,
   three payouts confirmed, 630,000 / 270,000 sats to the intervener and the documenter. The failure: the
   phone could not reach the tablet's archivist (router isolates Wi-Fi clients). Needs Bitcoin Core 29+ (zero-value anchors, ephemeral dust).
+* With the oracle pool (4 members, threshold 3) split across the Pi (two, one stalling), the tablet and the
+  phone (one lying): phone 13/13, tablet 9/9 (`results/m3_pool_devices_2026-10-25.txt`). The pool co-signed the
+  incident in 0.41 s; the lying member's shares were caught by every party and three honest shares settled the case.
+  Local run with the pool: 33/33.
 
 ## Licence
 
