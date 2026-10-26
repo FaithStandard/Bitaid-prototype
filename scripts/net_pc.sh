@@ -13,6 +13,17 @@ L=${LOGDIR:-$WIN/pc_logs}; mkdir -p "$L"
 case "$1" in
 start)
   pkill -x bitaid-node 2>/dev/null; sleep 1
+  # Bitcoin Core 31.1: install it if missing, from the copy in the Windows folder or from bitcoincore.org,
+  # checking the release checksum either way
+  if ! $B/bitcoind -version >/dev/null 2>&1; then
+    F=bitcoin-$V-x86_64-linux-gnu.tar.gz; T=$(mktemp -d)
+    if [ -f "$WIN/$F" ] && [ -f "$WIN/SHA256SUMS" ]; then cp "$WIN/$F" "$WIN/SHA256SUMS" $T/
+    else (cd $T && curl -sSfO https://bitcoincore.org/bin/bitcoin-core-$V/$F && curl -sSfO https://bitcoincore.org/bin/bitcoin-core-$V/SHA256SUMS); fi
+    (cd $T && grep " $F\$" SHA256SUMS | sha256sum -c -) || { echo "BITCOIN_CHECKSUM_FAILED"; exit 1; }
+    tar xzf $T/$F -C $HOME && rm -rf $T
+    B=$HOME/bitcoin-$V/bin; CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
+  fi
+  $B/bitcoind -version | head -1 || { echo "BITCOIND_CANNOT_RUN"; ls -l $B; exit 1; }
   mkdir -p $D
   $CLI getblockcount >/dev/null 2>&1 || $B/bitcoind -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
       -rpcbind=127.0.0.1 -rpcallowip=127.0.0.1 -port=18444 -listen=0 -fallbackfee=0.0001 -txindex=1 -daemon
