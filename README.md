@@ -161,6 +161,10 @@ Runs:
 * **Arbitration over Tor** (same scripts; nine arbitrators on the PC, two corrupt): the liar on the tablet escalates;
   tier 1 (3 drawn from a block) was captured 2-1 by the corrupt pair; the honest intervener appealed and tier 2 (7 seats)
   reversed it 7-0; the pool attested the final verdict. 43/43 (`results/m3_arb_tor_2026-10-26.txt`). Local: `scripts/m3_arb_local.sh`.
+* **Penalties over Tor** (`CAPTURE=1`, the default of `net_pc.sh`): the captured tier 1 reversed on appeal; arb4 and arb8
+  forfeit 4x the fee from their bonds by their own pre-signed forfeitures and the pool's co-signature; the pool and the
+  archivist distribute the seizure output: half to the vindicated dissenter, half refunding the appellant's re-roll fees;
+  both refuse what the log does not call for. 51/51 (`results/m3_penalties_tor_2026-10-26.txt`).
 
 ## Licence
 

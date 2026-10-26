@@ -1,0 +1,21 @@
+Bitaid M3 arbitration penalties over the Internet, on Tor — 2026-10-26
+Same three connections as m3_arb_tor (PC at home; phone on its own data; tablet on another phone's data).
+CAPTURE=1: only arb1 (honest), arb4 and arb8 (corrupt) serve tier 1; arb1 and six other honest arbitrators tier 2.
+Phone 13/13, tablet 15/15, PC r3 21/21, r4 2/2 — 51 of 51 checks.
+Case dfec7b37: alert → 3 accepts from 3.5 s → signer 2 dropped, set v1 → pool member 2 stalled, replaced → zero-fee
+incident (alert to funded 93.7 s) → evidence pinned → attending deadlock → r1 (lying) escalates.
+Tier 1: 3 seats; each pre-signs its bond's forfeitures (2x, 2.5x, 3x, 3.5x, 4x the 20,000-sat fee into the case's
+seizure output) before it is paid; captured 2-1 for the lie. r3 appeals; tier 2: 7 seats, each pre-signs, 7-0 for
+the footage. Pool attests the tier 2 verdict; member 4's shares for another outcome caught by all three devices.
+Payouts 630,000 (r3) / 270,000 (r1).
+Penalties, collected by r3 (who paid the deciding tier): asked the pool to take 4x from arb1 (who ruled with the
+final verdict) — refused by every member (0 committed); the archivist refused a distribution paying all to r3.
+arb4 and arb8: 4x the fee (80,000 sats each) forfeited from their bonds into the seizure output, each by its
+pre-signature and a FROST co-signature of members [1, 4, 3] (the stalling member 2 left out), the rest re-bonded.
+Seizure output distributed (2 inputs, 160,000 sats) by the pool and the archivist, each after its own replay of the
+log: 80,000 to arb1 (vindicated dissenter), 80,000 to r3 (appeal subsidy toward its 175,000 sats of tier 2 fees).
+Penalty collection, request to confirmed distribution: about 60 s.
+Fixed on the way: the archive served one request at a time (an arbitrator lost a recorder's footage to a 60 s
+stall and voted blind); phone and tablet pool members replayed the case per request over Tor (~17 s) and missed
+the 15 s co-signing window — members now replay once when the case is final; lying shares watched for 20 s.
+Not yet built: momentum (penalties beyond 4x), seat forfeiture for missed deadlines, the challenge bond.
