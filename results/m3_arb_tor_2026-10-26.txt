@@ -1,0 +1,21 @@
+Bitaid M3 arbitration over the Internet, on Tor — 2026-10-26
+Same three connections as m3_tor_internet: PC at home (WSL1: chain, Core, pool members 1-2 (2 stalls), archivist,
+nine arbitrators — arb4 and arb8 corrupt, ruling for the lying side — responder r3 (intervened, may appeal), r4
+(bad partial signature)); phone on its own mobile data (caller, pool member 4 lying); tablet on another phone's data
+(pool member 3, responder r1 who documented but claims it intervened, escalates and may appeal).
+Phone 13/13, tablet 14/14, PC r3 14/14, r4 2/2 — 43 of 43 checks.
+Case e78b9a28: accepts 2.45 s after the alert → signer 2 dropped, set v1 (39 payouts + 3 refunds) in 3.0 s → pool
+member 2 stalled, replaced (2 sessions, 9.7 s) → zero-fee package → alert to funded, pre-signed incident 58.5 s →
+evidence pinned → blind ballots: seat 0 deadlocked → r1 escalates.
+Tier 1: 3 of 9 drawn from block 134 (arb4, arb8 corrupt; arb6 honest), case key sealed to the seats, 3 × 20,000 sats
+paid on chain, verdicts committed and revealed, tier commitment in an OP_RETURN: 2-1 for the lie (D,I).
+r3, ruled against, appealed. Tier 2: 7 of 9 drawn from block 137, 7 × 25,000 sats: 7-0 for the footage (I,D);
+both corrupt arbitrators happened to be left out of the draw. The pool reproduced both draws, checked fees and the
+commitment, and attested the tier 2 verdict after the 20 s window; member 4's shares for another outcome caught
+by every party. Payouts confirmed: r3 630,000 sats (intervener), r1 270,000 (documenter).
+Escalation to tier 1 verdict 54 s; escalation to attested final verdict about 118 s (pool clock 583.8 → 701.5 s).
+Penalties recorded only: tier 1's arb4 and arb8 disagree with the final ruling; arb6, the dissenter, is vindicated.
+Fixed before this run (dry run on one machine): only the escalator could appeal, so a captured first panel left the
+honest party without recourse — any party now appeals a verdict against its claim and every party follows each tier;
+a tier with no two-thirds verdict now decides nothing (the verdict below stands; a hung first panel goes on).
+Not yet built: penalties deducted from bonds, seat forfeiture, the dissenter's challenge bond, review sampling.

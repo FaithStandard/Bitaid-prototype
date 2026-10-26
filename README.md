@@ -136,6 +136,7 @@ Specification B.2 over Nostr relays, with evidence on Blossom-compatible servers
 | `blossom` | BUD-01/02 server and client: uploads only with a Nostr authorisation naming the blob and a live case, from a party to it; range requests; slice roots |
 | `pool` | The M2 oracle pool behind the node: FROST key generation and a Feldman-verified nonce batch over the relays (stored events, so late nodes check the setup themselves); nonce indices reserved by t members per case; ROAST-style FROST co-signing of the incident, each member checking the transaction first; members attest from the ballots on their own and anyone combines t public shares |
 | `settle` | Deemed consent from blind ballots (commit, reveal): class per seat by 80%, the 70/30 split into buckets, the reward following the bounty; misuse or no supermajority escalates |
+| `arb` | Arbitration (§10): panel sizes and fees per tier, the seat draw from a block hash, two-thirds verdicts, the asymmetric penalty, the tier commitment; the daemon adds seat offers with bonds checked on chain, the case key sealed to the seats, commit-reveal verdicts, appeals by any party, and hung tiers that decide nothing. Not yet: penalties taken from bonds, the challenge bond |
 | `chain` | Bitcoin Core JSON-RPC over HTTP, so a phone can use a node elsewhere; zero-fee version-3 packages with a fee-paying child |
 
 Runs:
@@ -157,6 +158,9 @@ Runs:
   an onion service. 32/33 (`results/m3_tor_internet_2026-10-26.txt`): stalling co-signer replaced, cheater dropped,
   liar caught, three payouts confirmed; alert to funded incident 67 s, to settled 148 s. The failure: the PC's own
   responder could not reach the PC's archive through its onion address.
+* **Arbitration over Tor** (same scripts; nine arbitrators on the PC, two corrupt): the liar on the tablet escalates;
+  tier 1 (3 drawn from a block) was captured 2-1 by the corrupt pair; the honest intervener appealed and tier 2 (7 seats)
+  reversed it 7-0; the pool attested the final verdict. 43/43 (`results/m3_arb_tor_2026-10-26.txt`). Local: `scripts/m3_arb_local.sh`.
 
 ## Licence
 
