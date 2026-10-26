@@ -599,9 +599,17 @@ fn pool_member(mut n: Node) -> i32 {
                         n.log(&format!("tier {tier} verdict {} committed on chain; final in {w} s unless appealed", verdict_classes(&v)));
                         ready_at.insert(case_id.clone(), Instant::now() + secs(w));
                     }
-                    None => n.log(&format!(
-                        "tier {tier}: no two-thirds verdict; the case needs a re-roll"
-                    )),
+                    // a hung tier decides nothing: the last verdict stands and the window to re-roll
+                    // it reopens; a hung first tier leaves the attending deadlock, which only a re-roll
+                    // or the refund path closes
+                    None => match verdicts.get(case_id) {
+                        Some(prev) => {
+                            let w = alerts[case_id].template.dispute_window as u64;
+                            n.log(&format!("tier {tier}: no two-thirds verdict; the tier {} verdict {} stands, final in {w} s unless re-rolled", tier - 1, verdict_classes(prev)));
+                            ready_at.insert(case_id.clone(), Instant::now() + secs(w));
+                        }
+                        None => n.log(&format!("tier {tier}: no two-thirds verdict; the deadlock stands until a party re-rolls it, else the refund path")),
+                    },
                 }
             }
             Msg::BallotCommit {
@@ -1393,13 +1401,62 @@ fn escalate_tier(
                 &format!("{:.1} s from escalation", t0.elapsed().as_secs_f64()),
             );
         }
+        // a hung panel is a legitimate result (§10.5): it decides nothing, the last verdict stands
         None => n.check(
-            &format!("tier {tier}: two-thirds verdict"),
-            false,
-            "hung panel",
+            &format!("tier {tier}: no two-thirds verdict, so the tier decides nothing and the last verdict stands"),
+            true,
+            &format!("{:.1} s from escalation", t0.elapsed().as_secs_f64()),
         ),
     }
     verdict
+}
+
+/// Follows a tier someone else escalated: its panel, the revealed verdicts, the two-thirds verdict.
+/// Returns None if no one escalates that tier within `start`, Some(None) if the tier hangs.
+fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, start: Duration) -> Option<Option<Ballot>> {
+    let c = a.case_hex.clone();
+    let cc = c.clone();
+    n.wait(start, |env, _| match &env.msg {
+        Msg::Escalate {
+            case_id, tier: t, ..
+        } if *case_id == cc && *t == tier => Some(()),
+        _ => None,
+    })?;
+    n.log(&format!(
+        "tier {tier} opened by another party; following it"
+    ));
+    let cc = c.clone();
+    let seats = n.wait(secs(600), |env, _| match &env.msg {
+        Msg::Seated {
+            case_id,
+            tier: t,
+            seats,
+            ..
+        } if *case_id == cc && *t == tier => Some(seats.clone()),
+        _ => None,
+    })?;
+    let (cc, ss) = (c.clone(), seats.clone());
+    let mut seen = std::collections::HashSet::new();
+    let votes: Vec<Ballot> = n.collect(
+        secs(num("--verdict-wait", 600u64)),
+        |env, _| match &env.msg {
+            Msg::VerdictReveal {
+                case_id,
+                tier: t,
+                verdict,
+                ..
+            } if *case_id == cc
+                && *t == tier
+                && ss.contains(&env.sender)
+                && seen.insert(env.sender.clone()) =>
+            {
+                Some(verdict.clone())
+            }
+            _ => None,
+        },
+        |v| v.len() >= seats.len(),
+    );
+    Some(bitaid_node::arb::supermajority(seats.len(), &votes))
 }
 
 fn verdict_classes(v: &Ballot) -> String {
@@ -2330,27 +2387,76 @@ fn responder(mut n: Node) -> i32 {
     );
     let my_ballot = ballot_from_args(r.seats.len(), my_seat);
     vote(&mut n, &a, &r, my_ballot.clone());
-    // --escalate: if the attending vote does not settle the case, take it to arbitration (§10.1);
-    // --appeal: if the panel rules against this attendee's claim, re-roll once to the next tier (§10.5)
-    if flag("--escalate") {
+    // --escalate: if the attending vote does not settle the case, take it to arbitration (§10.1).
+    // --appeal: re-roll a verdict that rules against this attendee's claim to the next tier (§10.5),
+    // up to --max-tier. Every party follows each tier, including appeals filed by others.
+    if flag("--escalate") || flag("--appeal") {
         let ballots = collect_reveals(&mut n, &a, &r);
         if let Decision::Escalate(why) =
             decide(r.seats.len(), a.template.pots, &a.template, &ballots)
         {
-            n.check(
-                &format!("attending vote did not settle ({why}); escalating to arbitration"),
-                true,
-                "",
-            );
+            let max_tier = num("--max-tier", 2u32);
             let mut tier = 1;
-            while let Some(v) = escalate_tier(&mut n, &a, &view, tier, &why) {
+            let mut verdict = if flag("--escalate") {
+                n.check(
+                    &format!("attending vote did not settle ({why}); escalating to arbitration"),
+                    true,
+                    "",
+                );
+                escalate_tier(&mut n, &a, &view, 1, &why)
+            } else {
+                n.log(&format!(
+                    "attending vote did not settle ({why}); following the arbitration"
+                ));
+                watch_tier(&mut n, &a, 1, secs(600)).flatten()
+            };
+            let mut standing: Option<Ballot> = None;
+            loop {
+                match verdict.take() {
+                    Some(v) => standing = Some(v),
+                    None => n.log(&format!(
+                        "tier {tier}: no two-thirds verdict; {}",
+                        if standing.is_some() {
+                            "the last verdict stands"
+                        } else {
+                            "the deadlock stands"
+                        }
+                    )),
+                }
+                let Some(v) = standing.clone() else {
+                    // a hung first panel leaves the case undecided, like a deadlocked attending vote:
+                    // the party that escalated takes it on to the next tier
+                    if flag("--escalate") && tier < max_tier {
+                        tier += 1;
+                        n.check(
+                            &format!("no verdict yet; taking the case on to tier {tier}"),
+                            true,
+                            "",
+                        );
+                        verdict = escalate_tier(&mut n, &a, &view, tier, "hung panel");
+                        continue;
+                    }
+                    match watch_tier(
+                        &mut n,
+                        &a,
+                        tier + 1,
+                        secs(a.template.dispute_window as u64 + 10),
+                    ) {
+                        Some(v2) => {
+                            tier += 1;
+                            verdict = v2;
+                            continue;
+                        }
+                        None => break,
+                    }
+                };
                 let mine_ok = v
                     .acts
                     .get(my_seat)
                     .map(|x| x.class == my_ballot.acts[my_seat].class)
                     .unwrap_or(false);
                 n.log(&format!(
-                    "tier {tier} verdict: {} — {}",
+                    "standing verdict after tier {tier}: {} — {}",
                     verdict_classes(&v),
                     if mine_ok {
                         "upholds my claim"
@@ -2358,11 +2464,29 @@ fn responder(mut n: Node) -> i32 {
                         "against my claim"
                     }
                 ));
-                if !mine_ok && flag("--appeal") && tier == 1 {
+                if !mine_ok && flag("--appeal") && tier < max_tier {
                     tier += 1;
+                    n.check(
+                        &format!("appealing the verdict against my claim to tier {tier}"),
+                        true,
+                        "",
+                    );
+                    verdict = escalate_tier(&mut n, &a, &view, tier, "appeal");
                     continue;
                 }
-                break;
+                // another party may appeal within the window; follow it if so
+                match watch_tier(
+                    &mut n,
+                    &a,
+                    tier + 1,
+                    secs(a.template.dispute_window as u64 + 10),
+                ) {
+                    Some(v2) => {
+                        tier += 1;
+                        verdict = v2;
+                    }
+                    None => break,
+                }
             }
         }
     }
