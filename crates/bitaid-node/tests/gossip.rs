@@ -113,4 +113,8 @@ fn socks5_dial_passes_the_name_unresolved() {
         dial(onion, None).is_err(),
         "an onion address is never dialled without Tor"
     );
+    // a local address is dialled directly even when Tor is configured (Tor refuses local targets)
+    let local = TcpListener::bind("127.0.0.1:0").unwrap();
+    let la = local.local_addr().unwrap().to_string();
+    assert!(dial(&la, Some("127.0.0.1:1")).is_ok());
 }

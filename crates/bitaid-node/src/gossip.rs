@@ -91,12 +91,14 @@ fn split_addr(a: &str) -> Option<(String, u16)> {
 pub fn dial(addr: &str, socks: Option<&str>) -> std::io::Result<TcpStream> {
     let (host, port) =
         split_addr(addr).ok_or_else(|| std::io::Error::other("address must be host:port"))?;
+    // onion addresses go through Tor; anything else (a Core on the same machine, a LAN test) directly,
+    // since Tor refuses to connect to local addresses
     match socks {
-        Some(p) => socks5_connect(p, &host, port),
+        Some(p) if host.ends_with(".onion") => socks5_connect(p, &host, port),
         None if host.ends_with(".onion") => {
             Err(std::io::Error::other("an onion address needs --socks"))
         }
-        None => {
+        _ => {
             let sa = (host.as_str(), port)
                 .to_socket_addrs()?
                 .next()
