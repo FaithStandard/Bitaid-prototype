@@ -605,7 +605,7 @@ pub fn cosign(
         );
         let (c, v, ex) = (case.to_string(), view.clone(), excluded.clone());
         let commits = n.collect(
-            Duration::from_secs(15),
+            Duration::from_secs(30),
             |env, _| match &env.msg {
                 Msg::PoolCommit {
                     case_id,
@@ -626,6 +626,14 @@ pub fn cosign(
             |got| got.len() >= v.t,
         );
         if commits.len() < view.t {
+            // members still busy (replaying the case, on a slow link) may answer the next session
+            if session + 1 < first + 4 {
+                n.log(&format!(
+                    "session {session}: only {} members committed; trying again",
+                    commits.len()
+                ));
+                continue;
+            }
             return Err(format!("only {} members committed", commits.len()));
         }
         let chosen: Vec<u16> = commits.iter().map(|x| x.0).collect();
@@ -704,14 +712,14 @@ pub fn attestations(
     let mut done: BTreeMap<u8, ([u8; 32], Scalar)> = BTreeMap::new();
     let mut notes = vec![];
     let end = Instant::now() + timeout;
-    // once every pot has combined, keep listening briefly for the remaining members' shares: a valid
+    // once every pot has combined, keep listening (20 s: over Tor a member can lag) for the remaining members' shares: a valid
     // share for another outcome is evidence against its member and is recorded, not ignored
     let mut linger: Option<Instant> = None;
     loop {
         let all_in =
             by_pot.values().map(|v| v.len()).sum::<usize>() >= pots.len() * view.members.len();
         if done.len() == pots.len() {
-            let l = *linger.get_or_insert(Instant::now() + Duration::from_secs(3));
+            let l = *linger.get_or_insert(Instant::now() + Duration::from_secs(20));
             if all_in || Instant::now() >= l {
                 break;
             }

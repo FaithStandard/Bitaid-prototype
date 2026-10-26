@@ -172,6 +172,10 @@ fn pool_member(mut n: Node) -> i32 {
     let mut reveals: HashMap<String, BTreeMap<String, Ballot>> = HashMap::new();
     let mut ready_at: HashMap<String, Instant> = HashMap::new();
     let mut done: std::collections::HashSet<String> = Default::default();
+    // per final case, the forfeitures and distribution inputs its replay calls for (computed once)
+    #[allow(clippy::type_complexity)]
+    let mut due_arb: HashMap<String, Vec<(bitcoin::Txid, usize, [u8; 32], String)>> =
+        HashMap::new();
     // arbitration, per case: the current tier, who escalated it and at what height
     let mut esc: HashMap<String, (u32, String, u32)> = HashMap::new();
     let mut offers: HashMap<(String, u32), HashMap<String, (bool, String)>> = HashMap::new(); // sender -> (bond ok, payout)
@@ -233,6 +237,12 @@ fn pool_member(mut n: Node) -> i32 {
                                 n.log(&format!("refused to attest {}: {err}", e.pot.name()))
                             }
                         }
+                    }
+                    // an arbitrated case: replay it now, so co-signing its penalties later is immediate
+                    if verdicts.contains_key(&c) {
+                        let list = arb_due(&n, a, r);
+                        n.log(&format!("case {}: the final ruling calls for {} co-signature(s) on forfeitures and the seizure distribution", &c[..8], list.len()));
+                        due_arb.insert(c.clone(), list);
                     }
                     done.insert(c);
                 }
@@ -358,8 +368,17 @@ fn pool_member(mut n: Node) -> i32 {
                 } else if done.contains(case_id) {
                     // after the case is final: a forfeiture or the seizure distribution, only if this
                     // member's own replay of the log calls for exactly that transaction
-                    match arb_due(&n, a, r, &t, *input as usize) {
-                        Some((d, what)) => {
+                    if !due_arb.contains_key(case_id) {
+                        let list = arb_due(&n, a, r);
+                        due_arb.insert(case_id.clone(), list);
+                    }
+                    let id = t.compute_txid();
+                    match due_arb[case_id]
+                        .iter()
+                        .find(|x| x.0 == id && x.1 == *input as usize)
+                        .cloned()
+                    {
+                        Some((_, _, d, what)) => {
                             n.log(&format!("co-signing {what} for {}", &case_id[..8]));
                             d
                         }
@@ -1616,42 +1635,43 @@ fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, start: Duration) -> Option<O
     Some(bitaid_node::arb::supermajority(seats.len(), &votes))
 }
 
-/// What a final case calls for, as this node's own replay of the log computes it: one of the
-/// forfeitures its ruling settles (input 0), or an input of its seizure output's distribution.
-fn arb_due(
-    n: &Node,
-    a: &Alerted,
-    r: &Rostered,
-    t: &Transaction,
-    input: usize,
-) -> Option<([u8; 32], String)> {
-    let rp = arb::Replay::build(&n.history, a, r, &n.rpc)?;
+/// What a final case calls for, as this node's own replay of the log computes it: the forfeitures
+/// its ruling settles (input 0 each) and every input of its seizure output's distribution, as
+/// (txid, input, digest, description). Computed once per case and kept.
+fn arb_due(n: &Node, a: &Alerted, r: &Rostered) -> Vec<(bitcoin::Txid, usize, [u8; 32], String)> {
+    let Some(rp) = arb::Replay::build(&n.history, a, r, &n.rpc) else {
+        return vec![];
+    };
     let pens = rp.penalties();
-    let id = t.compute_txid();
-    if let Some(p) = pens
+    let mut out: Vec<(bitcoin::Txid, usize, [u8; 32], String)> = pens
         .iter()
-        .find(|p| p.tx.compute_txid() == id && input == 0)
-    {
-        return Some((
-            p.digest,
-            format!(
-                "the forfeiture of {} sats ({:.1}× the fee) from the bond of {}",
-                p.amount,
-                p.step as f64 / 10.0,
-                &p.arbitrator[..8]
-            ),
-        ));
-    }
-    let (dist, prev) = rp.distribution(&pens)?;
-    if dist.compute_txid() == id && input < dist.input.len() {
-        return rp.distribution_digest(&dist, &prev, input).map(|d| {
+        .map(|p| {
             (
-                d,
-                format!("input {input} of the seizure output's distribution"),
+                p.tx.compute_txid(),
+                0,
+                p.digest,
+                format!(
+                    "the forfeiture of {} sats ({:.1}× the fee) from the bond of {}",
+                    p.amount,
+                    p.step as f64 / 10.0,
+                    &p.arbitrator[..8]
+                ),
             )
-        });
+        })
+        .collect();
+    if let Some((dist, prev)) = rp.distribution(&pens) {
+        for i in 0..dist.input.len() {
+            if let Some(d) = rp.distribution_digest(&dist, &prev, i) {
+                out.push((
+                    dist.compute_txid(),
+                    i,
+                    d,
+                    format!("input {i} of the seizure output's distribution"),
+                ));
+            }
+        }
     }
-    None
+    out
 }
 
 fn verdict_classes(v: &Ballot) -> String {
