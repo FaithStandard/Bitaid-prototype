@@ -3,6 +3,8 @@
 # local ports, and prints the onion address.  sh scripts/tor_up.sh 7700 7480
 # Tor's SOCKS port for outgoing onion connections is TOR_SOCKS (default 9160).
 D=$HOME/bitaid-tor; S=${TOR_SOCKS:-9160}
+# NO_TOR=1: a dry run on one machine without Tor (services reached at 127.0.0.1)
+if [ -n "$NO_TOR" ]; then echo "TOR_READY (dry run, no Tor)"; [ $# -gt 0 ] && echo "ONION=127.0.0.1"; exit 0; fi
 command -v tor >/dev/null || { [ -n "$PREFIX" ] && pkg install -y tor; }
 command -v tor >/dev/null || { echo "TOR_NOT_INSTALLED"; exit 1; }
 mkdir -p $D/hs $D/data; chmod 700 $D/hs
