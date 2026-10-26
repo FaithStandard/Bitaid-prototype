@@ -24,15 +24,25 @@ for i in 1 2 3 4 5 6 7 8 9; do
   # CAPTURE=1: a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
   # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
   if [ -n "$CAPTURE" ]; then case $i in 1) extra="--tiers 1,2";; 4|8) extra="--corrupt --tiers 1";; *) extra="--tiers 2";; esac; fi
-  BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --exit-after 300 2>$L/arb$i.log & PIDS="$PIDS $!"
+  # CHALLENGE=1: no party appeals; arb1, the honest dissenter, stakes a challenge bond and opens tier 2 itself
+  [ -n "$CHALLENGE" ] && [ $i = 1 ] && extra="$extra --challenge"
+  # (the challenger cannot sit on the tier it opens, so the corrupt pair also serve tier 2: 6 honest of 8)
+  [ -n "$CHALLENGE" ] && [ -n "$CAPTURE" ] && { [ $i = 4 ] || [ $i = 8 ]; } && extra="--corrupt --tiers 1,2"
+  # CHALLENGE=bad: an honest tier 1 (arb1, arb2) outvotes corrupt arb4, which challenges anyway and loses its bond
+  if [ "$CHALLENGE" = bad ]; then case $i in 1|2) extra="--tiers 1,2";; 4) extra="--corrupt --tiers 1 --challenge";; 8) extra="--corrupt --tiers 2";; *) extra="--tiers 2";; esac; fi
+  BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 300 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done
 sleep 2
 COMMON="$P --mine --settle-wait 600"
-BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D --appeal --greedy --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
-BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate --appeal --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
+R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
+R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
+BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
+BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
 BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-window 8 --alert-delay 4 > $L/caller.out 2>$L/caller.log
 for p in $RP; do wait $p; done
 kill $PIDS 2>/dev/null
-cat $L/caller.out $L/r1.out $L/r3.out | tee arb_result.txt
+[ "$CHALLENGE" = bad ] && CHALLENGER=4
+[ -n "$CHALLENGE" ] && for i in $(seq 1 150); do grep -q "passed" $L/arb${CHALLENGER:-1}.out 2>/dev/null && break; sleep 2; done
+cat $L/caller.out $L/r1.out $L/r3.out $L/arb${CHALLENGER:-1}.out | tee arb_result.txt
 grep -h "FAIL" $L/*.out >/dev/null && exit 1 || exit 0

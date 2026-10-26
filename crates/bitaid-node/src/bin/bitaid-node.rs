@@ -184,11 +184,34 @@ fn pool_member(mut n: Node) -> i32 {
     let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
     let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut verdicts: HashMap<String, Ballot> = HashMap::new();
+    #[allow(clippy::type_complexity)]
+    let mut lapse: HashMap<String, (Instant, Option<(u32, String, u32)>)> = HashMap::new();
     let idle = num("--exit-after", 900u64);
     let mut last = Instant::now();
     loop {
         if last.elapsed() > secs(idle) {
             return 0;
+        }
+        let lapsed: Vec<String> = lapse
+            .iter()
+            .filter(|(_, (t, _))| Instant::now() >= *t)
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in lapsed {
+            let (_, prev) = lapse.remove(&c).unwrap();
+            match prev {
+                Some(p) => esc.insert(c.clone(), p),
+                None => esc.remove(&c),
+            };
+            if verdicts.contains_key(&c) {
+                n.log(&format!(
+                    "case {}: the escalation was never seated and lapses; the last verdict stands",
+                    &c[..8]
+                ));
+                ready_at.insert(c.clone(), Instant::now());
+            } else {
+                n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", &c[..8]));
+            }
         }
         // deemed consent: every seat revealed and the dispute window has passed; each member reads
         // the outcome from the ballots itself and releases its own share
@@ -450,13 +473,34 @@ fn pool_member(mut n: Node) -> i32 {
                     continue;
                 };
                 let cur = esc.get(case_id).map(|x| x.0).unwrap_or(0);
-                // only a bonded party to the case, and only the next tier
-                if *tier != cur + 1
-                    || !(a.caller == s || r.seats.contains(&s))
-                    || done.contains(case_id)
-                {
+                // only the next tier, by a bonded party to the case or by a dissenting arbitrator of the
+                // tier below who staked a challenge bond (§10.4), as this member's replay of the log finds
+                let party = a.caller == s || r.seats.contains(&s);
+                let challenger = !party
+                    && arb::Replay::build(&n.history, a, r, &n.rpc)
+                        .and_then(|rp| {
+                            rp.tiers
+                                .get(tier)
+                                .map(|t| t.escalator == s && t.challenge.is_some())
+                        })
+                        .unwrap_or(false);
+                if *tier != cur + 1 || !(party || challenger) || done.contains(case_id) {
                     continue;
                 }
+                if challenger {
+                    n.log(&format!(
+                        "case {}: challenge bond checked; the dissenter opens tier {tier}",
+                        &case_id[..8]
+                    ));
+                }
+                // an escalation whose panel is never seated lapses, and the verdict below stands
+                lapse.insert(
+                    case_id.clone(),
+                    (
+                        Instant::now() + secs(num("--seat-wait", 300u64)),
+                        esc.get(case_id).cloned(),
+                    ),
+                );
                 esc.insert(case_id.clone(), (*tier, s.clone(), n.rpc.height()));
                 ready_at.remove(case_id);
                 n.log(&format!(
@@ -532,6 +576,7 @@ fn pool_member(mut n: Node) -> i32 {
                     bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
                 if block_ok && offers_ok && draw_ok {
                     panels.insert((case_id.clone(), *tier), seats.clone());
+                    lapse.remove(case_id);
                     n.log(&format!("tier {tier} panel of {} checked: block {height}, draw reproduced, bonds above twice the case value", seats.len()));
                 } else {
                     n.log(&format!("tier {tier} panel rejected: block {block_ok}, offers {offers_ok}, draw {draw_ok}"));
@@ -1460,30 +1505,26 @@ fn escalate_tier(
                 Msg::Forfeits {
                     case_id,
                     tier: t,
+                    stake,
+                    value,
                     sigs,
                 } if *case_id == cc && *t == tier && ss.contains(&env.sender) => {
-                    Some((env.sender.clone(), sigs.clone()))
+                    Some((env.sender.clone(), stake.clone(), *value, sigs.clone()))
                 }
                 _ => None,
             },
             |v| v.len() >= seats.len(),
         );
-        for (who, sigs) in got {
+        for (who, stake, value, sigs) in got {
             let Some(b) = offers.iter().find(|o| o.0 == who).map(|o| o.2.clone()) else {
                 continue;
             };
-            let ds = b.forfeit_digests(&oxo, fee, &spk);
-            if sigs.len() == ds.len()
-                && ds
-                    .iter()
-                    .zip(&sigs)
-                    .all(|(d, g)| arb::schnorr_ok(&b.scoped, d, g))
-            {
+            if arb::verify_forfeits(&b, &stake, value, &sigs, &oxo, fee, &spk, &n.rpc).is_some() {
                 good.insert(who);
             }
         }
         n.check(
-            &format!("tier {tier}: every seat pre-signed its bond's forfeitures (2× to 4× the {fee}-sat fee, into the case's seizure output)"),
+            &format!("tier {tier}: every seat set aside a stake of 4× the {fee}-sat fee under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output)"),
             good.len() == seats.len(),
             &format!("{} of {}", good.len(), seats.len()),
         );
@@ -1702,9 +1743,8 @@ fn arbitrator(mut n: Node) -> i32 {
     let (bs, bc) = (random_scalar(), random_scalar());
     let bf = n.rpc.height() + 52_560;
     let bt = outputs::bond(&secp, &xo(&bs), &xo(&bc), &wire::xonly(&okey).unwrap(), bf);
-    let mut bond_value = num("--bond", 10_000_000u64);
-    let mut forfeits_signed: Vec<(bitcoin::Txid, u64)> = vec![];
-    let mut bond = match n.rpc.fund(&bt.script_pubkey(), bond_value) {
+    let bond_value = num("--bond", 10_000_000u64);
+    let bond = match n.rpc.fund(&bt.script_pubkey(), bond_value) {
         Ok(op) => op,
         Err(e) => {
             n.log(&format!("bond not posted: {e}"));
@@ -1734,11 +1774,112 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut reveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut mine: HashMap<(String, u32), (Ballot, [u8; 32])> = HashMap::new();
     let mut revealed: std::collections::HashSet<(String, u32)> = Default::default();
+    // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
+    let mut challenge_at: HashMap<(String, u32), Instant> = HashMap::new();
     let idle = num("--exit-after", 3600u64);
     let mut last = Instant::now();
     loop {
         if last.elapsed() > secs(idle) {
             return 0;
+        }
+        let due: Vec<(String, u32)> = challenge_at
+            .iter()
+            .filter(|(_, t)| Instant::now() >= **t)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for (c, tier) in due {
+            challenge_at.remove(&(c.clone(), tier));
+            if escalator.contains_key(&(c.clone(), tier + 1)) {
+                n.log(&format!(
+                    "tier {} opened by a party; no challenge needed",
+                    tier + 1
+                ));
+                continue;
+            }
+            let (Some(a), Some(r)) = (alerts.get(&c).cloned(), rosters.get(&c).cloned()) else {
+                continue;
+            };
+            let oxo = wire::xonly(&okey).unwrap();
+            let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo) else {
+                continue;
+            };
+            // the challenge bond: a separate output under this bond's script, its forfeiture pre-signed
+            let value = arb::CHALLENGE_STEPS * a.template.arb_fee / 10;
+            let op = match n.rpc.fund(&bt.script_pubkey(), value) {
+                Ok(op) => op,
+                Err(e) => {
+                    n.check("challenge bond posted", false, &e);
+                    continue;
+                }
+            };
+            n.rpc.mine(1).ok();
+            let stake = arb::Bond {
+                op,
+                value,
+                scoped: xo(&bs),
+                cold: xo(&bc),
+                fallback: bf,
+                payout: payout.clone(),
+            };
+            let (_, d) = stake.forfeit_all(&oxo, &st.script_pubkey());
+            n.send_case(
+                &c,
+                &[],
+                Msg::Challenge {
+                    case_id: c.clone(),
+                    tier: tier + 1,
+                    stake: op.to_string(),
+                    value,
+                    sig: hex::encode(sign_bip340(&bs, &d)),
+                },
+                false,
+            );
+            n.check(
+                &format!("dissented on tier {tier} and no party appealed: challenge bond of {value} sats (3× the case fee) staked, its forfeiture pre-signed; opening tier {}", tier + 1),
+                true,
+                &op.to_string()[..16],
+            );
+            let v = escalate_tier(&mut n, &a, &view, tier + 1, "challenge bond");
+            let mine_v = mine.get(&(c.clone(), tier)).map(|x| arb::verdict_key(&x.0));
+            let upheld = v
+                .as_ref()
+                .map(|v| Some(arb::verdict_key(v)) == mine_v)
+                .unwrap_or(false);
+            n.check(
+                &format!(
+                    "tier {}: the larger panel {} the challenge",
+                    tier + 1,
+                    if upheld { "upheld" } else { "did not uphold" }
+                ),
+                true,
+                &v.as_ref()
+                    .map(verdict_classes)
+                    .unwrap_or("no verdict".into()),
+            );
+            // once the pool has attested the final outcome, collect the seizure output as the party
+            // that paid for the deciding tier
+            let cc = c.clone();
+            let t = view.t;
+            let mut who = std::collections::HashSet::new();
+            let got = n.collect(
+                secs(a.template.dispute_window as u64 + 600),
+                |env, _| match &env.msg {
+                    Msg::AttestShare { case_id, .. }
+                        if *case_id == cc && who.insert(env.sender.clone()) =>
+                    {
+                        Some(())
+                    }
+                    _ => None,
+                },
+                |v| v.len() >= t,
+            );
+            n.check(
+                "the pool attested the final outcome",
+                got.len() >= t,
+                &format!("{} members", got.len()),
+            );
+            collect_seizure(&mut n, &a, &r, &view);
+            n.summary();
         }
         let Some(env) = n.wait(secs(2), |env, _| Some(env.clone())) else {
             continue;
@@ -1771,6 +1912,9 @@ fn arbitrator(mut n: Node) -> i32 {
                 let Some(a) = alerts.get(&case_id) else {
                     continue;
                 };
+                if s == me {
+                    continue;
+                }
                 escalator.insert((case_id.clone(), tier), s);
                 // --tiers 1,2: the tiers this arbitrator serves (an operator's choice of workload)
                 if let Some(ts) = arg("--tiers") {
@@ -1779,21 +1923,6 @@ fn arbitrator(mut n: Node) -> i32 {
                     }
                 }
                 let value: u64 = a.template.pots.iter().sum();
-                // a forfeiture taken from the bond leaves the rest re-bonded as output 1 of that transaction
-                if n.rpc.utxo(&bond).is_none() {
-                    if let Some((txid, v)) = forfeits_signed
-                        .iter()
-                        .find(|(t, _)| n.rpc.utxo(&OutPoint { txid: *t, vout: 1 }).is_some())
-                        .cloned()
-                    {
-                        bond = OutPoint { txid, vout: 1 };
-                        bond_value = v;
-                        n.log(&format!(
-                            "bond reduced by a forfeiture; {} sats remain bonded",
-                            v
-                        ));
-                    }
-                }
                 if bond_value < 2 * value {
                     n.log("not eligible: bond below twice the case value");
                     continue;
@@ -1858,13 +1987,23 @@ fn arbitrator(mut n: Node) -> i32 {
                                 break 'forfeit;
                             };
                             let fee = arb::seat_fee(a.template.arb_fee, tier);
+                            // the seat's stake: its own output, so forfeitures pre-signed for seats
+                            // held at once never spend the same coin
+                            let value = arb::SEAT_STAKE_STEPS * fee / 10;
+                            let sop = match n.rpc.fund(&me_bond.tree(&oxo).script_pubkey(), value) {
+                                Ok(op) => op,
+                                Err(e) => {
+                                    n.log(&format!("seat stake not posted: {e}"));
+                                    break 'forfeit;
+                                }
+                            };
+                            n.rpc.mine(1).ok();
+                            let stake = me_bond.stake(sop, value);
                             let mut sigs = vec![];
                             for stp in arb::STEPS {
-                                let (tx, d) =
-                                    me_bond.penalty_tx(&oxo, stp * fee / 10, &st.script_pubkey());
+                                let (_, d) =
+                                    stake.penalty_tx(&oxo, stp * fee / 10, &st.script_pubkey());
                                 sigs.push(hex::encode(sign_bip340(&bs, &d)));
-                                forfeits_signed
-                                    .push((tx.compute_txid(), bond_value - stp * fee / 10));
                             }
                             if !flag("--no-forfeits") {
                                 n.send_case(
@@ -1873,6 +2012,8 @@ fn arbitrator(mut n: Node) -> i32 {
                                     Msg::Forfeits {
                                         case_id: case_id.clone(),
                                         tier,
+                                        stake: sop.to_string(),
+                                        value,
                                         sigs,
                                     },
                                     false,
@@ -2048,6 +2189,32 @@ fn arbitrator(mut n: Node) -> i32 {
                             },
                             true,
                         );
+                    }
+                }
+            }
+            Msg::TierCommitted { case_id, tier, .. } => {
+                let key = (case_id.clone(), tier);
+                if !flag("--challenge") || tier >= num("--max-tier", 2u32) {
+                    continue;
+                }
+                let (Some(list), Some((my, _)), Some(seats), Some(a)) = (
+                    reveals.get(&key),
+                    mine.get(&key),
+                    seated.get(&key),
+                    alerts.get(&case_id),
+                ) else {
+                    continue;
+                };
+                let votes: Vec<Ballot> = list.iter().map(|x| x.1.clone()).collect();
+                if let Some(v) = arb::supermajority(seats.len(), &votes) {
+                    if arb::verdict_key(&v) != arb::verdict_key(my) {
+                        let w = a.template.dispute_window as u64 / 2;
+                        n.log(&format!(
+                            "dissented on tier {tier} ({} against my {}); challenging in {w} s unless a party appeals",
+                            verdict_classes(&v),
+                            verdict_classes(my)
+                        ));
+                        challenge_at.insert(key, Instant::now() + secs(w));
                     }
                 }
             }
@@ -2884,15 +3051,24 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
         );
         session += 10;
         ok_all &= res.is_ok();
-        n.check(
-            &format!(
-                "tier {} arbitrator {}: {:.1}× the {}-sat fee ({} sats) forfeited from its bond into the case's seizure output by its pre-signed forfeiture and the pool's co-signature",
+        let what = if p.challenge {
+            format!(
+                "arbitrator {}: its challenge bond ({} sats) forfeited, the larger panel having ruled against it,",
+                &p.arbitrator[..8],
+                p.amount
+            )
+        } else {
+            format!(
+                "tier {} arbitrator {}: {:.1}× the {}-sat fee ({} sats) forfeited from its stake",
                 p.tier,
                 &p.arbitrator[..8],
                 p.step as f64 / 10.0,
                 arb::seat_fee(rp.base_fee, p.tier),
                 p.amount
-            ),
+            )
+        };
+        n.check(
+            &format!("{what} into the case's seizure output by its pre-signed forfeiture and the pool's co-signature"),
             res.is_ok(),
             &match &res {
                 Ok((t, signers)) => format!("{} (pool members {signers:?})", &t.to_string()[..16]),

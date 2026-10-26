@@ -190,13 +190,39 @@ impl Bond {
         seizure: &ScriptBuf,
     ) -> (Transaction, [u8; 32]) {
         let t = self.tree(oracle);
-        let tx = txbuild::payout(
-            self.op,
-            &[
+        let outs = if amount >= self.value {
+            vec![(self.value, seizure.clone())]
+        } else {
+            vec![
                 (amount, seizure.clone()),
                 (self.value - amount, t.script_pubkey()),
-            ],
+            ]
+        };
+        let tx = txbuild::payout(self.op, &outs);
+        let d = txbuild::scriptspend_digest(
+            &tx,
+            0,
+            &[txbuild::txout(self.value, t.script_pubkey())],
+            &t.scripts[bond_leaf::FORFEIT],
         );
+        (tx, d)
+    }
+    /// The same keys holding another output (a challenge bond).
+    pub fn stake(&self, op: OutPoint, value: u64) -> Bond {
+        Bond {
+            op,
+            value,
+            ..self.clone()
+        }
+    }
+    /// Forfeits the whole output into the seizure output (a challenge bond).
+    pub fn forfeit_all(
+        &self,
+        oracle: &XOnlyPublicKey,
+        seizure: &ScriptBuf,
+    ) -> (Transaction, [u8; 32]) {
+        let t = self.tree(oracle);
+        let tx = txbuild::payout(self.op, &[(self.value, seizure.clone())]);
         let d = txbuild::scriptspend_digest(
             &tx,
             0,
@@ -256,9 +282,50 @@ pub struct Tier {
     pub fee_paid: bool,
     pub reveals: Vec<(String, Ballot)>,
     pub committed: bool,
-    /// per seat, the five verified pre-signed forfeitures
-    pub forfeits: HashMap<String, Vec<String>>,
+    /// per seat, its stake and the five verified pre-signed forfeitures of it
+    pub forfeits: HashMap<String, (Bond, Vec<String>)>,
+    /// when a dissenting arbitrator of the tier below opened this one: its challenge bond
+    pub challenge: Option<Challenge>,
 }
+
+/// A challenge bond (§10.4): a separate output under the challenger's bond script, its whole value
+/// pre-signed to the case's seizure output, forfeited only if the larger panel does not agree.
+#[derive(Clone, Debug)]
+pub struct Challenge {
+    pub stake: Bond,
+    pub sig: String,
+}
+
+/// A seat's stake, in tenths of the seat fee: the largest penalty step, 4× (more with momentum).
+pub const SEAT_STAKE_STEPS: u64 = 40;
+
+/// Checks a seat's pre-signed forfeitures: the stake is an output of at least 4× the fee under the
+/// seat-holder's bond script, and each signature is its scoped key's over that step's forfeiture.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_forfeits(
+    bond: &Bond,
+    stake: &str,
+    value: u64,
+    sigs: &[String],
+    oracle: &XOnlyPublicKey,
+    fee: u64,
+    seizure: &ScriptBuf,
+    rpc: &Rpc,
+) -> Option<Bond> {
+    let st = bond.stake(OutPoint::from_str(stake).ok()?, value);
+    let ds = st.forfeit_digests(oracle, fee, seizure);
+    (value >= SEAT_STAKE_STEPS * fee / 10
+        && sigs.len() == ds.len()
+        && ds
+            .iter()
+            .zip(sigs)
+            .all(|(d, g)| schnorr_ok(&bond.scoped, d, g))
+        && rpc.paid_to(&st.op.txid.to_string(), &bond.tree(oracle).script_pubkey()) >= value)
+        .then_some(st)
+}
+
+/// The challenge bond, in tenths of the case fee: 3× (§10.4, provisional).
+pub const CHALLENGE_STEPS: u64 = 30;
 
 impl Tier {
     pub fn verdict(&self) -> Option<Ballot> {
@@ -273,6 +340,8 @@ impl Tier {
 /// A forfeiture the final ruling calls for.
 #[derive(Clone, Debug)]
 pub struct Penalty {
+    /// a challenge bond the larger panel did not uphold, rather than an incoherent vote
+    pub challenge: bool,
     pub arbitrator: String,
     pub tier: u32,
     pub step: u64,
@@ -317,133 +386,192 @@ impl Replay {
             .iter()
             .filter(|e| e.msg.case_id() == Some(case.as_str()))
             .collect();
-        let mut vcommits: HashMap<(u32, String), String> = HashMap::new();
-        let mut forfeit_msgs: Vec<(String, u32, Vec<String>)> = vec![];
-        let mut committed: Vec<(u32, String)> = vec![];
-        let mut fees: Vec<(u32, String, String)> = vec![];
-        let mut seated: Vec<(String, Msg)> = vec![];
-        for e in &mine {
-            let s = &e.sender;
-            match &e.msg {
-                Msg::Escalate { tier, .. } => {
-                    let party = rp.parties.iter().any(|p| &p.0 == s);
-                    if party && *tier >= 1 && !rp.tiers.contains_key(tier) {
-                        rp.tiers.insert(
-                            *tier,
-                            Tier {
-                                escalator: s.clone(),
-                                ..Default::default()
-                            },
-                        );
+        // tier by tier, since who may open a tier depends on the tier below it
+        let max = mine
+            .iter()
+            .filter_map(|e| match &e.msg {
+                Msg::Escalate { tier, .. } => Some(*tier),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        for k in 1..=max {
+            let prev = rp.tiers.get(&(k - 1)).cloned();
+            // who opens tier k: a party, or a dissenter of tier k-1 who staked a challenge bond (§10.4)
+            let mut opener: Option<(String, Option<Challenge>)> = None;
+            for e in &mine {
+                let Msg::Escalate { tier, .. } = &e.msg else {
+                    continue;
+                };
+                if *tier != k {
+                    continue;
+                }
+                let s = &e.sender;
+                if rp.parties.iter().any(|p| &p.0 == s) {
+                    opener = Some((s.clone(), None));
+                    break;
+                }
+                let (Some(pt), Some(spk)) = (prev.as_ref(), seizure.as_ref()) else {
+                    continue;
+                };
+                let (Some(pv), Some(bond)) = (pt.verdict(), pt.offers.get(s)) else {
+                    continue;
+                };
+                let dissented = pt
+                    .reveals
+                    .iter()
+                    .any(|(x, v)| x == s && verdict_key(v) != verdict_key(&pv));
+                if !dissented {
+                    continue;
+                }
+                let ch = mine.iter().find_map(|c| match &c.msg {
+                    Msg::Challenge {
+                        tier,
+                        stake,
+                        value,
+                        sig,
+                        ..
+                    } if *tier == k && c.sender == *s => {
+                        let ch = Challenge {
+                            stake: bond.stake(OutPoint::from_str(stake).ok()?, *value),
+                            sig: sig.clone(),
+                        };
+                        let (_, d) = ch.stake.forfeit_all(&oracle, spk);
+                        let ok = *value >= CHALLENGE_STEPS * rp.base_fee / 10
+                            && rpc.paid_to(
+                                &ch.stake.op.txid.to_string(),
+                                &bond.tree(&oracle).script_pubkey(),
+                            ) >= *value
+                            && schnorr_ok(&bond.scoped, &d, sig);
+                        ok.then_some(ch)
+                    }
+                    _ => None,
+                });
+                if let Some(ch) = ch {
+                    opener = Some((s.clone(), Some(ch)));
+                    break;
+                }
+            }
+            let Some((escalator, challenge)) = opener else {
+                break;
+            };
+            let mut t = Tier {
+                escalator: escalator.clone(),
+                challenge,
+                ..Default::default()
+            };
+            let mut vcommits: HashMap<String, String> = HashMap::new();
+            for e in &mine {
+                let s = &e.sender;
+                match &e.msg {
+                    Msg::SeatOffer { tier, .. } if *tier == k => {
+                        if let Some(b) = Bond::from_offer(&e.msg) {
+                            t.offers.entry(s.clone()).or_insert(b);
+                        }
+                    }
+                    Msg::VerdictCommit {
+                        tier, commitment, ..
+                    } if *tier == k => {
+                        vcommits.entry(s.clone()).or_insert(commitment.clone());
+                    }
+                    _ => {}
+                }
+            }
+            for e in &mine {
+                if let Msg::Seated {
+                    tier,
+                    height,
+                    block_hash,
+                    offers,
+                    seats,
+                    ..
+                } = &e.msg
+                {
+                    if *tier != k || e.sender != escalator || !t.seats.is_empty() {
+                        continue;
+                    }
+                    if offers.iter().all(|o| t.offers.contains_key(o))
+                        && draw(block_hash, &case, k, offers, panel_size(k)) == *seats
+                        && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
+                    {
+                        t.seats = seats.clone();
                     }
                 }
-                Msg::SeatOffer { tier, .. } => {
-                    if let (Some(t), Some(b)) = (rp.tiers.get_mut(tier), Bond::from_offer(&e.msg)) {
-                        t.offers.entry(s.clone()).or_insert(b);
+            }
+            let fee = seat_fee(rp.base_fee, k);
+            for e in &mine {
+                if let Msg::FeePaid { tier, txid, .. } = &e.msg {
+                    if *tier == k
+                        && e.sender == escalator
+                        && !t.fee_paid
+                        && !t.seats.is_empty()
+                        && t.seats
+                            .iter()
+                            .all(|x| rpc.paid_to(txid, &t.offers[x].payout) >= fee)
+                    {
+                        t.fee_paid = true;
                     }
                 }
-                Msg::Seated { .. } => seated.push((s.clone(), e.msg.clone())),
-                Msg::FeePaid { tier, txid, .. } => fees.push((*tier, s.clone(), txid.clone())),
-                Msg::VerdictCommit {
-                    tier, commitment, ..
-                } => {
-                    vcommits
-                        .entry((*tier, s.clone()))
-                        .or_insert(commitment.clone());
-                }
-                Msg::TierCommitted { tier, txid, .. } => committed.push((*tier, txid.clone())),
-                Msg::Forfeits { tier, sigs, .. } => {
-                    forfeit_msgs.push((s.clone(), *tier, sigs.clone()))
-                }
-                _ => {}
             }
-        }
-        for (s, m) in seated {
-            let Msg::Seated {
-                tier,
-                height,
-                block_hash,
-                offers,
-                seats,
-                ..
-            } = m
-            else {
-                continue;
-            };
-            let Some(t) = rp.tiers.get_mut(&tier) else {
-                continue;
-            };
-            if t.escalator != s || !t.seats.is_empty() {
-                continue;
-            }
-            let ok = offers.iter().all(|o| t.offers.contains_key(o))
-                && draw(&block_hash, &case, tier, &offers, panel_size(tier)) == seats
-                && rpc.block_hash(height).as_deref() == Some(block_hash.as_str());
-            if ok {
-                t.seats = seats;
-            }
-        }
-        for (tier, s, txid) in fees {
-            let fee = seat_fee(rp.base_fee, tier);
-            if let Some(t) = rp.tiers.get_mut(&tier) {
-                if t.escalator == s
-                    && !t.seats.is_empty()
-                    && t.seats
-                        .iter()
-                        .all(|x| rpc.paid_to(&txid, &t.offers[x].payout) >= fee)
+            for e in &mine {
+                if let Msg::VerdictReveal {
+                    tier,
+                    verdict,
+                    salt,
+                    ..
+                } = &e.msg
                 {
-                    t.fee_paid = true;
+                    let ok = *tier == k
+                        && t.seats.contains(&e.sender)
+                        && !t.reveals.iter().any(|x| x.0 == e.sender)
+                        && vcommits.get(&e.sender).map(|c| {
+                            *c == hex::encode(
+                                verdict.commitment(&wire::h32(salt).unwrap_or_default()),
+                            )
+                        }) == Some(true);
+                    if ok {
+                        t.reveals.push((e.sender.clone(), verdict.clone()));
+                    }
                 }
             }
-        }
-        for e in &mine {
-            if let Msg::VerdictReveal {
-                tier,
-                verdict,
-                salt,
-                ..
-            } = &e.msg
-            {
-                let Some(t) = rp.tiers.get_mut(tier) else {
-                    continue;
-                };
-                let ok = t.seats.contains(&e.sender)
-                    && !t.reveals.iter().any(|x| x.0 == e.sender)
-                    && vcommits.get(&(*tier, e.sender.clone())).map(|c| {
-                        *c == hex::encode(verdict.commitment(&wire::h32(salt).unwrap_or_default()))
-                    }) == Some(true);
-                if ok {
-                    t.reveals.push((e.sender.clone(), verdict.clone()));
+            for e in &mine {
+                if let Msg::TierCommitted { tier, txid, .. } = &e.msg {
+                    let cm = tier_commitment(&case, k, &t.seats, &t.reveals);
+                    if *tier == k && t.fee_paid && !t.committed && rpc.has_op_return(txid, &cm) {
+                        t.committed = true;
+                    }
                 }
             }
-        }
-        for (tier, txid) in committed {
-            if let Some(t) = rp.tiers.get_mut(&tier) {
-                let cm = tier_commitment(&case, tier, &t.seats, &t.reveals);
-                if t.fee_paid && rpc.has_op_return(&txid, &cm) {
-                    t.committed = true;
+            if let Some(spk) = &seizure {
+                for e in &mine {
+                    if let Msg::Forfeits {
+                        tier,
+                        stake,
+                        value,
+                        sigs,
+                        ..
+                    } = &e.msg
+                    {
+                        let s = &e.sender;
+                        let Some(b) = t
+                            .offers
+                            .get(s)
+                            .filter(|_| *tier == k && t.seats.contains(s))
+                        else {
+                            continue;
+                        };
+                        if t.forfeits.contains_key(s) {
+                            continue;
+                        }
+                        if let Some(st) =
+                            verify_forfeits(b, stake, *value, sigs, &oracle, fee, spk, rpc)
+                        {
+                            t.forfeits.insert(s.clone(), (st, sigs.clone()));
+                        }
+                    }
                 }
             }
-        }
-        if let Some(spk) = seizure {
-            for (s, tier, sigs) in forfeit_msgs {
-                let fee = seat_fee(rp.base_fee, tier);
-                let Some(t) = rp.tiers.get_mut(&tier) else {
-                    continue;
-                };
-                let Some(b) = t.offers.get(&s).filter(|_| t.seats.contains(&s)) else {
-                    continue;
-                };
-                let ds = b.forfeit_digests(&oracle, fee, &spk);
-                if sigs.len() == ds.len()
-                    && ds
-                        .iter()
-                        .zip(&sigs)
-                        .all(|(d, g)| schnorr_ok(&b.scoped, d, g))
-                {
-                    t.forfeits.entry(s).or_insert(sigs);
-                }
-            }
+            rp.tiers.insert(k, t);
         }
         Some(rp)
     }
@@ -486,13 +614,14 @@ impl Replay {
                     .count();
                 let step = step_of(penalty_factor(n_f, agree.max(1)));
                 let fee = seat_fee(self.base_fee, *k);
-                let (Some(bond), Some(pre)) = (t.offers.get(arb), t.forfeits.get(arb)) else {
+                let Some((bond, pre)) = t.forfeits.get(arb) else {
                     continue;
                 };
                 let i = STEPS.iter().position(|x| *x == step).unwrap();
                 let amount = step * fee / 10;
                 let (tx, digest) = bond.penalty_tx(&self.oracle, amount, &spk);
                 out.push(Penalty {
+                    challenge: false,
                     arbitrator: arb.clone(),
                     tier: *k,
                     step,
@@ -502,6 +631,28 @@ impl Replay {
                     tx,
                     digest,
                 });
+            }
+            // a challenge the larger panels did not uphold: the challenge bond is forfeit whole
+            if let Some(ch) = &t.challenge {
+                let prev_vote = self
+                    .tiers
+                    .get(&(k - 1))
+                    .and_then(|p| p.reveals.iter().find(|x| x.0 == t.escalator))
+                    .map(|x| verdict_key(&x.1));
+                if prev_vote.as_ref() != Some(&fk) {
+                    let (tx, digest) = ch.stake.forfeit_all(&self.oracle, &spk);
+                    out.push(Penalty {
+                        challenge: true,
+                        arbitrator: t.escalator.clone(),
+                        tier: *k,
+                        step: CHALLENGE_STEPS,
+                        amount: ch.stake.value,
+                        bond: ch.stake.clone(),
+                        pre: ch.sig.clone(),
+                        tx,
+                        digest,
+                    });
+                }
             }
         }
         out
@@ -553,12 +704,22 @@ impl Replay {
                 left -= each;
             }
         }
+        // a party's payout script, or a challenger's (the payout named in its bond's offer)
         let payout_of = |who: &str| {
             self.parties
                 .iter()
                 .find(|p| p.0 == who)
                 .and_then(|p| p.1.clone())
+                .or_else(|| {
+                    self.tiers.values().find_map(|t| {
+                        t.challenge
+                            .as_ref()
+                            .filter(|_| t.escalator == who)
+                            .map(|c| c.stake.payout.clone())
+                    })
+                })
         };
+        let fk = verdict_key(&self.final_ruling()?.1);
         let (ft, fv) = self.final_ruling()?;
         // the verdict standing before tier k, and whether its panel was split
         let before = |k: u32| -> (Option<Ballot>, bool) {
@@ -575,6 +736,10 @@ impl Replay {
             if *k < 2 || !t.fee_paid || left == 0 || !before(*k).1 {
                 continue;
             }
+            // a challenger's fees are refunded only if the larger panel agreed with it
+            if t.challenge.is_some() && !vind.iter().any(|v| v.0 == t.escalator) {
+                continue;
+            }
             let Some(p) = payout_of(&t.escalator) else {
                 continue;
             };
@@ -588,9 +753,40 @@ impl Replay {
                 .0
                 .map(|v| verdict_key(&v) != verdict_key(&fv))
                 .unwrap_or(false);
-            match payout_of(&self.tiers[&ft].escalator).filter(|_| overturned) {
-                Some(p) => outs.push((left, p)),
-                None => {
+            // the excess to the parties the overturned verdict harmed: those it classed below what the
+            // final ruling finds (Intervention above Documentation above none)
+            let rank = |c: &wire::Class| match c {
+                wire::Class::Intervention => 2,
+                wire::Class::Documentation => 1,
+                wire::Class::None => 0,
+            };
+            let harmed: Vec<ScriptBuf> = match before(ft).0.filter(|_| overturned) {
+                Some(old) => fv
+                    .acts
+                    .iter()
+                    .filter(|a| {
+                        old.acts
+                            .iter()
+                            .find(|o| o.seat == a.seat)
+                            .map(|o| rank(&a.class) > rank(&o.class))
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|a| {
+                        self.parties
+                            .get(a.seat as usize + 1)
+                            .and_then(|p| p.1.clone())
+                    })
+                    .collect(),
+                None => vec![],
+            };
+            match harmed.is_empty() {
+                false => {
+                    let each = left / harmed.len() as u64;
+                    for p in harmed {
+                        outs.push((each, p));
+                    }
+                }
+                true => {
                     let mut ks: Vec<XOnlyPublicKey> = self
                         .archivists
                         .iter()
@@ -606,8 +802,18 @@ impl Replay {
                 }
             }
         }
-        let mut output: Vec<TxOut> = outs
+        let _ = fk;
+        // one output per recipient
+        let mut merged: Vec<(u64, ScriptBuf)> = vec![];
+        for (v, s) in outs {
+            match merged.iter_mut().find(|m| m.1 == s) {
+                Some(m) => m.0 += v,
+                None => merged.push((v, s)),
+            }
+        }
+        let mut output: Vec<TxOut> = merged
             .iter()
+            .filter(|(v, _)| *v > 0)
             .map(|(v, s)| txbuild::txout(*v, s.clone()))
             .collect();
         output.push(txbuild::txout(0, bitaid_core::scripts::p2a()));

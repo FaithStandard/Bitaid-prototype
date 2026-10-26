@@ -55,17 +55,22 @@ start)
     # CAPTURE=1 (default; CAPTURE=0 for a random draw): a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
     # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
     if [ "${CAPTURE:-1}" = 1 ]; then case $i in 1) extra="--tiers 1,2";; 4|8) extra="--corrupt --tiers 1";; *) extra="--tiers 2";; esac; fi
-    BITAID_WALLET=w nohup target/release/bitaid-node --role arbitrator --name arb$i-pc $P $extra $X >/dev/null 2>"$L/arb$i.log" </dev/null &
+    # CHALLENGE=1 (default): no party appeals; arb1, the honest dissenter, stakes a challenge bond and opens tier 2
+    [ "${CHALLENGE:-1}" = 1 ] && [ $i = 1 ] && extra="$extra --challenge"
+    # (the challenger cannot sit on the tier it opens, so the corrupt pair also serve tier 2: 6 honest of 8)
+    [ "${CHALLENGE:-1}" = 1 ] && [ "${CAPTURE:-1}" = 1 ] && { [ $i = 4 ] || [ $i = 8 ]; } && extra="--corrupt --tiers 1,2"
+    BITAID_WALLET=w nohup target/release/bitaid-node --role arbitrator --name arb$i-pc $P $extra --offer-window 40 $X >"$L/arb$i.out" 2>"$L/arb$i.log" </dev/null &
   done
   sleep 2
-  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D --appeal --greedy --offer-window 40 --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
+  R3APPEAL="--appeal --greedy"; [ "${CHALLENGE:-1}" = 1 ] && R3APPEAL=""
+  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D $R3APPEAL --offer-window 40 --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
   BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
   echo "$ONION" > "$L/onion.txt"
   echo "PC_READY  onion: $ONION"
   ;;
 report)
-  cat "$L"/*.out; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
+  cat "$L"/r*.out "$L"/arb1.out; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
   ;;
 stop)
   pkill -x bitaid-node; $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped

@@ -309,12 +309,28 @@ pub enum Msg {
         verdict: Ballot,
         salt: Hex32,
     },
-    /// Seated arbitrator, on taking the seat: its bond's forfeitures pre-signed with its scoped key, one per
-    /// penalty step (2×, 2.5×, 3×, 3.5×, 4× the seat fee), each paying the case's seizure output (§10.4, §12).
+    /// Seated arbitrator, on taking the seat: the forfeitures of its seat stake pre-signed with its bond's
+    /// scoped key, one per penalty step (2×, 2.5×, 3×, 3.5×, 4× the seat fee), each paying the case's
+    /// seizure output (§10.4, §12).
     Forfeits {
         case_id: Hex32,
         tier: u32,
+        /// the seat's stake: an output under the arbitrator's bond script set aside for this seat, so
+        /// that seats held at once never pre-sign forfeitures of the same output
+        stake: String,
+        value: u64,
         sigs: Vec<String>,
+    },
+    /// A seated arbitrator who dissented from its tier's verdict stakes a challenge bond to open the next
+    /// tier itself (§10.4): `stake` is an output under its bond's script holding `value`, and `sig` its
+    /// pre-signature of that output's forfeiture into the case's seizure output. It is sent before the
+    /// Escalate for `tier`.
+    Challenge {
+        case_id: Hex32,
+        tier: u32,
+        stake: String,
+        value: u64,
+        sig: String,
     },
     /// Whoever collects a case's seizure output asks its archivists to co-sign the distribution (§12).
     SeizureRequest {
@@ -378,6 +394,7 @@ impl Msg {
             Msg::VerdictReveal { .. } => "verdict-reveal",
             Msg::TierCommitted { .. } => "tier-committed",
             Msg::Forfeits { .. } => "forfeits",
+            Msg::Challenge { .. } => "challenge",
             Msg::SeizureRequest { .. } => "seizure-request",
             Msg::SeizureSig { .. } => "seizure-sig",
         }
@@ -417,6 +434,7 @@ impl Msg {
             | Msg::VerdictReveal { case_id, .. }
             | Msg::TierCommitted { case_id, .. }
             | Msg::Forfeits { case_id, .. }
+            | Msg::Challenge { case_id, .. }
             | Msg::SeizureRequest { case_id, .. }
             | Msg::SeizureSig { case_id, .. } => Some(case_id),
         }
