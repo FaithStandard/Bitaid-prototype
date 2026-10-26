@@ -148,6 +148,7 @@ pub struct Rostered {
     pub refund_height: u32,
     pub incident_txid: Txid,
     pub sealed_keys: Vec<String>,
+    pub archivists: Vec<String>,
 }
 
 impl Rostered {
@@ -161,6 +162,7 @@ impl Rostered {
             refund_height,
             incident_txid,
             sealed_keys,
+            archivists,
             ..
         } = m
         else {
@@ -179,6 +181,7 @@ impl Rostered {
             refund_height: *refund_height,
             incident_txid: Txid::from_str(incident_txid).ok()?,
             sealed_keys: sealed_keys.clone(),
+            archivists: archivists.clone(),
         })
     }
 }

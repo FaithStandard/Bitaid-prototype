@@ -52,10 +52,13 @@ start)
   BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pc --listen 127.0.0.1:7480 --public-url http://$ONION:7480 $P $X >/dev/null 2>"$L/archivist.log" </dev/null &
   for i in 1 2 3 4 5 6 7 8 9; do
     extra=""; for c in ${CORRUPT:-4 8}; do [ $i = $c ] && extra="--corrupt"; done
+    # CAPTURE=1 (default; CAPTURE=0 for a random draw): a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
+    # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
+    if [ "${CAPTURE:-1}" = 1 ]; then case $i in 1) extra="--tiers 1,2";; 4|8) extra="--corrupt --tiers 1";; *) extra="--tiers 2";; esac; fi
     BITAID_WALLET=w nohup target/release/bitaid-node --role arbitrator --name arb$i-pc $P $extra $X >/dev/null 2>"$L/arb$i.log" </dev/null &
   done
   sleep 2
-  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D --appeal --offer-window 40 --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
+  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D --appeal --greedy --offer-window 40 --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
   BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
   echo "$ONION" > "$L/onion.txt"

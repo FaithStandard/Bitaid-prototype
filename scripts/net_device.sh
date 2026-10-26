@@ -29,6 +29,9 @@ responder|caller)
     BITAID_WALLET=caller $BIN --role caller --name caller $P --mine --window 30 --dispute-window 20 --settle-wait 1800
     sleep 5
   fi
+  # the pool member stays up a while: after settlement the pool still co-signs the penalties and the
+  # seizure output's distribution (§10.4, §12)
+  echo "keeping pool member up ${LINGER:-300} s for penalties"; sleep ${LINGER:-300}
   kill $PM 2>/dev/null
   ;;
 esac

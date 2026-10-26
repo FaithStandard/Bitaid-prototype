@@ -9,6 +9,7 @@ use bitaid_core::hashes::{case_id as hash_case, tagged};
 use bitaid_core::oracle::{even, random_scalar, sign_bip340};
 use bitaid_core::outputs::{self, funding_leaf};
 use bitaid_core::txbuild;
+use bitaid_node::arb;
 use bitaid_node::blossom;
 use bitaid_node::case::{self, Alerted, Rostered};
 use bitaid_node::chain::Rpc;
@@ -164,7 +165,7 @@ fn pool_member(mut n: Node) -> i32 {
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
     let mut assigned: HashMap<String, Vec<u32>> = HashMap::new();
     let mut taken: HashMap<u32, String> = HashMap::new();
-    let mut digests: HashMap<String, [u8; 32]> = HashMap::new();
+    let mut digests: HashMap<(String, u32), [u8; 32]> = HashMap::new();
     let mut sessions: HashMap<(String, u32), frost_secp256k1_tr::round1::SigningNonces> =
         HashMap::new();
     let mut commits: HashMap<String, BTreeMap<String, String>> = HashMap::new();
@@ -333,31 +334,45 @@ fn pool_member(mut n: Node) -> i32 {
                 case_id,
                 session,
                 tx,
+                input,
             } => {
                 let (Some(a), Some(r)) = (alerts.get(case_id), rosters.get(case_id)) else {
                     continue;
                 };
-                if a.caller != s {
-                    continue;
-                }
                 let Ok(t) = deserialize_hex::<Transaction>(tx) else {
                     continue;
                 };
-                // co-sign only the template's incident transaction for this roster
-                if t.compute_txid() != case::incident_tx(a, r).compute_txid()
-                    || t.compute_txid() != r.incident_txid
+                let d = if a.caller == s
+                    && *input == 0
+                    && t.compute_txid() == case::incident_tx(a, r).compute_txid()
+                    && t.compute_txid() == r.incident_txid
                 {
+                    // the template's incident transaction for this roster
+                    let tree = a.funding_tree();
+                    txbuild::scriptspend_digest(
+                        &t,
+                        0,
+                        &[txbuild::txout(a.funding_value, tree.script_pubkey())],
+                        &tree.scripts[funding_leaf::ACCEPT],
+                    )
+                } else if done.contains(case_id) {
+                    // after the case is final: a forfeiture or the seizure distribution, only if this
+                    // member's own replay of the log calls for exactly that transaction
+                    match arb_due(&n, a, r, &t, *input as usize) {
+                        Some((d, what)) => {
+                            n.log(&format!("co-signing {what} for {}", &case_id[..8]));
+                            d
+                        }
+                        None => {
+                            n.log("co-signature refused: not a forfeiture or distribution the case calls for");
+                            continue;
+                        }
+                    }
+                } else {
                     n.log("co-signature refused: not the template's incident transaction");
                     continue;
-                }
-                let tree = a.funding_tree();
-                let d = txbuild::scriptspend_digest(
-                    &t,
-                    0,
-                    &[txbuild::txout(a.funding_value, tree.script_pubkey())],
-                    &tree.scripts[funding_leaf::ACCEPT],
-                );
-                digests.insert(case_id.clone(), d);
+                };
+                digests.insert((case_id.clone(), *session), d);
                 let (nonces, commitment) = m.commit();
                 sessions.insert((case_id.clone(), *session), nonces);
                 n.send_case(
@@ -377,12 +392,12 @@ fn pool_member(mut n: Node) -> i32 {
                 session,
                 package,
             } => {
-                let (Some(a), Some(d)) = (alerts.get(case_id), digests.get(case_id)) else {
+                let (Some(_), Some(d)) = (
+                    alerts.get(case_id),
+                    digests.get(&(case_id.clone(), *session)),
+                ) else {
                     continue;
                 };
-                if a.caller != s {
-                    continue;
-                }
                 let Some(nonces) = sessions.remove(&(case_id.clone(), *session)) else {
                     continue;
                 };
@@ -391,7 +406,7 @@ fn pool_member(mut n: Node) -> i32 {
                     continue;
                 }
                 match m.sign(package, &nonces, d) {
-                    Some(share) => {
+                    Ok(share) => {
                         n.send_case(
                             case_id,
                             std::slice::from_ref(&s),
@@ -404,11 +419,11 @@ fn pool_member(mut n: Node) -> i32 {
                             false,
                         );
                         n.log(&format!(
-                            "co-signed incident for {} (session {session})",
+                            "co-signed for {} (session {session})",
                             &case_id[..8]
                         ));
                     }
-                    None => n.log("package refused: not the digest this member checked"),
+                    Err(why) => n.log(&format!("session {session}: {why}")),
                 }
             }
             Msg::Escalate { case_id, tier, .. } => {
@@ -438,6 +453,7 @@ fn pool_member(mut n: Node) -> i32 {
                 bond_scoped,
                 bond_cold,
                 bond_fallback,
+                bond_value,
                 payout_spk,
             } => {
                 let Some(a) = alerts.get(case_id) else {
@@ -456,6 +472,7 @@ fn pool_member(mut n: Node) -> i32 {
                         *bond_fallback,
                     );
                     (u.script_pubkey == t.script_pubkey()
+                        && u.value.to_sat() == *bond_value
                         && u.value.to_sat() >= ARB_BOND_FLOOR.max(2 * value))
                     .then_some(())
                 })()
@@ -688,6 +705,16 @@ fn archivist(mut n: Node) -> i32 {
     let me = n.me();
     announce(&mut n, "archivist", &me, &url);
     n.log(&format!("Blossom server at {url}"));
+    // the pool's key, to check alerts: the archivists co-sign a case's seizure output with the pool
+    n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)]);
+    let view = pool::discover(
+        &mut n,
+        &arg("--pool").unwrap_or("bitaid".into()),
+        secs(num("--setup-wait", 3600u64)),
+    );
+    let okey = view.as_ref().map(|v| v.key_hex()).unwrap_or_default();
+    let mut alerts: HashMap<String, Alerted> = HashMap::new();
+    let mut rosters: HashMap<String, Rostered> = HashMap::new();
     let idle = num("--exit-after", 900u64);
     let mut last = Instant::now();
     loop {
@@ -707,8 +734,17 @@ fn archivist(mut n: Node) -> i32 {
             Msg::Alert { case_id, .. } => {
                 srv.policy.allow(case_id, &env.sender);
                 n.log(&format!("live case {}: caller may upload", &case_id[..8]));
+                if let Ok(a) = Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &okey) {
+                    alerts.insert(a.case_hex.clone(), a);
+                }
             }
-            Msg::Roster { case_id, seats, .. } => {
+            Msg::Roster {
+                case_id,
+                seats,
+                archivists,
+                sealed_keys,
+                ..
+            } => {
                 for s in seats {
                     srv.policy.allow(case_id, s);
                 }
@@ -717,6 +753,94 @@ fn archivist(mut n: Node) -> i32 {
                     &case_id[..8],
                     seats.len()
                 ));
+                if alerts
+                    .get(case_id)
+                    .map(|a| a.caller == env.sender)
+                    .unwrap_or(false)
+                {
+                    if let Some(i) = archivists.iter().position(|x| *x == me) {
+                        let pos = sealed_keys.len() - archivists.len() + i;
+                        if let Some(k) = hex::decode(&sealed_keys[pos]).ok().and_then(|k| {
+                            wire::unseal(
+                                &n.keys,
+                                &wire::xonly(&env.sender).unwrap(),
+                                case_id.as_bytes(),
+                                &k,
+                            )
+                        }) {
+                            n.add_case_key(case_id, k.try_into().unwrap());
+                        }
+                    }
+                    if let Some(r) = Rostered::from_msg(&env.msg) {
+                        rosters.insert(case_id.clone(), r);
+                    }
+                }
+            }
+            // §12: sign the seizure output's distribution only as this archivist's own replay computes it,
+            // and only once the pool has attested the case's final outcome
+            Msg::SeizureRequest { case_id, tx } => {
+                let (Some(a), Some(r), Some(v)) =
+                    (alerts.get(case_id), rosters.get(case_id), view.as_ref())
+                else {
+                    continue;
+                };
+                let attested: std::collections::HashSet<&String> = n
+                    .history
+                    .iter()
+                    .filter(
+                        |e| matches!(&e.msg, Msg::AttestShare { case_id: c, .. } if c == case_id),
+                    )
+                    .map(|e| &e.sender)
+                    .collect();
+                if attested.len() < v.t {
+                    n.log("distribution not signed: the case's outcome is not attested yet");
+                    continue;
+                }
+                let Ok(t) = deserialize_hex::<Transaction>(tx) else {
+                    continue;
+                };
+                let Some(rp) = arb::Replay::build(&n.history, a, r, &n.rpc) else {
+                    continue;
+                };
+                let pens = rp.penalties();
+                let Some((dist, prev)) = rp.distribution(&pens) else {
+                    n.log("distribution not signed: the case calls for none");
+                    continue;
+                };
+                if dist.compute_txid() != t.compute_txid() {
+                    n.log("distribution not signed: not the one the case's log calls for");
+                    continue;
+                }
+                let secp = Secp256k1::new();
+                let sigs: Vec<String> = (0..dist.input.len())
+                    .filter_map(|i| rp.distribution_digest(&dist, &prev, i))
+                    .map(|d| {
+                        hex::encode(
+                            secp.sign_schnorr(
+                                &bitcoin::secp256k1::Message::from_digest(d),
+                                &n.keys,
+                            )
+                            .serialize(),
+                        )
+                    })
+                    .collect();
+                n.log(&format!(
+                    "signed the seizure distribution of {} ({} inputs, {} sats from {} forfeitures)",
+                    &case_id[..8],
+                    sigs.len(),
+                    pens.iter().map(|p| p.amount).sum::<u64>(),
+                    pens.len()
+                ));
+                n.send_case(
+                    case_id,
+                    std::slice::from_ref(&env.sender),
+                    Msg::SeizureSig {
+                        case_id: case_id.clone(),
+                        txid: dist.compute_txid().to_string(),
+                        sigs,
+                    },
+                    false,
+                );
             }
             _ => {}
         }
@@ -1200,7 +1324,6 @@ fn escalate_tier(
     tier: u32,
     reason: &str,
 ) -> Option<Ballot> {
-    let secp = Secp256k1::new();
     let c = a.case_hex.clone();
     let value: u64 = a.template.pots.iter().sum();
     let size = bitaid_node::arb::panel_size(tier);
@@ -1219,27 +1342,15 @@ fn escalate_tier(
     let t0 = Instant::now();
     // blind taking: offers name only a bond and a payout address
     let end = Instant::now() + secs(num("--offer-window", 25u64));
-    let mut offers: Vec<(String, bitcoin::ScriptBuf)> = vec![];
+    let mut offers: Vec<(String, bitcoin::ScriptBuf, arb::Bond)> = vec![];
+    let oxo = wire::xonly(&okey).unwrap();
     while Instant::now() < end {
         let left = end.saturating_duration_since(Instant::now());
         let cc = c.clone();
-        let Some((who, bond, bs, bc, bf, spk)) = n.wait(left, |env, _| match &env.msg {
+        let Some((who, offer)) = n.wait(left, |env, _| match &env.msg {
             Msg::SeatOffer {
-                case_id,
-                tier: t,
-                bond,
-                bond_scoped,
-                bond_cold,
-                bond_fallback,
-                payout_spk,
-            } if *case_id == cc && *t == tier => Some((
-                env.sender.clone(),
-                bond.clone(),
-                bond_scoped.clone(),
-                bond_cold.clone(),
-                *bond_fallback,
-                payout_spk.clone(),
-            )),
+                case_id, tier: t, ..
+            } if *case_id == cc && *t == tier => Some((env.sender.clone(), env.msg.clone())),
             _ => None,
         }) else {
             break;
@@ -1249,21 +1360,15 @@ fn escalate_tier(
         }
         // stake above exposure: a bond of at least twice what the verdict can move (§10.2)
         let ok = (|| {
-            let op = OutPoint::from_str(&bond).ok()?;
-            let u = n.rpc.utxo(&op)?;
-            let t = outputs::bond(
-                &secp,
-                &wire::xonly(&bs)?,
-                &wire::xonly(&bc)?,
-                &wire::xonly(&okey)?,
-                bf,
-            );
-            (u.script_pubkey == t.script_pubkey()
-                && u.value.to_sat() >= ARB_BOND_FLOOR.max(2 * value))
-            .then_some(())
+            let b = arb::Bond::from_offer(&offer)?;
+            let u = n.rpc.utxo(&b.op)?;
+            (u.script_pubkey == b.tree(&oxo).script_pubkey()
+                && u.value.to_sat() == b.value
+                && b.value >= ARB_BOND_FLOOR.max(2 * value))
+            .then_some(b)
         })();
-        match (ok, bitcoin::ScriptBuf::from_hex(&spk)) {
-            (Some(()), Ok(p)) => offers.push((who, p)),
+        match ok {
+            Some(b) => offers.push((who, b.payout.clone(), b)),
             _ => n.log(&format!(
                 "seat offer from {} refused: bond missing or below twice the case value",
                 &who[..8]
@@ -1311,8 +1416,60 @@ fn escalate_tier(
         false,
     );
     n.check(&format!("tier {tier}: {size} of {} offering arbitrators drawn from block {h}, case disclosed only to them", ids.len()), true, &format!("{:.1} s after escalating", t0.elapsed().as_secs_f64()));
-    // each seat paid its fee directly by whoever escalated (§10.6, §11.11)
+    // each seat pre-signs its bond's forfeitures before it is paid (§10.4, §12)
     let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
+    let r_arch = n
+        .history
+        .iter()
+        .rev()
+        .find_map(|e| match &e.msg {
+            Msg::Roster {
+                case_id,
+                archivists,
+                ..
+            } if *case_id == c && e.sender == a.caller => Some(archivists.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    if let Some((st, _)) = arb::seizure_tree(&r_arch, &oxo) {
+        let spk = st.script_pubkey();
+        let (cc, ss) = (c.clone(), seats.clone());
+        let mut good: std::collections::HashSet<String> = Default::default();
+        let got = n.collect(
+            secs(90),
+            |env, _| match &env.msg {
+                Msg::Forfeits {
+                    case_id,
+                    tier: t,
+                    sigs,
+                } if *case_id == cc && *t == tier && ss.contains(&env.sender) => {
+                    Some((env.sender.clone(), sigs.clone()))
+                }
+                _ => None,
+            },
+            |v| v.len() >= seats.len(),
+        );
+        for (who, sigs) in got {
+            let Some(b) = offers.iter().find(|o| o.0 == who).map(|o| o.2.clone()) else {
+                continue;
+            };
+            let ds = b.forfeit_digests(&oxo, fee, &spk);
+            if sigs.len() == ds.len()
+                && ds
+                    .iter()
+                    .zip(&sigs)
+                    .all(|(d, g)| arb::schnorr_ok(&b.scoped, d, g))
+            {
+                good.insert(who);
+            }
+        }
+        n.check(
+            &format!("tier {tier}: every seat pre-signed its bond's forfeitures (2× to 4× the {fee}-sat fee, into the case's seizure output)"),
+            good.len() == seats.len(),
+            &format!("{} of {}", good.len(), seats.len()),
+        );
+    }
+    // each seat paid its fee directly by whoever escalated (§10.6, §11.11)
     let pay: Vec<(bitcoin::ScriptBuf, u64)> = seats
         .iter()
         .map(|sid| (offers.iter().find(|o| &o.0 == sid).unwrap().1.clone(), fee))
@@ -1459,6 +1616,44 @@ fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, start: Duration) -> Option<O
     Some(bitaid_node::arb::supermajority(seats.len(), &votes))
 }
 
+/// What a final case calls for, as this node's own replay of the log computes it: one of the
+/// forfeitures its ruling settles (input 0), or an input of its seizure output's distribution.
+fn arb_due(
+    n: &Node,
+    a: &Alerted,
+    r: &Rostered,
+    t: &Transaction,
+    input: usize,
+) -> Option<([u8; 32], String)> {
+    let rp = arb::Replay::build(&n.history, a, r, &n.rpc)?;
+    let pens = rp.penalties();
+    let id = t.compute_txid();
+    if let Some(p) = pens
+        .iter()
+        .find(|p| p.tx.compute_txid() == id && input == 0)
+    {
+        return Some((
+            p.digest,
+            format!(
+                "the forfeiture of {} sats ({:.1}× the fee) from the bond of {}",
+                p.amount,
+                p.step as f64 / 10.0,
+                &p.arbitrator[..8]
+            ),
+        ));
+    }
+    let (dist, prev) = rp.distribution(&pens)?;
+    if dist.compute_txid() == id && input < dist.input.len() {
+        return rp.distribution_digest(&dist, &prev, input).map(|d| {
+            (
+                d,
+                format!("input {input} of the seizure output's distribution"),
+            )
+        });
+    }
+    None
+}
+
 fn verdict_classes(v: &Ballot) -> String {
     v.acts
         .iter()
@@ -1487,10 +1682,9 @@ fn arbitrator(mut n: Node) -> i32 {
     let (bs, bc) = (random_scalar(), random_scalar());
     let bf = n.rpc.height() + 52_560;
     let bt = outputs::bond(&secp, &xo(&bs), &xo(&bc), &wire::xonly(&okey).unwrap(), bf);
-    let bond = match n
-        .rpc
-        .fund(&bt.script_pubkey(), num("--bond", 10_000_000u64))
-    {
+    let mut bond_value = num("--bond", 10_000_000u64);
+    let mut forfeits_signed: Vec<(bitcoin::Txid, u64)> = vec![];
+    let mut bond = match n.rpc.fund(&bt.script_pubkey(), bond_value) {
         Ok(op) => op,
         Err(e) => {
             n.log(&format!("bond not posted: {e}"));
@@ -1558,8 +1752,29 @@ fn arbitrator(mut n: Node) -> i32 {
                     continue;
                 };
                 escalator.insert((case_id.clone(), tier), s);
+                // --tiers 1,2: the tiers this arbitrator serves (an operator's choice of workload)
+                if let Some(ts) = arg("--tiers") {
+                    if !ts.split(',').any(|x| x.trim().parse() == Ok(tier)) {
+                        continue;
+                    }
+                }
                 let value: u64 = a.template.pots.iter().sum();
-                if num("--bond", 10_000_000u64) < 2 * value {
+                // a forfeiture taken from the bond leaves the rest re-bonded as output 1 of that transaction
+                if n.rpc.utxo(&bond).is_none() {
+                    if let Some((txid, v)) = forfeits_signed
+                        .iter()
+                        .find(|(t, _)| n.rpc.utxo(&OutPoint { txid: *t, vout: 1 }).is_some())
+                        .cloned()
+                    {
+                        bond = OutPoint { txid, vout: 1 };
+                        bond_value = v;
+                        n.log(&format!(
+                            "bond reduced by a forfeiture; {} sats remain bonded",
+                            v
+                        ));
+                    }
+                }
+                if bond_value < 2 * value {
                     n.log("not eligible: bond below twice the case value");
                     continue;
                 }
@@ -1574,6 +1789,7 @@ fn arbitrator(mut n: Node) -> i32 {
                         bond_scoped: hex::encode(xo(&bs).serialize()),
                         bond_cold: hex::encode(xo(&bc).serialize()),
                         bond_fallback: bf,
+                        bond_value,
                         payout_spk: payout.to_hex_string(),
                     },
                     false,
@@ -1602,6 +1818,47 @@ fn arbitrator(mut n: Node) -> i32 {
                             "seated on tier {tier} of {} (seat {pos}); case disclosed",
                             &case_id[..8]
                         ));
+                        // pre-sign the bond's forfeitures for this seat, one per penalty step (§10.4)
+                        'forfeit: {
+                            let oxo = wire::xonly(&okey).unwrap();
+                            let me_bond = arb::Bond {
+                                op: bond,
+                                value: bond_value,
+                                scoped: xo(&bs),
+                                cold: xo(&bc),
+                                fallback: bf,
+                                payout: payout.clone(),
+                            };
+                            let (Some(a), Some(r)) = (alerts.get(&case_id), rosters.get(&case_id))
+                            else {
+                                break 'forfeit;
+                            };
+                            let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo) else {
+                                n.log("case names no archivists; no seizure output to forfeit to");
+                                break 'forfeit;
+                            };
+                            let fee = arb::seat_fee(a.template.arb_fee, tier);
+                            let mut sigs = vec![];
+                            for stp in arb::STEPS {
+                                let (tx, d) =
+                                    me_bond.penalty_tx(&oxo, stp * fee / 10, &st.script_pubkey());
+                                sigs.push(hex::encode(sign_bip340(&bs, &d)));
+                                forfeits_signed
+                                    .push((tx.compute_txid(), bond_value - stp * fee / 10));
+                            }
+                            if !flag("--no-forfeits") {
+                                n.send_case(
+                                    &case_id,
+                                    &[],
+                                    Msg::Forfeits {
+                                        case_id: case_id.clone(),
+                                        tier,
+                                        sigs,
+                                    },
+                                    false,
+                                );
+                            }
+                        }
                     }
                 }
                 seated.insert((case_id, tier), seats);
@@ -1659,10 +1916,36 @@ fn arbitrator(mut n: Node) -> i32 {
                 let mut kib = 0;
                 for (who, blobs, arch) in evidence.get(&case_id).cloned().unwrap_or_default() {
                     let Some(url) = arch.first() else { continue };
+                    let t_f = Instant::now();
                     let got: Option<Vec<Vec<u8>>> = blobs
                         .iter()
-                        .map(|(h, _)| blossom::fetch(url, h).ok())
+                        .map(|(h, _)| {
+                            // one retry: an archive that times out once is asked again before the
+                            // footage counts as missing
+                            blossom::fetch(url, h)
+                                .or_else(|e| {
+                                    n.log(&format!(
+                                        "fetch of {} from {url} failed ({e}); retrying",
+                                        &h[..8]
+                                    ));
+                                    blossom::fetch(url, h)
+                                })
+                                .map_err(|e| {
+                                    n.log(&format!(
+                                        "fetch of {} from {url} failed again: {e}",
+                                        &h[..8]
+                                    ))
+                                })
+                                .ok()
+                        })
                         .collect();
+                    if t_f.elapsed() > secs(10) {
+                        n.log(&format!(
+                            "evidence of {} took {:.1} s to fetch",
+                            &who[..8],
+                            t_f.elapsed().as_secs_f64()
+                        ));
+                    }
                     let Some(plain) = got.and_then(|b| blossom::open_footage(&ek, &case_id, &b))
                     else {
                         continue;
@@ -2034,6 +2317,7 @@ fn caller(mut n: Node) -> i32 {
             refund_height,
             incident_txid: bitcoin::Txid::from_str(&"00".repeat(32)).unwrap(),
             sealed_keys: vec![],
+            archivists: archivists.iter().map(|x| x.0.clone()).collect(),
         };
         r.incident_txid = case::incident_tx(&a, &r).compute_txid();
         let mut sealed: Vec<String> = r
@@ -2048,10 +2332,11 @@ fn caller(mut n: Node) -> i32 {
                 ))
             })
             .collect();
-        for id in view.identities() {
+        // the pool members, then the case's archivists, who co-sign its seizure output (§12)
+        for id in view.identities().iter().chain(r.archivists.iter()) {
             sealed.push(hex::encode(wire::seal(
                 &n.keys,
-                &wire::xonly(&id).unwrap(),
+                &wire::xonly(id).unwrap(),
                 c.as_bytes(),
                 &case_key,
             )));
@@ -2066,6 +2351,7 @@ fn caller(mut n: Node) -> i32 {
             refund_height,
             incident_txid: r.incident_txid.to_string(),
             sealed_keys: sealed.clone(),
+            archivists: r.archivists.clone(),
         };
         r.sealed_keys = sealed;
         n.send_case(&c, &r.seats.clone(), msg, false);
@@ -2123,7 +2409,7 @@ fn caller(mut n: Node) -> i32 {
         leaf,
     );
     let t_co = Instant::now();
-    let osig = match pool::cosign(&mut n, &view, &c, &serialize_hex(&inc), &dd) {
+    let osig = match pool::cosign(&mut n, &view, &c, &serialize_hex(&inc), 0, &dd, 1) {
         Ok((sig, sessions, signers)) => {
             n.check(
                 &format!(
@@ -2510,7 +2796,226 @@ fn responder(mut n: Node) -> i32 {
         !expected_some || got > 0,
         &format!("{got} sats"),
     );
+    if flag("--escalate") || flag("--appeal") {
+        collect_seizure(&mut n, &a, &r, &view);
+    }
     n.summary()
+}
+
+/// After a case is final, the party that paid for its deciding tier collects what the ruling seizes:
+/// each incoherent arbitrator's pre-signed forfeiture, co-signed by the pool, moves the penalty from
+/// its bond into the case's seizure output; the case's archivists and the pool then co-sign the
+/// distribution of §12 (vindicated dissenters, then the appeal subsidy). Every co-signer replays the
+/// log and signs only what its own replay calls for.
+fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
+    let c = a.case_hex.clone();
+    // read whatever is still in flight into the log
+    let _ = n.collect(secs(3), |_, _| None::<()>, |_| false);
+    let Some(rp) = arb::Replay::build(&n.history, a, r, &n.rpc) else {
+        return;
+    };
+    let Some((ft, _)) = rp.final_ruling() else {
+        return;
+    };
+    if rp.tiers[&ft].escalator != n.me() {
+        return;
+    }
+    let pens = rp.penalties();
+    if pens.is_empty() {
+        n.log("no incoherent votes against the final ruling; nothing to forfeit");
+        return;
+    }
+    let oxo = rp.oracle;
+    let mut session = 100;
+    let mut ok_all = true;
+    // --greedy (test): also ask the pool to take a penalty from an arbitrator who ruled with the final
+    // verdict, and the archivists to sign a distribution paying everything to this party; both must refuse
+    if flag("--greedy") {
+        let fin = &rp.tiers[&ft];
+        let fk = arb::verdict_key(&rp.final_ruling().unwrap().1);
+        let coherent = fin
+            .reveals
+            .iter()
+            .find(|x| arb::verdict_key(&x.1) == fk)
+            .map(|x| x.0.clone());
+        if let (Some(who), Some(spk)) = (coherent, rp.seizure_spk()) {
+            let b = fin.offers[&who].clone();
+            let (tx, d) = b.penalty_tx(&oxo, 4 * arb::seat_fee(rp.base_fee, ft), &spk);
+            let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, 900);
+            n.check(
+                &format!("the pool refuses to co-sign a forfeiture the log does not call for (coherent arbitrator {})", &who[..8]),
+                res.is_err(),
+                &res.err().unwrap_or_default(),
+            );
+        }
+    }
+    for p in &pens {
+        let mut tx = p.tx.clone();
+        let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &p.digest, session).and_then(
+            |(osig, _, signers)| {
+                p.bond.witness(
+                    &oxo,
+                    &mut tx,
+                    &hex::decode(&p.pre).unwrap_or_default(),
+                    &osig,
+                );
+                n.rpc.package(&tx).map(|t| (t, signers))
+            },
+        );
+        session += 10;
+        ok_all &= res.is_ok();
+        n.check(
+            &format!(
+                "tier {} arbitrator {}: {:.1}× the {}-sat fee ({} sats) forfeited from its bond into the case's seizure output by its pre-signed forfeiture and the pool's co-signature",
+                p.tier,
+                &p.arbitrator[..8],
+                p.step as f64 / 10.0,
+                arb::seat_fee(rp.base_fee, p.tier),
+                p.amount
+            ),
+            res.is_ok(),
+            &match &res {
+                Ok((t, signers)) => format!("{} (pool members {signers:?})", &t.to_string()[..16]),
+                Err(e) => e.clone(),
+            },
+        );
+    }
+    if !ok_all {
+        return;
+    }
+    n.rpc.mine(1).ok();
+    let Some((mut dist, prev)) = rp.distribution(&pens) else {
+        return;
+    };
+    let arch = rp.archivists.clone();
+    let need = arch.len() / 2 + 1;
+    if flag("--greedy") {
+        let mut greedy = dist.clone();
+        let total: u64 = greedy.output.iter().map(|o| o.value.to_sat()).sum();
+        greedy.output = vec![
+            bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(total),
+                script_pubkey: r.payout_spks[0].clone(),
+            },
+            bitcoin::TxOut {
+                value: bitcoin::Amount::ZERO,
+                script_pubkey: bitaid_core::scripts::p2a(),
+            },
+        ];
+        let gid = greedy.compute_txid().to_string();
+        n.send_case(
+            &c,
+            &arch,
+            Msg::SeizureRequest {
+                case_id: c.clone(),
+                tx: serialize_hex(&greedy),
+            },
+            false,
+        );
+        let cc = c.clone();
+        let signed = n.wait(secs(20), |env, _| match &env.msg {
+            Msg::SeizureSig { case_id, txid, .. } if *case_id == cc && *txid == gid => Some(()),
+            _ => None,
+        });
+        n.check("the archivists refuse to sign a distribution the log does not call for (all to one party)", signed.is_none(), "");
+    }
+    let txid = dist.compute_txid().to_string();
+    n.send_case(
+        &c,
+        &arch,
+        Msg::SeizureRequest {
+            case_id: c.clone(),
+            tx: serialize_hex(&dist),
+        },
+        false,
+    );
+    let (cc, tt, aa) = (c.clone(), txid.clone(), arch.clone());
+    let got = n.collect(
+        secs(90),
+        |env, _| match &env.msg {
+            Msg::SeizureSig {
+                case_id,
+                txid,
+                sigs,
+            } if *case_id == cc && *txid == tt && aa.contains(&env.sender) => {
+                Some((env.sender.clone(), sigs.clone()))
+            }
+            _ => None,
+        },
+        |v| v.len() >= need,
+    );
+    n.check(
+        &format!(
+            "seizure distribution signed by {} of {} archivist(s) after their own replay",
+            got.len(),
+            arch.len()
+        ),
+        got.len() >= need,
+        "",
+    );
+    for i in 0..dist.input.len() {
+        let Some(d) = rp.distribution_digest(&dist, &prev, i) else {
+            return;
+        };
+        let mut m: HashMap<bitcoin::XOnlyPublicKey, Vec<u8>> = HashMap::new();
+        for (who, sigs) in &got {
+            if let (Some(k), Some(g)) = (wire::xonly(who), sigs.get(i)) {
+                if arb::schnorr_ok(&k, &d, g) {
+                    m.insert(k, hex::decode(g).unwrap());
+                }
+            }
+        }
+        match pool::cosign(n, view, &c, &serialize_hex(&dist), i as u32, &d, session) {
+            Ok((osig, _, _)) => {
+                if rp.distribution_witness(&mut dist, i, &osig, &m).is_none() {
+                    n.check(
+                        "seizure distribution witness",
+                        false,
+                        "too few archivist signatures",
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                n.check("pool co-signed the seizure distribution", false, &e);
+                return;
+            }
+        }
+        session += 10;
+    }
+    let res = n.rpc.package(&dist);
+    n.rpc.mine(1).ok();
+    let vind = rp.vindicated();
+    let detail: Vec<String> = dist
+        .output
+        .iter()
+        .filter(|o| o.value.to_sat() > 0)
+        .map(|o| {
+            let who = if vind.iter().any(|v| v.1 == o.script_pubkey) {
+                "to a vindicated dissenter"
+            } else if r.payout_spks.contains(&o.script_pubkey) {
+                "to the appellant (appeal subsidy and excess)"
+            } else {
+                "to the archivists"
+            };
+            format!("{} sats {who}", o.value.to_sat())
+        })
+        .collect();
+    let confirmed = res
+        .as_ref()
+        .map(|t| n.rpc.confirmations(t) > 0)
+        .unwrap_or(false);
+    n.check(
+        &format!(
+            "seizure output distributed (§12) by the pool and the archivists: {}",
+            detail.join(", ")
+        ),
+        confirmed,
+        &match &res {
+            Ok(t) => t.to_string()[..16].to_string(),
+            Err(e) => e.clone(),
+        },
+    );
 }
 
 #[allow(dead_code)]

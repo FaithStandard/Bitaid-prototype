@@ -1,8 +1,18 @@
 //! Arbitration (Specification §10): the deterministic parts every party recomputes for itself —
 //! panel sizes, the seat draw from a block hash, the two-thirds supermajority, the asymmetric
 //! penalty and the tier commitment.
-use crate::wire::Ballot;
+use crate::case::{Alerted, Rostered};
+use crate::chain::Rpc;
+use crate::wire::{self, Ballot, Envelope, Msg};
 use bitaid_core::hashes::tagged;
+use bitaid_core::outputs::{self, bond_leaf, seizure_leaf};
+use bitaid_core::scripts::KeyPolicy;
+use bitaid_core::tree::ScriptTree;
+use bitaid_core::txbuild;
+use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey};
+use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
+use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 
 /// Panel size of a tier: 3 at first instance, 7, 15, 31, then doubling (§10.5).
 pub fn panel_size(tier: u32) -> usize {
@@ -96,6 +106,585 @@ pub fn tier_commitment(
     tagged("Bitaid/tier-commitment", &b)
 }
 
+// =================================================================== penalties and the seizure output
+
+/// Penalty steps in tenths of the seat fee. The isolation factor of §10.4 is rounded down to half a
+/// fee, so each seat pre-signs five forfeitures when it takes the seat, not one per possible split.
+pub const STEPS: [u64; 5] = [20, 25, 30, 35, 40];
+
+/// The step (tenths) for a factor: rounded down to the half, between 2× and 4×.
+pub fn step_of(factor: f64) -> u64 {
+    (((factor * 2.0).floor() / 2.0 * 10.0).round() as u64).clamp(20, 40)
+}
+
+/// Relative timelock of the seizure output's fallback leaf: one year of blocks (§12, B.1).
+pub const SEIZURE_LOCK: u32 = 52_560;
+
+/// The case's seizure output: a majority of its archivists and the oracle pool distribute it; after a
+/// year the first archivist alone (the prototype stands one key in for the harmed parties' aggregate).
+pub fn seizure_tree(
+    archivists: &[String],
+    oracle: &XOnlyPublicKey,
+) -> Option<(ScriptTree, KeyPolicy)> {
+    let mut ks: Vec<XOnlyPublicKey> = archivists.iter().filter_map(|a| wire::xonly(a)).collect();
+    ks.sort();
+    ks.dedup();
+    let first = *ks.first()?;
+    let pol = KeyPolicy::of(ks.len() / 2 + 1, ks);
+    let secp = Secp256k1::verification_only();
+    Some((
+        outputs::seizure(&secp, &pol, oracle, &first, SEIZURE_LOCK),
+        pol,
+    ))
+}
+
+/// A bond as its offer names it.
+#[derive(Clone, Debug)]
+pub struct Bond {
+    pub op: OutPoint,
+    pub value: u64,
+    pub scoped: XOnlyPublicKey,
+    pub cold: XOnlyPublicKey,
+    pub fallback: u32,
+    pub payout: ScriptBuf,
+}
+
+impl Bond {
+    pub fn from_offer(m: &Msg) -> Option<Bond> {
+        let Msg::SeatOffer {
+            bond,
+            bond_scoped,
+            bond_cold,
+            bond_fallback,
+            bond_value,
+            payout_spk,
+            ..
+        } = m
+        else {
+            return None;
+        };
+        Some(Bond {
+            op: OutPoint::from_str(bond).ok()?,
+            value: *bond_value,
+            scoped: wire::xonly(bond_scoped)?,
+            cold: wire::xonly(bond_cold)?,
+            fallback: *bond_fallback,
+            payout: ScriptBuf::from_hex(payout_spk).ok()?,
+        })
+    }
+    pub fn tree(&self, oracle: &XOnlyPublicKey) -> ScriptTree {
+        outputs::bond(
+            &Secp256k1::verification_only(),
+            &self.scoped,
+            &self.cold,
+            oracle,
+            self.fallback,
+        )
+    }
+    /// The forfeiture of `amount` into the seizure output, the rest re-bonded under the same script,
+    /// and the digest the scoped key and the oracle sign (FORFEIT leaf).
+    pub fn penalty_tx(
+        &self,
+        oracle: &XOnlyPublicKey,
+        amount: u64,
+        seizure: &ScriptBuf,
+    ) -> (Transaction, [u8; 32]) {
+        let t = self.tree(oracle);
+        let tx = txbuild::payout(
+            self.op,
+            &[
+                (amount, seizure.clone()),
+                (self.value - amount, t.script_pubkey()),
+            ],
+        );
+        let d = txbuild::scriptspend_digest(
+            &tx,
+            0,
+            &[txbuild::txout(self.value, t.script_pubkey())],
+            &t.scripts[bond_leaf::FORFEIT],
+        );
+        (tx, d)
+    }
+    /// The five pre-signed forfeitures' digests at a seat fee, in step order.
+    pub fn forfeit_digests(
+        &self,
+        oracle: &XOnlyPublicKey,
+        fee: u64,
+        seizure: &ScriptBuf,
+    ) -> Vec<[u8; 32]> {
+        STEPS
+            .iter()
+            .map(|st| self.penalty_tx(oracle, st * fee / 10, seizure).1)
+            .collect()
+    }
+    /// Completes a forfeiture with the arbitrator's pre-signature and the oracle's co-signature.
+    pub fn witness(
+        &self,
+        oracle: &XOnlyPublicKey,
+        tx: &mut Transaction,
+        pre: &[u8],
+        osig: &[u8; 64],
+    ) {
+        let t = self.tree(oracle);
+        tx.input[0].witness = Witness::from_slice(&[
+            osig.to_vec(),
+            pre.to_vec(),
+            t.scripts[bond_leaf::FORFEIT].to_bytes(),
+            t.control(bond_leaf::FORFEIT).serialize(),
+        ]);
+    }
+}
+
+pub fn schnorr_ok(key: &XOnlyPublicKey, digest: &[u8; 32], sig_hex: &str) -> bool {
+    let Ok(b) = hex::decode(sig_hex) else {
+        return false;
+    };
+    let Ok(sig) = bitcoin::secp256k1::schnorr::Signature::from_slice(&b) else {
+        return false;
+    };
+    Secp256k1::verification_only()
+        .verify_schnorr(&sig, &Message::from_digest(*digest), key)
+        .is_ok()
+}
+
+/// One tier as every party can rebuild it from the log.
+#[derive(Clone, Debug, Default)]
+pub struct Tier {
+    pub escalator: String,
+    pub offers: HashMap<String, Bond>,
+    pub seats: Vec<String>,
+    pub fee_paid: bool,
+    pub reveals: Vec<(String, Ballot)>,
+    pub committed: bool,
+    /// per seat, the five verified pre-signed forfeitures
+    pub forfeits: HashMap<String, Vec<String>>,
+}
+
+impl Tier {
+    pub fn verdict(&self) -> Option<Ballot> {
+        if !self.committed || self.reveals.len() < self.seats.len() {
+            return None;
+        }
+        let v: Vec<Ballot> = self.reveals.iter().map(|x| x.1.clone()).collect();
+        supermajority(self.seats.len(), &v)
+    }
+}
+
+/// A forfeiture the final ruling calls for.
+#[derive(Clone, Debug)]
+pub struct Penalty {
+    pub arbitrator: String,
+    pub tier: u32,
+    pub step: u64,
+    pub amount: u64,
+    pub bond: Bond,
+    pub pre: String,
+    pub tx: Transaction,
+    pub digest: [u8; 32],
+}
+
+/// A case's arbitration replayed from the log: every check the pool makes, made again by whoever
+/// replays it, so the pool, the archivists and the parties reach the same penalties and distribution.
+#[derive(Clone, Debug)]
+pub struct Replay {
+    pub case: String,
+    pub base_fee: u64,
+    pub oracle: XOnlyPublicKey,
+    pub archivists: Vec<String>,
+    /// the parties: caller and seats, with the seats' payout scripts
+    pub parties: Vec<(String, Option<ScriptBuf>)>,
+    pub tiers: BTreeMap<u32, Tier>,
+}
+
+impl Replay {
+    pub fn build(hist: &[Envelope], a: &Alerted, r: &Rostered, rpc: &Rpc) -> Option<Replay> {
+        let oracle = wire::xonly(&a.oracle_key)?;
+        let case = a.case_hex.clone();
+        let mut parties = vec![(a.caller.clone(), None)];
+        for (i, s) in r.seats.iter().enumerate() {
+            parties.push((s.clone(), r.payout_spks.get(i).cloned()));
+        }
+        let mut rp = Replay {
+            case: case.clone(),
+            base_fee: a.template.arb_fee,
+            oracle,
+            archivists: r.archivists.clone(),
+            parties,
+            tiers: BTreeMap::new(),
+        };
+        let seizure = rp.seizure_spk();
+        let mine: Vec<&Envelope> = hist
+            .iter()
+            .filter(|e| e.msg.case_id() == Some(case.as_str()))
+            .collect();
+        let mut vcommits: HashMap<(u32, String), String> = HashMap::new();
+        let mut forfeit_msgs: Vec<(String, u32, Vec<String>)> = vec![];
+        let mut committed: Vec<(u32, String)> = vec![];
+        let mut fees: Vec<(u32, String, String)> = vec![];
+        let mut seated: Vec<(String, Msg)> = vec![];
+        for e in &mine {
+            let s = &e.sender;
+            match &e.msg {
+                Msg::Escalate { tier, .. } => {
+                    let party = rp.parties.iter().any(|p| &p.0 == s);
+                    if party && *tier >= 1 && !rp.tiers.contains_key(tier) {
+                        rp.tiers.insert(
+                            *tier,
+                            Tier {
+                                escalator: s.clone(),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+                Msg::SeatOffer { tier, .. } => {
+                    if let (Some(t), Some(b)) = (rp.tiers.get_mut(tier), Bond::from_offer(&e.msg)) {
+                        t.offers.entry(s.clone()).or_insert(b);
+                    }
+                }
+                Msg::Seated { .. } => seated.push((s.clone(), e.msg.clone())),
+                Msg::FeePaid { tier, txid, .. } => fees.push((*tier, s.clone(), txid.clone())),
+                Msg::VerdictCommit {
+                    tier, commitment, ..
+                } => {
+                    vcommits
+                        .entry((*tier, s.clone()))
+                        .or_insert(commitment.clone());
+                }
+                Msg::TierCommitted { tier, txid, .. } => committed.push((*tier, txid.clone())),
+                Msg::Forfeits { tier, sigs, .. } => {
+                    forfeit_msgs.push((s.clone(), *tier, sigs.clone()))
+                }
+                _ => {}
+            }
+        }
+        for (s, m) in seated {
+            let Msg::Seated {
+                tier,
+                height,
+                block_hash,
+                offers,
+                seats,
+                ..
+            } = m
+            else {
+                continue;
+            };
+            let Some(t) = rp.tiers.get_mut(&tier) else {
+                continue;
+            };
+            if t.escalator != s || !t.seats.is_empty() {
+                continue;
+            }
+            let ok = offers.iter().all(|o| t.offers.contains_key(o))
+                && draw(&block_hash, &case, tier, &offers, panel_size(tier)) == seats
+                && rpc.block_hash(height).as_deref() == Some(block_hash.as_str());
+            if ok {
+                t.seats = seats;
+            }
+        }
+        for (tier, s, txid) in fees {
+            let fee = seat_fee(rp.base_fee, tier);
+            if let Some(t) = rp.tiers.get_mut(&tier) {
+                if t.escalator == s
+                    && !t.seats.is_empty()
+                    && t.seats
+                        .iter()
+                        .all(|x| rpc.paid_to(&txid, &t.offers[x].payout) >= fee)
+                {
+                    t.fee_paid = true;
+                }
+            }
+        }
+        for e in &mine {
+            if let Msg::VerdictReveal {
+                tier,
+                verdict,
+                salt,
+                ..
+            } = &e.msg
+            {
+                let Some(t) = rp.tiers.get_mut(tier) else {
+                    continue;
+                };
+                let ok = t.seats.contains(&e.sender)
+                    && !t.reveals.iter().any(|x| x.0 == e.sender)
+                    && vcommits.get(&(*tier, e.sender.clone())).map(|c| {
+                        *c == hex::encode(verdict.commitment(&wire::h32(salt).unwrap_or_default()))
+                    }) == Some(true);
+                if ok {
+                    t.reveals.push((e.sender.clone(), verdict.clone()));
+                }
+            }
+        }
+        for (tier, txid) in committed {
+            if let Some(t) = rp.tiers.get_mut(&tier) {
+                let cm = tier_commitment(&case, tier, &t.seats, &t.reveals);
+                if t.fee_paid && rpc.has_op_return(&txid, &cm) {
+                    t.committed = true;
+                }
+            }
+        }
+        if let Some(spk) = seizure {
+            for (s, tier, sigs) in forfeit_msgs {
+                let fee = seat_fee(rp.base_fee, tier);
+                let Some(t) = rp.tiers.get_mut(&tier) else {
+                    continue;
+                };
+                let Some(b) = t.offers.get(&s).filter(|_| t.seats.contains(&s)) else {
+                    continue;
+                };
+                let ds = b.forfeit_digests(&oracle, fee, &spk);
+                if sigs.len() == ds.len()
+                    && ds
+                        .iter()
+                        .zip(&sigs)
+                        .all(|(d, g)| schnorr_ok(&b.scoped, d, g))
+                {
+                    t.forfeits.entry(s).or_insert(sigs);
+                }
+            }
+        }
+        Some(rp)
+    }
+
+    pub fn seizure_spk(&self) -> Option<ScriptBuf> {
+        seizure_tree(&self.archivists, &self.oracle).map(|t| t.0.script_pubkey())
+    }
+
+    /// The final ruling: the last tier that reached two thirds (hung tiers above it decide nothing).
+    pub fn final_ruling(&self) -> Option<(u32, Ballot)> {
+        self.tiers
+            .iter()
+            .rev()
+            .find_map(|(k, t)| t.verdict().map(|v| (*k, v)))
+    }
+
+    /// Every incoherent vote, in every tier, settled against the final ruling (§10.4): the isolation
+    /// measured on the final tier's split, rounded down to the half fee, at that vote's own seat fee.
+    pub fn penalties(&self) -> Vec<Penalty> {
+        let (Some((ft, fv)), Some(spk)) = (self.final_ruling(), self.seizure_spk()) else {
+            return vec![];
+        };
+        let fk = verdict_key(&fv);
+        let fin = &self.tiers[&ft];
+        let n_f = fin.seats.len();
+        let mut out = vec![];
+        for (k, t) in &self.tiers {
+            if !t.committed {
+                continue;
+            }
+            for (arb, v) in &t.reveals {
+                let vk = verdict_key(v);
+                if vk == fk {
+                    continue;
+                }
+                let agree = fin
+                    .reveals
+                    .iter()
+                    .filter(|x| verdict_key(&x.1) == vk)
+                    .count();
+                let step = step_of(penalty_factor(n_f, agree.max(1)));
+                let fee = seat_fee(self.base_fee, *k);
+                let (Some(bond), Some(pre)) = (t.offers.get(arb), t.forfeits.get(arb)) else {
+                    continue;
+                };
+                let i = STEPS.iter().position(|x| *x == step).unwrap();
+                let amount = step * fee / 10;
+                let (tx, digest) = bond.penalty_tx(&self.oracle, amount, &spk);
+                out.push(Penalty {
+                    arbitrator: arb.clone(),
+                    tier: *k,
+                    step,
+                    amount,
+                    bond: bond.clone(),
+                    pre: pre[i].clone(),
+                    tx,
+                    digest,
+                });
+            }
+        }
+        out
+    }
+
+    /// Arbitrators of lower tiers who voted as the final ruling where their own panel did not.
+    pub fn vindicated(&self) -> Vec<(String, ScriptBuf)> {
+        let Some((ft, fv)) = self.final_ruling() else {
+            return vec![];
+        };
+        let fk = verdict_key(&fv);
+        let mut out = vec![];
+        for (k, t) in &self.tiers {
+            if *k >= ft || !t.committed {
+                continue;
+            }
+            if t.verdict().map(|v| verdict_key(&v) == fk).unwrap_or(false) {
+                continue;
+            }
+            for (arb, v) in &t.reveals {
+                if verdict_key(v) == fk {
+                    if let Some(b) = t.offers.get(arb) {
+                        out.push((arb.clone(), b.payout.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The seizure output's distribution (§12) over the penalties' outputs. No restitution is due when
+    /// an appeal corrected a verdict before it paid out, so: half to the vindicated dissenters; then the
+    /// appeal subsidy of §10.4, refunding a re-roll's fees to whoever paid them when the verdict it
+    /// re-rolled was contested (none after a unanimous panel); the excess to the party that paid for the
+    /// tier that overturned a verdict, or, if none was overturned, to the case's archivists.
+    pub fn distribution(&self, pens: &[Penalty]) -> Option<(Transaction, Vec<TxOut>)> {
+        let spk = self.seizure_spk()?;
+        let total: u64 = pens.iter().map(|p| p.amount).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut outs: Vec<(u64, ScriptBuf)> = vec![];
+        let vind = self.vindicated();
+        let mut left = total;
+        if !vind.is_empty() {
+            let each = total / 2 / vind.len() as u64;
+            for (_, p) in &vind {
+                outs.push((each, p.clone()));
+                left -= each;
+            }
+        }
+        let payout_of = |who: &str| {
+            self.parties
+                .iter()
+                .find(|p| p.0 == who)
+                .and_then(|p| p.1.clone())
+        };
+        let (ft, fv) = self.final_ruling()?;
+        // the verdict standing before tier k, and whether its panel was split
+        let before = |k: u32| -> (Option<Ballot>, bool) {
+            for (_, t) in self.tiers.range(..k).rev() {
+                if let Some(v) = t.verdict() {
+                    let key = verdict_key(&v);
+                    let split = t.reveals.iter().any(|x| verdict_key(&x.1) != key);
+                    return (Some(v), split);
+                }
+            }
+            (None, true)
+        };
+        for (k, t) in &self.tiers {
+            if *k < 2 || !t.fee_paid || left == 0 || !before(*k).1 {
+                continue;
+            }
+            let Some(p) = payout_of(&t.escalator) else {
+                continue;
+            };
+            let paid = seat_fee(self.base_fee, *k) * t.seats.len() as u64;
+            let x = paid.min(left);
+            outs.push((x, p));
+            left -= x;
+        }
+        if left > 0 {
+            let overturned = before(ft)
+                .0
+                .map(|v| verdict_key(&v) != verdict_key(&fv))
+                .unwrap_or(false);
+            match payout_of(&self.tiers[&ft].escalator).filter(|_| overturned) {
+                Some(p) => outs.push((left, p)),
+                None => {
+                    let mut ks: Vec<XOnlyPublicKey> = self
+                        .archivists
+                        .iter()
+                        .filter_map(|a| wire::xonly(a))
+                        .collect();
+                    ks.sort();
+                    ks.dedup();
+                    let secp = Secp256k1::verification_only();
+                    let each = left / ks.len().max(1) as u64;
+                    for k in ks {
+                        outs.push((each, ScriptBuf::new_p2tr(&secp, k, None)));
+                    }
+                }
+            }
+        }
+        let mut output: Vec<TxOut> = outs
+            .iter()
+            .map(|(v, s)| txbuild::txout(*v, s.clone()))
+            .collect();
+        output.push(txbuild::txout(0, bitaid_core::scripts::p2a()));
+        let input = pens
+            .iter()
+            .map(|p| TxIn {
+                previous_output: OutPoint {
+                    txid: p.tx.compute_txid(),
+                    vout: 0,
+                },
+                sequence: Sequence(0xffff_fffd),
+                ..Default::default()
+            })
+            .collect();
+        let tx = Transaction {
+            version: txbuild::VERSION,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input,
+            output,
+        };
+        let prev = pens
+            .iter()
+            .map(|p| txbuild::txout(p.amount, spk.clone()))
+            .collect();
+        Some((tx, prev))
+    }
+
+    /// The digest of input `i` of the distribution (DISTRIBUTE leaf).
+    pub fn distribution_digest(
+        &self,
+        tx: &Transaction,
+        prev: &[TxOut],
+        i: usize,
+    ) -> Option<[u8; 32]> {
+        let (t, _) = seizure_tree(&self.archivists, &self.oracle)?;
+        Some(txbuild::scriptspend_digest(
+            tx,
+            i,
+            prev,
+            &t.scripts[seizure_leaf::DISTRIBUTE],
+        ))
+    }
+
+    /// Completes input `i` of the distribution: the oracle's co-signature and the archivists' signatures.
+    pub fn distribution_witness(
+        &self,
+        tx: &mut Transaction,
+        i: usize,
+        osig: &[u8; 64],
+        arch: &HashMap<XOnlyPublicKey, Vec<u8>>,
+    ) -> Option<()> {
+        let (t, pol) = seizure_tree(&self.archivists, &self.oracle)?;
+        let mut items: Vec<Vec<u8>> = vec![osig.to_vec()];
+        if pol.devices.len() == 1 {
+            items.push(arch.get(&pol.devices[0])?.clone());
+        } else {
+            let mut given = 0;
+            for d in pol.devices.iter().rev() {
+                match arch.get(d).filter(|_| given < pol.threshold) {
+                    Some(s) => {
+                        items.push(s.clone());
+                        given += 1;
+                    }
+                    None => items.push(vec![]),
+                }
+            }
+            if given < pol.threshold {
+                return None;
+            }
+        }
+        items.push(t.scripts[seizure_leaf::DISTRIBUTE].to_bytes());
+        items.push(t.control(seizure_leaf::DISTRIBUTE).serialize());
+        tx.input[i].witness = Witness::from_slice(&items);
+        Some(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +723,17 @@ mod tests {
             (penalty_factor(15, 5) - 2.0).abs() < 1e-9,
             "a third dissenting pays 2x"
         );
+    }
+
+    #[test]
+    fn steps() {
+        assert_eq!(step_of(2.0), 20);
+        assert_eq!(step_of(2.49), 20);
+        assert_eq!(step_of(2.5), 25);
+        assert_eq!(step_of(3.99), 35);
+        assert_eq!(step_of(4.0), 40);
+        assert_eq!(step_of(penalty_factor(7, 1)), 40);
+        assert_eq!(step_of(penalty_factor(7, 2)), 25);
     }
 
     #[test]

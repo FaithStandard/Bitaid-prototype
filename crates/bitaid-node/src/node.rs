@@ -52,6 +52,8 @@ pub struct Node {
     pub case_keys: HashMap<String, [u8; 32]>,
     /// verified messages not yet asked for
     backlog: VecDeque<(Envelope, Event)>,
+    /// every verified message this node has read, in arrival order: replayed by `arb::Replay`
+    pub history: Vec<Envelope>,
     /// encrypted case messages whose key has not arrived yet
     locked: Vec<Event>,
     pub t0: Instant,
@@ -145,6 +147,7 @@ impl Node {
             rpc,
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
+            history: vec![],
             locked: vec![],
             t0: Instant::now(),
             last_sent: Instant::now() - Duration::from_secs(10),
@@ -274,6 +277,9 @@ impl Node {
         // the Bitaid signature and the event must be by the same key
         if env.sender != e.pubkey {
             return None;
+        }
+        if env.msg.case_id().is_some() {
+            self.history.push(env.clone());
         }
         Some(env)
     }

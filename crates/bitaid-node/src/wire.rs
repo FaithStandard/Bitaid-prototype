@@ -152,8 +152,11 @@ pub enum Msg {
         oracle_nonces: Vec<String>,
         refund_height: u32,
         incident_txid: String,
-        /// the case key sealed to each seat (hex), then to each pool member in member order
+        /// the case key sealed to each seat (hex), then to each pool member in member order, then to
+        /// each archivist of the case
         sealed_keys: Vec<String>,
+        /// identity keys of the case's archivists: they co-sign the seizure output's distribution (§12)
+        archivists: Vec<Hex32>,
     },
     /// Every signer, round 1: nonces for every message of the set (encrypted with the case key).
     SigNonces {
@@ -171,10 +174,14 @@ pub enum Msg {
     },
     /// Caller asks the pool to co-sign the incident transaction once the set is complete: a FROST
     /// session per request; a member that commits but does not sign is replaced in the next session.
+    /// Also used, after a case is final, for the oracle's half of a bond forfeiture or of the seizure
+    /// output's distribution, which every member co-signs only if its own replay of the case calls for it.
     CosignRequest {
         case_id: Hex32,
         session: u32,
         tx: String,
+        /// the input to co-sign
+        input: u32,
     },
     PoolCommit {
         case_id: Hex32,
@@ -270,6 +277,7 @@ pub enum Msg {
         bond_scoped: Hex32,
         bond_cold: Hex32,
         bond_fallback: u32,
+        bond_value: u64,
         payout_spk: String,
     },
     /// The escalating party, after a block mined once offers closed: the offers considered, the block,
@@ -300,6 +308,24 @@ pub enum Msg {
         tier: u32,
         verdict: Ballot,
         salt: Hex32,
+    },
+    /// Seated arbitrator, on taking the seat: its bond's forfeitures pre-signed with its scoped key, one per
+    /// penalty step (2×, 2.5×, 3×, 3.5×, 4× the seat fee), each paying the case's seizure output (§10.4, §12).
+    Forfeits {
+        case_id: Hex32,
+        tier: u32,
+        sigs: Vec<String>,
+    },
+    /// Whoever collects a case's seizure output asks its archivists to co-sign the distribution (§12).
+    SeizureRequest {
+        case_id: Hex32,
+        tx: String,
+    },
+    /// An archivist's signatures on that distribution, one per input, after its own replay of the case.
+    SeizureSig {
+        case_id: Hex32,
+        txid: String,
+        sigs: Vec<String>,
     },
     /// The tier's commitment (roster and answers) is in this transaction's OP_RETURN (B.2).
     TierCommitted {
@@ -351,6 +377,9 @@ impl Msg {
             Msg::VerdictCommit { .. } => "verdict-commit",
             Msg::VerdictReveal { .. } => "verdict-reveal",
             Msg::TierCommitted { .. } => "tier-committed",
+            Msg::Forfeits { .. } => "forfeits",
+            Msg::SeizureRequest { .. } => "seizure-request",
+            Msg::SeizureSig { .. } => "seizure-sig",
         }
     }
     pub fn case_id(&self) -> Option<&str> {
@@ -386,7 +415,10 @@ impl Msg {
             | Msg::FeePaid { case_id, .. }
             | Msg::VerdictCommit { case_id, .. }
             | Msg::VerdictReveal { case_id, .. }
-            | Msg::TierCommitted { case_id, .. } => Some(case_id),
+            | Msg::TierCommitted { case_id, .. }
+            | Msg::Forfeits { case_id, .. }
+            | Msg::SeizureRequest { case_id, .. }
+            | Msg::SeizureSig { case_id, .. } => Some(case_id),
         }
     }
 }

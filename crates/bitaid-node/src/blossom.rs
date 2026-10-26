@@ -113,14 +113,36 @@ pub fn spawn(addr: &str, dir: PathBuf, policy: Policy) -> std::io::Result<Server
     let (stored, refused) = (Arc::new(Mutex::new(0u64)), Arc::new(Mutex::new(0u64)));
     let (s2, r2, p2) = (stored.clone(), refused.clone(), policy.clone());
     std::thread::spawn(move || {
-        for mut req in srv.incoming_requests() {
+        for req in srv.incoming_requests() {
+            // one thread per request, so a slow client never holds up the others
+            let (dir, s2, r2, p2) = (dir.clone(), s2.clone(), r2.clone(), p2.clone());
+            std::thread::spawn(move || serve(req, &dir, &s2, &r2, &p2));
+        }
+    });
+    Ok(Server {
+        url,
+        policy,
+        stored,
+        refused,
+    })
+}
+
+fn serve(
+    mut req: tiny_http::Request,
+    dir: &std::path::Path,
+    s2: &Arc<Mutex<u64>>,
+    r2: &Arc<Mutex<u64>>,
+    p2: &Policy,
+) {
+    {
+        {
             let path = req.url().trim_start_matches('/').to_string();
             let resp = match req.method() {
                 tiny_http::Method::Put if path == "upload" => {
                     let mut body = Vec::new();
                     let _ = req.as_reader().read_to_end(&mut body);
                     let hash = hex::encode(sha256(&body));
-                    match check_auth(header(&req, "authorization"), &hash, &p2) {
+                    match check_auth(header(&req, "authorization"), &hash, p2) {
                         Ok(_) => {
                             let _ = std::fs::write(dir.join(&hash), &body);
                             *s2.lock().unwrap() += 1;
@@ -162,13 +184,7 @@ pub fn spawn(addr: &str, dir: PathBuf, policy: Policy) -> std::io::Result<Server
             };
             let _ = req.respond(resp);
         }
-    });
-    Ok(Server {
-        url,
-        policy,
-        stored,
-        refused,
-    })
+    }
 }
 
 /// The BUD-02 authorisation header for uploading `blob` as evidence of `case_id`.

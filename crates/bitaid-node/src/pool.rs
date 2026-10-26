@@ -478,17 +478,23 @@ impl Member {
         package_hex: &str,
         nonces: &frost::round1::SigningNonces,
         digest: &[u8; 32],
-    ) -> Option<String> {
-        let pkg = frost::SigningPackage::deserialize(&hex::decode(package_hex).ok()?).ok()?;
-        if pkg.message() != digest
-            || !pkg
-                .signing_commitments()
-                .contains_key(&conv::id(self.key.id))
+    ) -> Result<String, &'static str> {
+        let pkg = hex::decode(package_hex)
+            .ok()
+            .and_then(|b| frost::SigningPackage::deserialize(&b).ok())
+            .ok_or("unreadable package")?;
+        if !pkg
+            .signing_commitments()
+            .contains_key(&conv::id(self.key.id))
         {
-            return None;
+            return Err("this member was not chosen for the session");
         }
-        let sh = frost::round2::sign(&pkg, nonces, &self.key.key_package).ok()?;
-        Some(hex::encode(sh.serialize()))
+        if pkg.message() != digest {
+            return Err("not the digest this member checked");
+        }
+        let sh = frost::round2::sign(&pkg, nonces, &self.key.key_package)
+            .map_err(|_| "signing failed")?;
+        Ok(hex::encode(sh.serialize()))
     }
 
     /// The public attestation share for outcome `m` on nonce `index`; refuses a second outcome.
@@ -572,15 +578,20 @@ pub fn reserve_nonces(
 
 /// Coordinates a FROST co-signature over `digest` (ROAST-style: stallers are excluded and replaced).
 /// Returns the signature, the sessions used and the signers.
+/// `input` is the input co-signed; `first` the first session number (each transaction a caller has
+/// co-signed uses its own range of sessions).
+#[allow(clippy::too_many_arguments)]
 pub fn cosign(
     n: &mut Node,
     view: &PoolView,
     case: &str,
     tx_hex: &str,
+    input: u32,
     digest: &[u8; 32],
+    first: u32,
 ) -> Result<([u8; 64], u32, Vec<u16>), String> {
     let mut excluded: BTreeSet<u16> = BTreeSet::new();
-    for session in 1..=4u32 {
+    for session in first..first + 4 {
         n.send_case(
             case,
             &view.identities(),
@@ -588,6 +599,7 @@ pub fn cosign(
                 case_id: case.into(),
                 session,
                 tx: tx_hex.into(),
+                input,
             },
             false,
         );
