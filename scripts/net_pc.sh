@@ -1,6 +1,7 @@
 #!/bin/sh
-# Internet test, PC side (WSL2): the regtest chain, a gossip Core, oracle pool members 1-2 (2 stalls),
-# the archivist, responders r3 and r4 (r4 sends a bad partial signature). One onion address carries
+# Internet test, PC side (WSL): the regtest chain, a gossip Core, oracle pool members 1-2 (2 stalls),
+# the archivist, nine arbitrators (two corrupt), responders r3 (intervened) and r4 (sends a bad partial
+# signature). One onion address carries
 # the Core (7700), the archive (7480) and the chain's RPC (18443); nothing is opened on the router.
 #   sh scripts/net_pc.sh start | report | stop
 # Logs also go to LOGDIR (default: the Windows "Files for Claude\pc_logs" folder) so they can be read there.
@@ -41,7 +42,7 @@ start)
   OUT=$(sh scripts/tor_up.sh 7700 7480 18443) || { echo "$OUT"; exit 1; }
   ONION=$(echo "$OUT" | sed -n 's/^ONION=//p')
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
-  export BITAID_RPC=http://bitaid:regtest@127.0.0.1:18443
+  export BITAID_RPC=http://bitaid:regtest@127.0.0.1:18443 BITAID_SELF_ONION=$ONION
   X="--exit-after 3600"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
   BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
@@ -49,9 +50,13 @@ start)
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait 3600 $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait 3600 $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pc --listen 127.0.0.1:7480 --public-url http://$ONION:7480 $P $X >/dev/null 2>"$L/archivist.log" </dev/null &
+  for i in 1 2 3 4 5 6 7 8 9; do
+    extra=""; [ $i = 4 ] && extra="--corrupt"; [ $i = 8 ] && extra="--corrupt"
+    BITAID_WALLET=w nohup target/release/bitaid-node --role arbitrator --name arb$i-pc $P $extra $X >/dev/null 2>"$L/arb$i.log" </dev/null &
+  done
   sleep 2
-  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --ballot I,D --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
-  BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --ballot I,D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
+  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
+  BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
   echo "$ONION" > "$L/onion.txt"
   echo "PC_READY  onion: $ONION"

@@ -149,6 +149,7 @@ mod tests {
             max_signers: 5,
             joining_window: 10,
             dispute_window: 10,
+            arb_fee: 20_000,
             refund_delay: 100,
             refund_xpub: String::new(),
         }

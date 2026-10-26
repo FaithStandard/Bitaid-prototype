@@ -20,10 +20,13 @@ responder|caller)
   termux-wake-lock 2>/dev/null
   if [ "$1" = responder ]; then
     BITAID_WALLET=w $BIN --role pool-member --name pool3 --id 3 --n 4 --t 3 --setup-wait 3600 $P --exit-after 3600 2>pool.log & PM=$!
-    BITAID_WALLET=r1 $BIN --role responder --name r1 $P --mine --ballot I,D --broadcast --lat 13.6935 --lon -89.2190
+    # r1 documented (what its footage shows) but claims in its ballot that it intervened; it escalates
+    # when the vote deadlocks and appeals once if the panel rules against it (ARB=0: an honest r1)
+    if [ "${ARB:-1}" = 1 ]; then CLAIM="--act D --claim I --others D --escalate --appeal --offer-window 40"; else CLAIM="--act D --claim D --others I"; fi
+    BITAID_WALLET=r1 $BIN --role responder --name r1 $P --mine $CLAIM --broadcast --settle-wait 1800 --lat 13.6935 --lon -89.2190
   else
     BITAID_WALLET=w $BIN --role pool-member --name pool4-liar --id 4 --n 4 --t 3 --liar --setup-wait 3600 $P --exit-after 3600 2>pool.log & PM=$!
-    BITAID_WALLET=caller $BIN --role caller --name caller $P --mine --window 30 --dispute-window 15
+    BITAID_WALLET=caller $BIN --role caller --name caller $P --mine --window 30 --dispute-window 20 --settle-wait 1800
     sleep 5
   fi
   kill $PM 2>/dev/null

@@ -43,3 +43,13 @@ pub fn http_for(url: &str) -> &'static ureq::Agent {
         }),
     }
 }
+pub mod arb;
+
+/// A node on the same machine as a service reaches it locally rather than through its own onion
+/// address: `BITAID_SELF_ONION` names this machine's onion, and URLs on it become 127.0.0.1.
+pub fn local_url(url: &str) -> String {
+    match std::env::var("BITAID_SELF_ONION") {
+        Ok(o) if !o.is_empty() && url.contains(&o) => url.replace(&o, "127.0.0.1"),
+        _ => url.to_string(),
+    }
+}

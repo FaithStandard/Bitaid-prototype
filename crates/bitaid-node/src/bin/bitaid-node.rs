@@ -119,6 +119,7 @@ fn main() {
         }
         "pool-member" | "oracle" => pool_member(node),
         "archivist" => archivist(node),
+        "arbitrator" => arbitrator(node),
         "caller" => caller(node),
         "responder" => responder(node),
         r => panic!("unknown role {r}"),
@@ -170,6 +171,14 @@ fn pool_member(mut n: Node) -> i32 {
     let mut reveals: HashMap<String, BTreeMap<String, Ballot>> = HashMap::new();
     let mut ready_at: HashMap<String, Instant> = HashMap::new();
     let mut done: std::collections::HashSet<String> = Default::default();
+    // arbitration, per case: the current tier, who escalated it and at what height
+    let mut esc: HashMap<String, (u32, String, u32)> = HashMap::new();
+    let mut offers: HashMap<(String, u32), HashMap<String, (bool, String)>> = HashMap::new(); // sender -> (bond ok, payout)
+    let mut panels: HashMap<(String, u32), Vec<String>> = HashMap::new();
+    let mut fees_ok: std::collections::HashSet<(String, u32)> = Default::default();
+    let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
+    let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
+    let mut verdicts: HashMap<String, Ballot> = HashMap::new();
     let idle = num("--exit-after", 900u64);
     let mut last = Instant::now();
     loop {
@@ -186,7 +195,11 @@ fn pool_member(mut n: Node) -> i32 {
         for c in due {
             ready_at.remove(&c);
             let (a, r) = (&alerts[&c], &rosters[&c]);
-            let ballots: Vec<Ballot> = reveals[&c].values().cloned().collect();
+            // an arbitrated case settles on its last tier's verdict; otherwise on the ballots
+            let ballots: Vec<Ballot> = match verdicts.get(&c) {
+                Some(v) => vec![v.clone()],
+                None => reveals[&c].values().cloned().collect(),
+            };
             match decide(r.seats.len(), a.template.pots, &a.template, &ballots) {
                 Decision::Settled(ends) => {
                     for e in ends {
@@ -396,6 +409,199 @@ fn pool_member(mut n: Node) -> i32 {
                         ));
                     }
                     None => n.log("package refused: not the digest this member checked"),
+                }
+            }
+            Msg::Escalate { case_id, tier, .. } => {
+                let (Some(a), Some(r)) = (alerts.get(case_id), rosters.get(case_id)) else {
+                    continue;
+                };
+                let cur = esc.get(case_id).map(|x| x.0).unwrap_or(0);
+                // only a bonded party to the case, and only the next tier
+                if *tier != cur + 1
+                    || !(a.caller == s || r.seats.contains(&s))
+                    || done.contains(case_id)
+                {
+                    continue;
+                }
+                esc.insert(case_id.clone(), (*tier, s.clone(), n.rpc.height()));
+                ready_at.remove(case_id);
+                n.log(&format!(
+                    "case {} escalated to tier {tier} by {}",
+                    &case_id[..8],
+                    &s[..8]
+                ));
+            }
+            Msg::SeatOffer {
+                case_id,
+                tier,
+                bond,
+                bond_scoped,
+                bond_cold,
+                bond_fallback,
+                payout_spk,
+            } => {
+                let Some(a) = alerts.get(case_id) else {
+                    continue;
+                };
+                let value: u64 = a.template.pots.iter().sum();
+                let secp = Secp256k1::verification_only();
+                let ok = (|| {
+                    let op = OutPoint::from_str(bond).ok()?;
+                    let u = n.rpc.utxo(&op)?;
+                    let t = outputs::bond(
+                        &secp,
+                        &wire::xonly(bond_scoped)?,
+                        &wire::xonly(bond_cold)?,
+                        &wire::xonly(&okey)?,
+                        *bond_fallback,
+                    );
+                    (u.script_pubkey == t.script_pubkey()
+                        && u.value.to_sat() >= ARB_BOND_FLOOR.max(2 * value))
+                    .then_some(())
+                })()
+                .is_some();
+                offers
+                    .entry((case_id.clone(), *tier))
+                    .or_default()
+                    .insert(s.clone(), (ok, payout_spk.clone()));
+            }
+            Msg::Seated {
+                case_id,
+                tier,
+                height,
+                block_hash,
+                offers: listed,
+                seats,
+                ..
+            } => {
+                let Some((t, by, h0)) = esc.get(case_id).cloned() else {
+                    continue;
+                };
+                if *tier != t || by != s {
+                    continue;
+                }
+                let seen = offers
+                    .get(&(case_id.clone(), *tier))
+                    .cloned()
+                    .unwrap_or_default();
+                let size = bitaid_node::arb::panel_size(*tier);
+                // the draw must be reproducible: a block mined after escalation, offers this member
+                // saw with valid bonds, and the seats the block's hash picks among them
+                let block_ok = *height > h0
+                    && n.rpc.block_hash(*height).as_deref() == Some(block_hash.as_str());
+                let offers_ok = listed
+                    .iter()
+                    .all(|o| seen.get(o).map(|x| x.0).unwrap_or(false));
+                let draw_ok =
+                    bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
+                if block_ok && offers_ok && draw_ok {
+                    panels.insert((case_id.clone(), *tier), seats.clone());
+                    n.log(&format!("tier {tier} panel of {} checked: block {height}, draw reproduced, bonds above twice the case value", seats.len()));
+                } else {
+                    n.log(&format!("tier {tier} panel rejected: block {block_ok}, offers {offers_ok}, draw {draw_ok}"));
+                }
+            }
+            Msg::FeePaid {
+                case_id,
+                tier,
+                txid,
+            } => {
+                let key = (case_id.clone(), *tier);
+                let (Some(seats), Some(a)) = (panels.get(&key), alerts.get(case_id)) else {
+                    continue;
+                };
+                let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, *tier);
+                let seen = offers.get(&key).cloned().unwrap_or_default();
+                let paid = seats.iter().all(|sid| {
+                    seen.get(sid)
+                        .and_then(|x| bitcoin::ScriptBuf::from_hex(&x.1).ok())
+                        .map(|spk| n.rpc.paid_to(txid, &spk) >= fee)
+                        .unwrap_or(false)
+                });
+                if paid {
+                    fees_ok.insert(key);
+                }
+            }
+            Msg::VerdictCommit {
+                case_id,
+                tier,
+                commitment,
+            } => {
+                let key = (case_id.clone(), *tier);
+                if panels.get(&key).map(|p| p.contains(&s)).unwrap_or(false) {
+                    vcommits
+                        .entry(key)
+                        .or_default()
+                        .insert(s.clone(), commitment.clone());
+                }
+            }
+            Msg::VerdictReveal {
+                case_id,
+                tier,
+                verdict,
+                salt,
+            } => {
+                let key = (case_id.clone(), *tier);
+                let ok = vcommits
+                    .get(&key)
+                    .and_then(|m| m.get(&s))
+                    .map(|c| *c == hex::encode(verdict.commitment(&h32(salt).unwrap_or_default())))
+                    .unwrap_or(false);
+                if ok {
+                    let l = vreveals.entry(key).or_default();
+                    if !l.iter().any(|x| x.0 == s) {
+                        l.push((s.clone(), verdict.clone()));
+                    }
+                }
+            }
+            Msg::TierCommitted {
+                case_id,
+                tier,
+                txid,
+            } => {
+                let key = (case_id.clone(), *tier);
+                let (Some(seats), Some(rv)) =
+                    (panels.get(&key).cloned(), vreveals.get(&key).cloned())
+                else {
+                    continue;
+                };
+                if rv.len() < seats.len()
+                    || !fees_ok.contains(&key)
+                    || esc.get(case_id).map(|x| x.0) != Some(*tier)
+                {
+                    n.log(&format!(
+                        "tier {tier}: not attestable yet (reveals {}/{}, fees {})",
+                        rv.len(),
+                        seats.len(),
+                        fees_ok.contains(&key)
+                    ));
+                    continue;
+                }
+                let cm = bitaid_node::arb::tier_commitment(case_id, *tier, &seats, &rv);
+                if !n.rpc.has_op_return(txid, &cm) {
+                    n.log("tier commitment not on chain; not attesting");
+                    continue;
+                }
+                let votes: Vec<Ballot> = rv.iter().map(|x| x.1.clone()).collect();
+                match bitaid_node::arb::supermajority(seats.len(), &votes) {
+                    Some(v) => {
+                        let k = bitaid_node::arb::verdict_key(&v);
+                        let dissenters: Vec<&String> = rv
+                            .iter()
+                            .filter(|x| bitaid_node::arb::verdict_key(&x.1) != k)
+                            .map(|x| &x.0)
+                            .collect();
+                        for d in &dissenters {
+                            n.log(&format!("tier {tier}: dissenter {} owes {:.1}× the fee (provisional until the final ruling)", &d[..8], bitaid_node::arb::penalty_factor(seats.len(), dissenters.len())));
+                        }
+                        verdicts.insert(case_id.clone(), v.clone());
+                        let w = alerts[case_id].template.dispute_window as u64;
+                        n.log(&format!("tier {tier} verdict {} committed on chain; final in {w} s unless appealed", verdict_classes(&v)));
+                        ready_at.insert(case_id.clone(), Instant::now() + secs(w));
+                    }
+                    None => n.log(&format!(
+                        "tier {tier}: no two-thirds verdict; the case needs a re-roll"
+                    )),
                 }
             }
             Msg::BallotCommit {
@@ -772,7 +978,36 @@ fn settle(
     out
 }
 
+fn class_of(s: &str) -> Class {
+    match s.trim() {
+        "I" => Class::Intervention,
+        "D" => Class::Documentation,
+        _ => Class::None,
+    }
+}
+
 fn ballot_from_args(seats: usize, my_seat: usize) -> Ballot {
+    // --claim I|D: what this attendee says it did, every other seat --others (default D); this is
+    // what a ballot asserts, which may differ from what the footage shows (--act)
+    if let Some(me) = arg("--claim") {
+        let others = class_of(&arg("--others").unwrap_or("D".into()));
+        let acts = (0..seats)
+            .map(|i| Act {
+                seat: i as u8,
+                class: if i == my_seat {
+                    class_of(&me)
+                } else {
+                    others.clone()
+                },
+                footage: None,
+            })
+            .collect();
+        return Ballot {
+            acts,
+            outcome_achieved: !flag("--not-achieved"),
+            misuse: flag("--misuse"),
+        };
+    }
     // --ballot "I,I,D" gives every seat's class as this attendee saw it; default: everyone intervened
     let spec = arg("--ballot").unwrap_or_default();
     let classes: Vec<Class> = spec
@@ -810,9 +1045,15 @@ fn upload_evidence(
 ) {
     let c = a.case_hex.clone();
     let key = tagged("Bitaid/evidence-key", &n.case_keys[&c]);
-    let footage: Vec<u8> = (0..bytes)
-        .map(|i| (i * 31 % 251) as u8 ^ n.keys.secret_bytes()[0])
-        .collect();
+    // simulated footage: a header stating what this recorder actually did (what a camera would show,
+    // --act, default I), then filler; arbitrators read it after decrypting
+    let mut footage = format!(
+        "BITAID-SIMULATED-FOOTAGE recorder={} act={}\n",
+        n.me(),
+        arg("--act").unwrap_or("I".into())
+    )
+    .into_bytes();
+    footage.extend((footage.len()..bytes).map(|i| (i * 31 % 251) as u8 ^ n.keys.secret_bytes()[0]));
     let blobs = blossom::seal_footage(&key, &c, &footage, 256 * 1024);
     let t0 = Instant::now();
     let mut ok = 0;
@@ -914,6 +1155,589 @@ fn vote(n: &mut Node, a: &Alerted, r: &Rostered, ballot: Ballot) {
     );
 }
 
+/// Every seat's revealed ballot (after `vote`), for the attendee's own reading of the outcome.
+fn collect_reveals(n: &mut Node, a: &Alerted, r: &Rostered) -> Vec<Ballot> {
+    let c = a.case_hex.clone();
+    let seats = r.seats.clone();
+    let mut seen = std::collections::HashSet::new();
+    n.collect(
+        secs(120),
+        |env, _| match &env.msg {
+            Msg::BallotReveal {
+                case_id, ballot, ..
+            } if *case_id == c
+                && seats.contains(&env.sender)
+                && seen.insert(env.sender.clone()) =>
+            {
+                Some(ballot.clone())
+            }
+            _ => None,
+        },
+        |v| v.len() >= seats.len(),
+    )
+}
+
+/// Evidence as announced: recorder, blobs (hash, size), archivists.
+type EvidenceItem = (String, Vec<(String, u64)>, Vec<String>);
+
+const ARB_BOND_FLOOR: u64 = 10_000_000; // 0.1 BTC (§10.2)
+
+/// The escalating party's side of one arbitration tier (§10.1–10.5): escalate, collect blind seat
+/// offers, draw the panel from a block mined after offers close, disclose the case to the seats,
+/// pay each its fee, then read the revealed verdicts and the tier commitment.
+fn escalate_tier(
+    n: &mut Node,
+    a: &Alerted,
+    view: &PoolView,
+    tier: u32,
+    reason: &str,
+) -> Option<Ballot> {
+    let secp = Secp256k1::new();
+    let c = a.case_hex.clone();
+    let value: u64 = a.template.pots.iter().sum();
+    let size = bitaid_node::arb::panel_size(tier);
+    let okey = view.key_hex();
+    n.send_case(
+        &c,
+        &[],
+        Msg::Escalate {
+            case_id: c.clone(),
+            tier,
+            reason: reason.into(),
+        },
+        false,
+    );
+    n.log(&format!("ESCALATE tier {tier} ({size} seats): {reason}"));
+    let t0 = Instant::now();
+    // blind taking: offers name only a bond and a payout address
+    let end = Instant::now() + secs(num("--offer-window", 25u64));
+    let mut offers: Vec<(String, bitcoin::ScriptBuf)> = vec![];
+    while Instant::now() < end {
+        let left = end.saturating_duration_since(Instant::now());
+        let cc = c.clone();
+        let Some((who, bond, bs, bc, bf, spk)) = n.wait(left, |env, _| match &env.msg {
+            Msg::SeatOffer {
+                case_id,
+                tier: t,
+                bond,
+                bond_scoped,
+                bond_cold,
+                bond_fallback,
+                payout_spk,
+            } if *case_id == cc && *t == tier => Some((
+                env.sender.clone(),
+                bond.clone(),
+                bond_scoped.clone(),
+                bond_cold.clone(),
+                *bond_fallback,
+                payout_spk.clone(),
+            )),
+            _ => None,
+        }) else {
+            break;
+        };
+        if offers.iter().any(|o| o.0 == who) {
+            continue;
+        }
+        // stake above exposure: a bond of at least twice what the verdict can move (§10.2)
+        let ok = (|| {
+            let op = OutPoint::from_str(&bond).ok()?;
+            let u = n.rpc.utxo(&op)?;
+            let t = outputs::bond(
+                &secp,
+                &wire::xonly(&bs)?,
+                &wire::xonly(&bc)?,
+                &wire::xonly(&okey)?,
+                bf,
+            );
+            (u.script_pubkey == t.script_pubkey()
+                && u.value.to_sat() >= ARB_BOND_FLOOR.max(2 * value))
+            .then_some(())
+        })();
+        match (ok, bitcoin::ScriptBuf::from_hex(&spk)) {
+            (Some(()), Ok(p)) => offers.push((who, p)),
+            _ => n.log(&format!(
+                "seat offer from {} refused: bond missing or below twice the case value",
+                &who[..8]
+            )),
+        }
+    }
+    if offers.len() < size {
+        n.check(
+            &format!("tier {tier}: at least {size} eligible arbitrators offered seats"),
+            false,
+            &format!("{} offered", offers.len()),
+        );
+        return None;
+    }
+    // the draw uses a block mined after offers closed, so no one could aim for a seat
+    n.rpc.mine(1).ok();
+    let h = n.rpc.height();
+    let bh = n.rpc.block_hash(h).unwrap_or_default();
+    let ids: Vec<String> = offers.iter().map(|o| o.0.clone()).collect();
+    let seats = bitaid_node::arb::draw(&bh, &c, tier, &ids, size);
+    let key = n.case_keys[&c];
+    let sealed: Vec<String> = seats
+        .iter()
+        .map(|sid| {
+            hex::encode(wire::seal(
+                &n.keys,
+                &wire::xonly(sid).unwrap(),
+                c.as_bytes(),
+                &key,
+            ))
+        })
+        .collect();
+    n.send_case(
+        &c,
+        &seats,
+        Msg::Seated {
+            case_id: c.clone(),
+            tier,
+            height: h,
+            block_hash: bh.clone(),
+            offers: ids.clone(),
+            seats: seats.clone(),
+            sealed_keys: sealed,
+        },
+        false,
+    );
+    n.check(&format!("tier {tier}: {size} of {} offering arbitrators drawn from block {h}, case disclosed only to them", ids.len()), true, &format!("{:.1} s after escalating", t0.elapsed().as_secs_f64()));
+    // each seat paid its fee directly by whoever escalated (§10.6, §11.11)
+    let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
+    let pay: Vec<(bitcoin::ScriptBuf, u64)> = seats
+        .iter()
+        .map(|sid| (offers.iter().find(|o| &o.0 == sid).unwrap().1.clone(), fee))
+        .collect();
+    match n.rpc.pay_many(&pay) {
+        Ok(txid) => {
+            n.rpc.mine(1).ok();
+            n.send_case(
+                &c,
+                &seats,
+                Msg::FeePaid {
+                    case_id: c.clone(),
+                    tier,
+                    txid: txid.to_string(),
+                },
+                false,
+            );
+            n.check(
+                &format!("tier {tier}: {size} × {fee} sats paid to the seats"),
+                true,
+                &txid.to_string()[..16],
+            );
+        }
+        Err(e) => {
+            n.check(&format!("tier {tier}: fees paid"), false, &e);
+            return None;
+        }
+    }
+    // the revealed verdicts and the tier commitment
+    let (cc, ss) = (c.clone(), seats.clone());
+    let mut seen = std::collections::HashSet::new();
+    let reveals: Vec<(String, Ballot)> = n.collect(
+        secs(num("--verdict-wait", 600u64)),
+        |env, _| match &env.msg {
+            Msg::VerdictReveal {
+                case_id,
+                tier: t,
+                verdict,
+                ..
+            } if *case_id == cc
+                && *t == tier
+                && ss.contains(&env.sender)
+                && seen.insert(env.sender.clone()) =>
+            {
+                Some((env.sender.clone(), verdict.clone()))
+            }
+            _ => None,
+        },
+        |v| v.len() >= size,
+    );
+    let cc = c.clone();
+    let committed = n.wait(secs(180), |env, _| match &env.msg {
+        Msg::TierCommitted {
+            case_id,
+            tier: t,
+            txid,
+        } if *case_id == cc && *t == tier => Some(txid.clone()),
+        _ => None,
+    });
+    let commitment = bitaid_node::arb::tier_commitment(&c, tier, &seats, &reveals);
+    let on_chain = committed
+        .as_ref()
+        .map(|t| n.rpc.has_op_return(t, &commitment))
+        .unwrap_or(false);
+    n.check(&format!("tier {tier}: {} of {size} verdicts revealed; roster and answers committed on chain (OP_RETURN)", reveals.len()), on_chain, &committed.unwrap_or_default());
+    let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
+    let verdict = bitaid_node::arb::supermajority(size, &votes);
+    match &verdict {
+        Some(v) => {
+            let k = bitaid_node::arb::verdict_key(v);
+            let dissent = votes
+                .iter()
+                .filter(|x| bitaid_node::arb::verdict_key(x) != k)
+                .count();
+            let pen = if dissent > 0 {
+                format!("; {dissent} dissenter(s) owe {:.1}× the fee each, settled against the final ruling", bitaid_node::arb::penalty_factor(size, dissent))
+            } else {
+                String::from(", unanimous")
+            };
+            n.check(
+                &format!(
+                    "tier {tier}: two-thirds verdict ({} of {size}){pen}",
+                    size - dissent
+                ),
+                true,
+                &format!("{:.1} s from escalation", t0.elapsed().as_secs_f64()),
+            );
+        }
+        None => n.check(
+            &format!("tier {tier}: two-thirds verdict"),
+            false,
+            "hung panel",
+        ),
+    }
+    verdict
+}
+
+fn verdict_classes(v: &Ballot) -> String {
+    v.acts
+        .iter()
+        .map(|x| match x.class {
+            Class::Intervention => "I",
+            Class::Documentation => "D",
+            Class::None => "-",
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// An arbitrator: posts a bond, offers seats blind, and when seated reviews the evidence and votes.
+fn arbitrator(mut n: Node) -> i32 {
+    let secp = Secp256k1::new();
+    n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)]);
+    let Some(view) = pool::discover(
+        &mut n,
+        &arg("--pool").unwrap_or("bitaid".into()),
+        secs(num("--setup-wait", 3600u64)),
+    ) else {
+        n.log("no oracle pool found");
+        return 1;
+    };
+    let okey = view.key_hex();
+    let (bs, bc) = (random_scalar(), random_scalar());
+    let bf = n.rpc.height() + 52_560;
+    let bt = outputs::bond(&secp, &xo(&bs), &xo(&bc), &wire::xonly(&okey).unwrap(), bf);
+    let bond = match n
+        .rpc
+        .fund(&bt.script_pubkey(), num("--bond", 10_000_000u64))
+    {
+        Ok(op) => op,
+        Err(e) => {
+            n.log(&format!("bond not posted: {e}"));
+            return 1;
+        }
+    };
+    n.rpc.mine(1).ok();
+    let payout = n.rpc.new_spk().expect("payout address");
+    let corrupt = flag("--corrupt");
+    n.subscribe("cases", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
+    n.log(&format!(
+        "arbitrator bond {} posted{}",
+        &bond.to_string()[..12],
+        if corrupt {
+            " (corrupt: sides against the footage)"
+        } else {
+            ""
+        }
+    ));
+    let me = n.me();
+    let mut alerts: HashMap<String, Alerted> = HashMap::new();
+    let mut rosters: HashMap<String, Rostered> = HashMap::new();
+    let mut evidence: HashMap<String, Vec<EvidenceItem>> = HashMap::new();
+    let mut escalator: HashMap<(String, u32), String> = HashMap::new();
+    let mut seated: HashMap<(String, u32), Vec<String>> = HashMap::new();
+    let mut commits: HashMap<(String, u32), std::collections::BTreeSet<String>> = HashMap::new();
+    let mut reveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
+    let mut mine: HashMap<(String, u32), (Ballot, [u8; 32])> = HashMap::new();
+    let mut revealed: std::collections::HashSet<(String, u32)> = Default::default();
+    let idle = num("--exit-after", 3600u64);
+    let mut last = Instant::now();
+    loop {
+        if last.elapsed() > secs(idle) {
+            return 0;
+        }
+        let Some(env) = n.wait(secs(2), |env, _| Some(env.clone())) else {
+            continue;
+        };
+        last = Instant::now();
+        let s = env.sender.clone();
+        match env.msg {
+            Msg::Alert { .. } => {
+                if let Ok(a) = Alerted::check(&s, &env.msg, chain_view(&n.rpc), &okey) {
+                    alerts.insert(a.case_hex.clone(), a);
+                }
+            }
+            Msg::Roster { ref case_id, .. } => {
+                if alerts.get(case_id).map(|a| a.caller == s).unwrap_or(false) {
+                    if let Some(r) = Rostered::from_msg(&env.msg) {
+                        rosters.insert(case_id.clone(), r);
+                    }
+                }
+            }
+            Msg::Evidence {
+                case_id,
+                blobs,
+                archivists,
+                ..
+            } => evidence
+                .entry(case_id)
+                .or_default()
+                .push((s, blobs, archivists)),
+            Msg::Escalate { case_id, tier, .. } => {
+                let Some(a) = alerts.get(&case_id) else {
+                    continue;
+                };
+                escalator.insert((case_id.clone(), tier), s);
+                let value: u64 = a.template.pots.iter().sum();
+                if num("--bond", 10_000_000u64) < 2 * value {
+                    n.log("not eligible: bond below twice the case value");
+                    continue;
+                }
+                // blind: the offer is made knowing the fee, tier and value, not the parties or evidence
+                n.send_case(
+                    &case_id,
+                    &[],
+                    Msg::SeatOffer {
+                        case_id: case_id.clone(),
+                        tier,
+                        bond: bond.to_string(),
+                        bond_scoped: hex::encode(xo(&bs).serialize()),
+                        bond_cold: hex::encode(xo(&bc).serialize()),
+                        bond_fallback: bf,
+                        payout_spk: payout.to_hex_string(),
+                    },
+                    false,
+                );
+                n.log(&format!(
+                    "offered a seat on tier {tier} of {}",
+                    &case_id[..8]
+                ));
+            }
+            Msg::Seated {
+                case_id,
+                tier,
+                seats,
+                sealed_keys,
+                ..
+            } => {
+                if escalator.get(&(case_id.clone(), tier)) != Some(&s) {
+                    continue;
+                }
+                if let Some(pos) = seats.iter().position(|x| *x == me) {
+                    if let Some(k) = hex::decode(&sealed_keys[pos]).ok().and_then(|k| {
+                        wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
+                    }) {
+                        n.add_case_key(&case_id, k.try_into().unwrap());
+                        n.log(&format!(
+                            "seated on tier {tier} of {} (seat {pos}); case disclosed",
+                            &case_id[..8]
+                        ));
+                    }
+                }
+                seated.insert((case_id, tier), seats);
+            }
+            Msg::FeePaid {
+                case_id,
+                tier,
+                txid,
+            } => {
+                let key = (case_id.clone(), tier);
+                let Some(seats) = seated.get(&key) else {
+                    continue;
+                };
+                if !seats.contains(&me) || mine.contains_key(&key) {
+                    continue;
+                }
+                let (Some(a), Some(r)) = (
+                    alerts.get(&case_id).cloned(),
+                    rosters.get(&case_id).cloned(),
+                ) else {
+                    continue;
+                };
+                let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
+                let got = n.rpc.paid_to(&txid, &payout);
+                if got < fee {
+                    n.log(&format!(
+                        "fee not received ({got} of {fee} sats); not ruling"
+                    ));
+                    continue;
+                }
+                // review: fetch every recorder's evidence, decrypt it, read what the footage shows
+                let cc = case_id.clone();
+                for (who, blobs, arch) in n.collect(
+                    secs(3),
+                    |env, _| match &env.msg {
+                        Msg::Evidence {
+                            case_id,
+                            blobs,
+                            archivists,
+                            ..
+                        } if *case_id == cc => {
+                            Some((env.sender.clone(), blobs.clone(), archivists.clone()))
+                        }
+                        _ => None,
+                    },
+                    |_| false,
+                ) {
+                    evidence
+                        .entry(case_id.clone())
+                        .or_default()
+                        .push((who, blobs, arch));
+                }
+                let ek = tagged("Bitaid/evidence-key", &n.case_keys[&case_id]);
+                let mut shows: HashMap<String, String> = HashMap::new();
+                let mut kib = 0;
+                for (who, blobs, arch) in evidence.get(&case_id).cloned().unwrap_or_default() {
+                    let Some(url) = arch.first() else { continue };
+                    let got: Option<Vec<Vec<u8>>> = blobs
+                        .iter()
+                        .map(|(h, _)| blossom::fetch(url, h).ok())
+                        .collect();
+                    let Some(plain) = got.and_then(|b| blossom::open_footage(&ek, &case_id, &b))
+                    else {
+                        continue;
+                    };
+                    kib += plain.len() / 1024;
+                    let head = String::from_utf8_lossy(&plain[..plain.len().min(200)]).to_string();
+                    if let Some(act) = head
+                        .split("act=")
+                        .nth(1)
+                        .map(|x| x.chars().take(1).collect::<String>())
+                    {
+                        if head.contains(&format!("recorder={who}")) {
+                            shows.insert(who, act);
+                        }
+                    }
+                }
+                let acts = r
+                    .seats
+                    .iter()
+                    .enumerate()
+                    .map(|(i, sid)| {
+                        let shown = shows.get(sid).cloned().unwrap_or_default();
+                        let mut c = class_of(&shown);
+                        if corrupt {
+                            c = match c {
+                                Class::Intervention => Class::Documentation,
+                                Class::Documentation => Class::Intervention,
+                                x => x,
+                            };
+                        }
+                        Act {
+                            seat: i as u8,
+                            class: c,
+                            footage: None,
+                        }
+                    })
+                    .collect();
+                let verdict = Ballot {
+                    acts,
+                    outcome_achieved: true,
+                    misuse: false,
+                };
+                n.log(&format!(
+                    "reviewed {kib} KiB of footage from {} recorders; verdict {}",
+                    shows.len(),
+                    verdict_classes(&verdict)
+                ));
+                let salt: [u8; 32] = rand::random();
+                n.send_case(
+                    &case_id,
+                    &[],
+                    Msg::VerdictCommit {
+                        case_id: case_id.clone(),
+                        tier,
+                        commitment: hex::encode(verdict.commitment(&salt)),
+                    },
+                    true,
+                );
+                mine.insert(key, (verdict, salt));
+            }
+            Msg::VerdictCommit { case_id, tier, .. } => {
+                let key = (case_id.clone(), tier);
+                if !seated.get(&key).map(|x| x.contains(&s)).unwrap_or(false) {
+                    continue;
+                }
+                let set = commits.entry(key.clone()).or_default();
+                set.insert(s);
+                let all = set.len() >= seated[&key].len();
+                if all && !revealed.contains(&key) {
+                    if let Some((v, salt)) = mine.get(&key).cloned() {
+                        revealed.insert(key.clone());
+                        n.send_case(
+                            &case_id,
+                            &[],
+                            Msg::VerdictReveal {
+                                case_id: case_id.clone(),
+                                tier,
+                                verdict: v,
+                                salt: hex::encode(salt),
+                            },
+                            true,
+                        );
+                    }
+                }
+            }
+            Msg::VerdictReveal {
+                case_id,
+                tier,
+                verdict,
+                ..
+            } => {
+                let key = (case_id.clone(), tier);
+                let Some(seats) = seated.get(&key).cloned() else {
+                    continue;
+                };
+                if !seats.contains(&s) {
+                    continue;
+                }
+                let list = reveals.entry(key.clone()).or_default();
+                if !list.iter().any(|x| x.0 == s) {
+                    list.push((s, verdict));
+                }
+                // the first seat posts the tier commitment once every verdict is revealed
+                if list.len() == seats.len() && seats.first() == Some(&me) {
+                    let cm = bitaid_node::arb::tier_commitment(&case_id, tier, &seats, list);
+                    match n.rpc.op_return(&cm) {
+                        Ok(txid) => {
+                            n.rpc.mine(1).ok();
+                            n.send_case(
+                                &case_id,
+                                &[],
+                                Msg::TierCommitted {
+                                    case_id: case_id.clone(),
+                                    tier,
+                                    txid: txid.to_string(),
+                                },
+                                false,
+                            );
+                            n.log(&format!(
+                                "tier {tier} commitment on chain in {}",
+                                &txid.to_string()[..16]
+                            ));
+                        }
+                        Err(e) => n.log(&format!("tier commitment failed: {e}")),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 // =================================================================== caller
 
 fn caller(mut n: Node) -> i32 {
@@ -969,6 +1793,7 @@ fn caller(mut n: Node) -> i32 {
         max_signers: num("--max-signers", 5u8),
         joining_window: num("--window", 15u32),
         dispute_window: num("--dispute-window", 5u32),
+        arb_fee: num("--arb-fee", 20_000u64),
         refund_delay: 12_960,
         refund_xpub: bitcoin::bip32::Xpub::from_priv(&secp, &xpriv).to_string(),
     };
@@ -1316,7 +2141,7 @@ fn caller(mut n: Node) -> i32 {
     let spent = n.rpc.confirmations(&set.incident_txid) > 0 && confirmed == pots;
     n.check(
         &format!(
-            "all {pots} pots settled on chain by deemed consent ({confirmed} payouts confirmed)"
+            "all {pots} pots settled on chain by the attested outcome ({confirmed} payouts confirmed)"
         ),
         spent,
         &paid
@@ -1503,7 +2328,44 @@ fn responder(mut n: Node) -> i32 {
         &archivists,
         num("--footage-kib", 512usize) * 1024,
     );
-    vote(&mut n, &a, &r, ballot_from_args(r.seats.len(), my_seat));
+    let my_ballot = ballot_from_args(r.seats.len(), my_seat);
+    vote(&mut n, &a, &r, my_ballot.clone());
+    // --escalate: if the attending vote does not settle the case, take it to arbitration (§10.1);
+    // --appeal: if the panel rules against this attendee's claim, re-roll once to the next tier (§10.5)
+    if flag("--escalate") {
+        let ballots = collect_reveals(&mut n, &a, &r);
+        if let Decision::Escalate(why) =
+            decide(r.seats.len(), a.template.pots, &a.template, &ballots)
+        {
+            n.check(
+                &format!("attending vote did not settle ({why}); escalating to arbitration"),
+                true,
+                "",
+            );
+            let mut tier = 1;
+            while let Some(v) = escalate_tier(&mut n, &a, &view, tier, &why) {
+                let mine_ok = v
+                    .acts
+                    .get(my_seat)
+                    .map(|x| x.class == my_ballot.acts[my_seat].class)
+                    .unwrap_or(false);
+                n.log(&format!(
+                    "tier {tier} verdict: {} — {}",
+                    verdict_classes(&v),
+                    if mine_ok {
+                        "upholds my claim"
+                    } else {
+                        "against my claim"
+                    }
+                ));
+                if !mine_ok && flag("--appeal") && tier == 1 {
+                    tier += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
     let paid = settle(&mut n, &a, &set, &view, flag("--broadcast"));
     if flag("--mine") {
         n.rpc.mine(1).ok();

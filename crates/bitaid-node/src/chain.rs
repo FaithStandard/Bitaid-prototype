@@ -239,4 +239,68 @@ impl Rpc {
             .map(|b| (b * 1e8).round() as u64)
             .unwrap_or(0)
     }
+
+    /// A wallet transaction carrying `data` in one OP_RETURN output (tier commitments, B.2).
+    pub fn op_return(&self, data: &[u8]) -> Result<Txid, String> {
+        let raw = self.call(
+            "createrawtransaction",
+            json!([[], [{"data": hex::encode(data)}]]),
+        )?;
+        let funded = self.wcall("fundrawtransaction", json!([raw]))?;
+        let signed = self.wcall("signrawtransactionwithwallet", json!([funded["hex"]]))?;
+        let txid = self.call("sendrawtransaction", json!([signed["hex"]]))?;
+        Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())
+    }
+
+    /// Whether transaction `txid` is confirmed and carries `data` in an OP_RETURN output.
+    pub fn has_op_return(&self, txid: &str, data: &[u8]) -> bool {
+        let want = format!("6a{:02x}{}", data.len(), hex::encode(data));
+        self.call("getrawtransaction", json!([txid, true]))
+            .ok()
+            .map(|v| {
+                v["confirmations"].as_u64().unwrap_or(0) > 0
+                    && v["vout"]
+                        .as_array()
+                        .map(|o| o.iter().any(|x| x["scriptPubKey"]["hex"] == want))
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Pays several scripts in one wallet transaction (arbitration fees to each seated arbitrator).
+    pub fn pay_many(&self, to: &[(ScriptBuf, u64)]) -> Result<Txid, String> {
+        let net = self.network();
+        let mut m = serde_json::Map::new();
+        for (spk, sats) in to {
+            let a = Address::from_script(spk, net).map_err(|e| e.to_string())?;
+            let prev = m
+                .get(&a.to_string())
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            m.insert(a.to_string(), json!(prev + *sats as f64 / 1e8));
+        }
+        let txid = self.wcall("sendmany", json!(["", m]))?;
+        Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())
+    }
+
+    /// What `txid` paid to `spk` (0 if unknown).
+    pub fn paid_to(&self, txid: &str, spk: &ScriptBuf) -> u64 {
+        let h = spk.to_hex_string();
+        self.call("getrawtransaction", json!([txid, true]))
+            .ok()
+            .and_then(|v| v["vout"].as_array().cloned())
+            .map(|o| {
+                o.iter()
+                    .filter(|x| x["scriptPubKey"]["hex"] == h)
+                    .map(|x| (x["value"].as_f64().unwrap_or(0.0) * 1e8).round() as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn block_hash(&self, height: u32) -> Option<String> {
+        self.call("getblockhash", json!([height]))
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+    }
 }

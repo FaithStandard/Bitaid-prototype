@@ -32,8 +32,11 @@ pub struct Template {
     pub max_signers: u8,
     /// seconds from the alert during which responders may accept
     pub joining_window: u32,
-    /// seconds after the last ballot reveal before deemed consent (§9; 48 h in production)
+    /// seconds after the last ballot reveal before deemed consent (§9; 48 h in production), and
+    /// after each arbitration tier's verdict before it is final (§10.5; 48 h in production)
     pub dispute_window: u32,
+    /// first-instance arbitration fee per seat in sats; +25% per tier above (§10.5)
+    pub arb_fee: u64,
     /// blocks after acceptance before the per-pot refunds are valid
     pub refund_delay: u32,
     /// account xpub from which the per-case refund address is derived (§3, no address reuse)
@@ -253,6 +256,57 @@ pub enum Msg {
         ballot: Ballot,
         salt: Hex32,
     },
+    /// A bonded party sends the case to arbitration (tier 1) or appeals to the next tier (§10.1, §10.5).
+    Escalate {
+        case_id: Hex32,
+        tier: u32,
+        reason: String,
+    },
+    /// An eligible arbitrator offers to take a seat, knowing only the fee, tier and case value (§10.2).
+    SeatOffer {
+        case_id: Hex32,
+        tier: u32,
+        bond: String,
+        bond_scoped: Hex32,
+        bond_cold: Hex32,
+        bond_fallback: u32,
+        payout_spk: String,
+    },
+    /// The escalating party, after a block mined once offers closed: the offers considered, the block,
+    /// the seats it draws, and the case key sealed to each seated arbitrator.
+    Seated {
+        case_id: Hex32,
+        tier: u32,
+        height: u32,
+        block_hash: Hex32,
+        offers: Vec<Hex32>,
+        seats: Vec<Hex32>,
+        sealed_keys: Vec<String>,
+    },
+    /// The escalating party paid each seated arbitrator its fee directly.
+    FeePaid {
+        case_id: Hex32,
+        tier: u32,
+        txid: String,
+    },
+    /// Seated arbitrator: blind vote commitment, then the reveal (§10.4).
+    VerdictCommit {
+        case_id: Hex32,
+        tier: u32,
+        commitment: Hex32,
+    },
+    VerdictReveal {
+        case_id: Hex32,
+        tier: u32,
+        verdict: Ballot,
+        salt: Hex32,
+    },
+    /// The tier's commitment (roster and answers) is in this transaction's OP_RETURN (B.2).
+    TierCommitted {
+        case_id: Hex32,
+        tier: u32,
+        txid: String,
+    },
     /// Pool member, once per pot after replaying the case: its public attestation share for the outcome
     /// it reads from the log. Any t valid shares for one outcome combine to the scalar that completes it.
     AttestShare {
@@ -290,6 +344,13 @@ impl Msg {
             Msg::BallotCommit { .. } => "ballot-commit",
             Msg::BallotReveal { .. } => "ballot-reveal",
             Msg::AttestShare { .. } => "attest-share",
+            Msg::Escalate { .. } => "escalate",
+            Msg::SeatOffer { .. } => "seat-offer",
+            Msg::Seated { .. } => "seated",
+            Msg::FeePaid { .. } => "fee-paid",
+            Msg::VerdictCommit { .. } => "verdict-commit",
+            Msg::VerdictReveal { .. } => "verdict-reveal",
+            Msg::TierCommitted { .. } => "tier-committed",
         }
     }
     pub fn case_id(&self) -> Option<&str> {
@@ -318,7 +379,14 @@ impl Msg {
             | Msg::Evidence { case_id, .. }
             | Msg::BallotCommit { case_id, .. }
             | Msg::BallotReveal { case_id, .. }
-            | Msg::AttestShare { case_id, .. } => Some(case_id),
+            | Msg::AttestShare { case_id, .. }
+            | Msg::Escalate { case_id, .. }
+            | Msg::SeatOffer { case_id, .. }
+            | Msg::Seated { case_id, .. }
+            | Msg::FeePaid { case_id, .. }
+            | Msg::VerdictCommit { case_id, .. }
+            | Msg::VerdictReveal { case_id, .. }
+            | Msg::TierCommitted { case_id, .. } => Some(case_id),
         }
     }
 }

@@ -192,6 +192,7 @@ pub fn auth_header(keys: &Keypair, case_id: &str, blob_hash: &str) -> String {
 
 /// Uploads; returns the blob hash the server confirmed.
 pub fn upload(server: &str, keys: &Keypair, case_id: &str, blob: &[u8]) -> Result<String, String> {
+    let server = &crate::local_url(server);
     let hash = hex::encode(sha256(blob));
     let r = crate::http_for(server)
         .put(&format!("{server}/upload"))
@@ -218,6 +219,7 @@ pub fn upload(server: &str, keys: &Keypair, case_id: &str, blob: &[u8]) -> Resul
 
 /// Fetches a blob and checks it against its hash.
 pub fn fetch(server: &str, hash: &str) -> Result<Vec<u8>, String> {
+    let server = &crate::local_url(server);
     let resp = crate::http_for(server)
         .get(&format!("{server}/{hash}"))
         .call()
@@ -234,6 +236,7 @@ pub fn fetch(server: &str, hash: &str) -> Result<Vec<u8>, String> {
 
 /// Fetches one 4 KiB slice by range request.
 pub fn fetch_slice(server: &str, hash: &str, i: usize) -> Result<Vec<u8>, String> {
+    let server = &crate::local_url(server);
     let resp = crate::http_for(server)
         .get(&format!("{server}/{hash}"))
         .set(
