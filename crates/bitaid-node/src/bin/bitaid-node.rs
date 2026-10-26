@@ -103,7 +103,7 @@ fn main() {
         Node::new(&name, &relays, Rpc::from_env(), secret)
     };
     node.log(&format!(
-        "{} on {} relay(s), identity {}",
+        "{} on {} link(s), identity {}",
         role,
         node.client.relay_count(),
         &node.me()[..16]
@@ -820,7 +820,15 @@ fn upload_evidence(
     for (_, _, url) in archivists {
         let mut all = true;
         for b in &blobs {
-            if blossom::upload(url, &n.keys, &c, b).is_err() {
+            // one retry: a first connection to an onion service can time out while its circuit builds
+            let r = blossom::upload(url, &n.keys, &c, b).or_else(|e| {
+                n.log(&format!("upload to {url} failed ({e}); retrying"));
+                blossom::upload(url, &n.keys, &c, b)
+            });
+            if let Err(e) = &r {
+                n.log(&format!("upload to {url} failed: {e}"));
+            }
+            if r.is_err() {
                 all = false;
             }
         }

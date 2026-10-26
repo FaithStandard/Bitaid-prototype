@@ -1,0 +1,18 @@
+Bitaid M3 over the Internet, the Specification's transport — 2026-10-26
+Three separate connections, every link a Tor onion service, nothing opened on any router:
+  PC (Windows, WSL1 Ubuntu, home connection): regtest chain (Core 31.1), gossip Core, pool members 1-2 (2 stalls),
+      archivist, responders r3 (intervener) and r4 (sends a bad partial signature) — one onion: 7700 gossip, 7480
+      archive, 18443 chain RPC
+  Phone (Redmi, Termux, its own mobile data): pool member 4 (lies on attestation) + caller
+  Tablet (Samsung, Termux, data tethered from another phone): pool member 3 + responder r1
+Phone 13/13, tablet 9/9, PC r3 8/9, r4 2/2 — 32 of 33 checks.
+Case 77eadf30: pool formed over Tor (key and 60 nonces, all four members) → alert in H3 cell → 3 accepts in 2.6–6.1 s
+→ nonces reserved by 4/4 → roster v0 → signer 2 invalid, seat given up → roster v1 → set (39 payouts + 3 refunds)
+1.8 s → incident co-signed by members [1, 4, 3]: member 2 committed but stalled, replaced in session 2 (10.5 s)
+→ zero-fee package accepted → evidence pinned over Tor (phone 3.4 s, tablet 6.9 s) → blind ballots → deemed consent
+→ member 4's shares for another outcome caught by every party → three payouts confirmed; 630,000 / 270,000 sats.
+Alert to funded, pre-signed incident 67 s (joining window 30 s); alert to settled 148 s (dispute window 15 s).
+The one failure: the PC's responder could not upload to the PC's own archivist through its onion address (0/1, 41 s);
+the error was not logged — uploads now log it and retry once.
+Found on the way: Tor refuses local targets, so only onion peers go through it; Ubuntu 24.04's tar needs a system
+call WSL1 lacks; the hardware virtualisation WSL2 needs was off in this PC's firmware, so the PC ran WSL1.

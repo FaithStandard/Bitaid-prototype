@@ -12,7 +12,7 @@ never hold real funds.**
 |---|---|---|
 | M1 | `bitaid-core`: outputs, endings, pre-signed adaptor payouts, oracle attestation, event-log replay | **done** — see below |
 | M2 | Oracle node: FROST key generation, nonce batches, attestation, ROAST co-signing across machines | **done** — across two machines on a LAN, see below |
-| M3 | Node daemon: caller, responder and archivist flows; messages over Nostr; evidence on Blossom | **first incident across three devices** — see below |
+| M3 | Node daemon: caller, responder, archivist and oracle-pool roles; Core-to-Core gossip over Tor (the Specification's transport); evidence on Blossom | **first incident across three devices** — see below |
 | M4 | Minimal Android app over the same core | |
 | M5 | Testnet pilot with independent operators, Tor, attack scripts | |
 | M6 | Review package: frozen spec, test vectors, threat model, external review | |
@@ -128,7 +128,8 @@ Specification B.2 over Nostr relays, with evidence on Blossom-compatible servers
 
 | Module | What it does |
 |---|---|
-| `nostr`, `relay` | NIP-01 events signed with the identity key (BIP340); a client over several relays (ws/wss) deduplicating by id; a minimal in-memory relay (`bitaid-relay`) that checks every signature and forwards ephemeral kinds without storing them |
+| `gossip` | The Specification's transport (§7): Cores keep direct links, forward each message they have not seen to every other link, replay their recent log to a peer that connects late; links run over Tor onion services (SOCKS5 to each device's own Tor, onion names resolved by Tor), so no router is opened and no peer learns another's IP. A phone app is a thin client with one outbound link to its Core. Not yet: the DHT (peers come from a bootstrap list) and geofenced forwarding |
+| `nostr`, `relay` | Signed event container (also the Blossom upload authorisation); the Nostr-relay transport is kept only as the stand-in of the earlier tests | NIP-01 events signed with the identity key (BIP340); a client over several relays (ws/wss) deduplicating by id; a minimal in-memory relay (`bitaid-relay`) that checks every signature and forwards ephemeral kinds without storing them |
 | `wire` | The B.2 messages as signed CBOR (`tagged_hash("Bitaid/msg", body)`), carried in events signed by the same key; case traffic encrypted with a case key sealed to each signer (ECDH + ChaCha20-Poly1305) |
 | `case` | Every party rebuilds the incident from the alert (which carries the signed registration) and the roster, and checks the funding output on chain |
 | `presign` (core) | `round1`/`round2`/`finish`: the whole set signed in two rounds across machines, every partial verified, a bad signer named |
@@ -150,6 +151,12 @@ Runs:
   phone (one lying): phone 13/13, tablet 9/9 (`results/m3_pool_devices_2026-10-25.txt`). The pool co-signed the
   incident in 0.41 s; the lying member's shares were caught by every party and three honest shares settled the case.
   Local run with the pool: 33/33.
+* **Over the Internet, over Tor** (`scripts/net_pc.sh`, `net_device.sh`, `tor_up.sh`, `wsl_setup.sh`): a Windows PC
+  (WSL1) at home with the chain, the gossip Core, two pool members, the archivist and two responders; a phone on its
+  own mobile data (caller, lying pool member); a tablet on another phone's data (responder, pool member). Every link
+  an onion service. 32/33 (`results/m3_tor_internet_2026-10-26.txt`): stalling co-signer replaced, cheater dropped,
+  liar caught, three payouts confirmed; alert to funded incident 67 s, to settled 148 s. The failure: the PC's own
+  responder could not reach the PC's archive through its onion address.
 
 ## Licence
 
