@@ -14,7 +14,7 @@ V=31.1; F=bitcoin-$V-x86_64-linux-gnu.tar.gz
 if [ ! -x "$HOME/bitcoin-$V/bin/bitcoind" ]; then
   cd "$HOME"
   curl -sSfO https://bitcoincore.org/bin/bitcoin-core-$V/$F && curl -sSfO https://bitcoincore.org/bin/bitcoin-core-$V/SHA256SUMS
-  grep " $F\$" SHA256SUMS | sha256sum -c - && tar xzf $F && rm -f $F
+  grep " $F\$" SHA256SUMS | sha256sum -c - && python3 -c "import tarfile,sys; tarfile.open(sys.argv[1]).extractall(sys.argv[2])" $F "$HOME" && rm -f $F
 fi
 cd "$HOME"
 [ -d bitaid-prototype/.git ] || git clone -q https://github.com/FaithStandard/Bitaid-prototype bitaid-prototype

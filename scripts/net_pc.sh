@@ -20,7 +20,9 @@ start)
     if [ -f "$WIN/$F" ] && [ -f "$WIN/SHA256SUMS" ]; then cp "$WIN/$F" "$WIN/SHA256SUMS" $T/
     else (cd $T && curl -sSfO https://bitcoincore.org/bin/bitcoin-core-$V/$F && curl -sSfO https://bitcoincore.org/bin/bitcoin-core-$V/SHA256SUMS); fi
     (cd $T && grep " $F\$" SHA256SUMS | sha256sum -c -) || { echo "BITCOIN_CHECKSUM_FAILED"; exit 1; }
-    tar xzf $T/$F -C $HOME && rm -rf $T
+    # extracted with Python: Ubuntu 24.04's tar uses a system call WSL1 lacks ("Function not implemented")
+    python3 -c "import tarfile,sys; tarfile.open(sys.argv[1]).extractall(sys.argv[2])" $T/$F $HOME && rm -rf $T
+    chmod +x $HOME/bitcoin-$V/bin/* $HOME/bitcoin-$V/libexec/* 2>/dev/null
     B=$HOME/bitcoin-$V/bin; CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
   fi
   $B/bitcoind -version | head -1 || { echo "BITCOIND_CANNOT_RUN"; ls -l $B; exit 1; }
