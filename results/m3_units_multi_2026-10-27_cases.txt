@@ -1,0 +1,327 @@
+== case 1
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator 5ef8d82e: 2.0× the 20000-sat fee (40000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 6e2
+[PASS] r1-liar tier 2 arbitrator 5e4412d9: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 635
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 8fa
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 97c
+[PASS] r1-liar tier 2 arbitrator bc77f198: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 828
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 65000 sats to the archivists — eedb300aa2b6d171
+[r1-liar] 28 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   49.67s] standing verdict after tier 1: I,D — against my claim
+[r1-liar  116.53s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  138.07s] PASS tier 1 arbitrator 5ef8d82e: 2.0× the 20000-sat fee (40000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  138.90s] PASS tier 2 arbitrator 5e4412d9: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  139.71s] PASS tier 2 arbitrator 96e75ae4: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  140.50s] PASS tier 2 arbitrator b7c63e1f: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  141.30s] PASS tier 2 arbitrator bc77f198: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  145.92s] PASS seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 65000 sats to the archivists — eedb300aa2b6d171
+[r3   49.65s] standing verdict after tier 1: I,D — upholds my claim
+[r3  116.53s] standing verdict after tier 2: I,D — upholds my claim
+== case 2
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator 96e75ae4: 6.0× the 20000-sat fee (120000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — f1
+[PASS] r1-liar tier 2 arbitrator 5ef8d82e: 5.0× the 25000-sat fee (125000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — bc
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 8.0× the 25000-sat fee (200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 37
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 445000 sats to the archivists — 622818f821b6d5cd
+[r1-liar] 27 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   83.75s] standing verdict after tier 1: I,D — against my claim
+[r1-liar  150.73s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  172.25s] PASS tier 1 arbitrator 96e75ae4: 6.0× the 20000-sat fee (120000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar  173.04s] PASS tier 2 arbitrator 5ef8d82e: 5.0× the 25000-sat fee (125000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar  173.83s] PASS tier 2 arbitrator 96e75ae4: 8.0× the 25000-sat fee (200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar  176.62s] PASS seizure output distributed (§12) by the pool and the archivists: 445000 sats to the archivists — 622818f821b6d5cd
+[r3   83.55s] standing verdict after tier 1: I,D — upholds my claim
+[r3  150.54s] standing verdict after tier 2: I,D — upholds my claim
+== case 3
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator 5ef8d82e: 8.0× the 25000-sat fee (200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — b7
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 200000 sats to the archivists — f6c6622e508a1907
+[r1-liar] 23 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.34s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   41.98s] standing verdict after tier 2: I,D — against my claim
+[r1-liar   63.45s] PASS tier 2 arbitrator 5ef8d82e: 8.0× the 25000-sat fee (200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar   64.67s] PASS seizure output distributed (§12) by the pool and the archivists: 200000 sats to the archivists — f6c6622e508a1907
+[r3   27.98s] standing verdict after tier 1: I,D — upholds my claim
+[r3   41.73s] standing verdict after tier 2: I,D — upholds my claim
+== case 4
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 4.0× the 25000-sat fee (100000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — e4
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 100000 sats to the archivists — 5053872ce451771b
+[r1-liar] 23 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.28s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   40.62s] standing verdict after tier 2: I,D — against my claim
+[r1-liar   62.09s] PASS tier 2 arbitrator b7c63e1f: 4.0× the 25000-sat fee (100000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar   63.30s] PASS seizure output distributed (§12) by the pool and the archivists: 100000 sats to the archivists — 5053872ce451771b
+[r3   27.89s] standing verdict after tier 1: I,D — upholds my claim
+[r3   40.21s] standing verdict after tier 2: I,D — upholds my claim
+== case 5
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 12.0× the 25000-sat fee (300000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 8
+[PASS] r1-liar tier 2 arbitrator ff841f01: 4.0× the 25000-sat fee (100000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 32
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 400000 sats to the archivists — c90efce7fc07bd06
+[r1-liar] 25 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.47s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   94.97s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  116.59s] PASS tier 2 arbitrator 96e75ae4: 12.0× the 25000-sat fee (300000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  117.40s] PASS tier 2 arbitrator ff841f01: 4.0× the 25000-sat fee (100000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar  119.39s] PASS seizure output distributed (§12) by the pool and the archivists: 400000 sats to the archivists — c90efce7fc07bd06
+[r3   27.87s] standing verdict after tier 1: I,D — upholds my claim
+[r3   94.78s] standing verdict after tier 2: I,D — upholds my claim
+== case 6
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 7.0× the 25000-sat fee (175000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 58
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 175000 sats to the archivists — aa6c9690fd00843d
+[r1-liar] 23 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.66s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   40.97s] standing verdict after tier 2: I,D — against my claim
+[r1-liar   62.49s] PASS tier 2 arbitrator b7c63e1f: 7.0× the 25000-sat fee (175000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar   63.69s] PASS seizure output distributed (§12) by the pool and the archivists: 175000 sats to the archivists — aa6c9690fd00843d
+[r3   28.27s] standing verdict after tier 1: I,D — upholds my claim
+[r3   40.57s] standing verdict after tier 2: I,D — upholds my claim
+== case 7
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator bc77f198: 2.0× the 20000-sat fee (40000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 8da
+[PASS] r1-liar tier 2 arbitrator 5ef8d82e: 6.0× the 25000-sat fee (150000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — b7
+[PASS] r1-liar tier 2 arbitrator 76524317: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 90b
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 10.0× the 25000-sat fee (250000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 8
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 315000 sats to the archivists — 1a73628a28ff04b4
+[r1-liar] 27 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   29.34s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   97.72s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  120.24s] PASS tier 1 arbitrator bc77f198: 2.0× the 20000-sat fee (40000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  121.06s] PASS tier 2 arbitrator 5ef8d82e: 6.0× the 25000-sat fee (150000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar  121.86s] PASS tier 2 arbitrator 76524317: 2.0× the 25000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  122.65s] PASS tier 2 arbitrator 96e75ae4: 10.0× the 25000-sat fee (250000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  126.22s] PASS seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 315000 sats to the archivists — 1a73628a28ff04b4
+[r3   28.74s] standing verdict after tier 1: I,D — upholds my claim
+[r3   97.52s] standing verdict after tier 2: I,D — upholds my claim
+== case 8
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator 76524317: 4.0× the 20000-sat fee (80000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 03e
+[PASS] r1-liar tier 2 arbitrator 76524317: 5.0× the 25000-sat fee (125000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — bb
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 32.0× the 25000-sat fee (800000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — e
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 830000 sats to the archivists — 20184c1de900c04d
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.29s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   94.86s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  117.38s] PASS tier 1 arbitrator 76524317: 4.0× the 20000-sat fee (80000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  118.17s] PASS tier 2 arbitrator 76524317: 5.0× the 25000-sat fee (125000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar  119.00s] PASS tier 2 arbitrator 96e75ae4: 32.0× the 25000-sat fee (800000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  121.77s] PASS seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 830000 sats to the archivists — 20184c1de900c04d
+[r3   27.98s] standing verdict after tier 1: I,D — upholds my claim
+[r3   94.87s] standing verdict after tier 2: I,D — upholds my claim
+== case 9
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator 76524317: 6.0× the 25000-sat fee (150000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — cb
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 24.0× the 25000-sat fee (600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 8
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 6.0× the 25000-sat fee (150000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 4b
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 900000 sats to the archivists — a22fe3ae23e3e3bd
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.56s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   95.20s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  116.75s] PASS tier 2 arbitrator 76524317: 6.0× the 25000-sat fee (150000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar  117.55s] PASS tier 2 arbitrator 96e75ae4: 24.0× the 25000-sat fee (600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  118.33s] PASS tier 2 arbitrator b7c63e1f: 6.0× the 25000-sat fee (150000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatu
+[r1-liar  121.11s] PASS seizure output distributed (§12) by the pool and the archivists: 900000 sats to the archivists — a22fe3ae23e3e3bd
+[r3   27.96s] standing verdict after tier 1: I,D — upholds my claim
+[r3   95.01s] standing verdict after tier 2: I,D — upholds my claim
+== case 10
+[caller] 11 passed, 0 failed
+[r1-liar] 15 passed, 0 failed
+[PASS] r3 tier 1 arbitrator 5ef8d82e: 14.0× the 20000-sat fee (280000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 9cb38f
+[PASS] r3 tier 1 arbitrator 96e75ae4: 80.0× the 20000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 4d284
+[PASS] r3 tier 1 arbitrator b7c63e1f: 14.0× the 20000-sat fee (280000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — c5b7eb
+[PASS] r3 tier 2 arbitrator 767d3ed4: 4.0× the 25000-sat fee (100000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 929d89b
+[PASS] r3 seizure output distributed (§12) by the pool and the archivists: 2260000 sats to the appellant (appeal subsidy and excess) — 7a2c8554e5bd352d
+[r3] 20 passed, 0 failed
+[r1-liar   82.73s] standing verdict after tier 1: D,I — upholds my claim
+[r1-liar   94.76s] standing verdict after tier 2: I,D — against my claim
+[r3   82.53s] standing verdict after tier 1: D,I — against my claim
+[r3   94.83s] standing verdict after tier 2: I,D — upholds my claim
+[r3  116.38s] PASS tier 1 arbitrator 5ef8d82e: 14.0× the 20000-sat fee (280000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature �
+[r3  117.17s] PASS tier 1 arbitrator 96e75ae4: 80.0× the 20000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature 
+[r3  117.98s] PASS tier 1 arbitrator b7c63e1f: 14.0× the 20000-sat fee (280000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature �
+[r3  118.77s] PASS tier 2 arbitrator 767d3ed4: 4.0× the 25000-sat fee (100000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature �
+[r3  122.34s] PASS seizure output distributed (§12) by the pool and the archivists: 2260000 sats to the appellant (appeal subsidy and excess) — 7a2c8554e5bd352d
+== case 11
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator 96e75ae4: 64.0× the 20000-sat fee (1280000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 2 arbitrator 5ef8d82e: 10.0× the 25000-sat fee (250000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — c
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 10.0× the 25000-sat fee (250000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 4
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 3380000 sats to the archivists — e6af0d7ab3623afc
+[r1-liar] 28 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   82.55s] standing verdict after tier 1: I,D — against my claim
+[r1-liar  149.44s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  171.04s] PASS tier 1 arbitrator 96e75ae4: 64.0× the 20000-sat fee (1280000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  171.80s] PASS tier 2 arbitrator 5ef8d82e: 10.0× the 25000-sat fee (250000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  172.61s] PASS tier 2 arbitrator 96e75ae4: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  173.40s] PASS tier 2 arbitrator b7c63e1f: 10.0× the 25000-sat fee (250000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  176.95s] PASS seizure output distributed (§12) by the pool and the archivists: 3380000 sats to the archivists — e6af0d7ab3623afc
+[r3   82.56s] standing verdict after tier 1: I,D — upholds my claim
+[r3  149.45s] standing verdict after tier 2: I,D — upholds my claim
+== case 12
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator 5ef8d82e: 24.0× the 20000-sat fee (480000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 9
+[PASS] r1-liar tier 2 arbitrator 5ef8d82e: 24.0× the 25000-sat fee (600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — b
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 905000 sats to the archivists — 3fa9817e672591c1
+[r1-liar] 24 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.48s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   40.77s] standing verdict after tier 2: I,D — against my claim
+[r1-liar   62.30s] PASS tier 1 arbitrator 5ef8d82e: 24.0× the 20000-sat fee (480000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar   63.10s] PASS tier 2 arbitrator 5ef8d82e: 24.0× the 25000-sat fee (600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar   65.10s] PASS seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 905000 sats to the archivists — 3fa9817e672591c1
+[r3   28.08s] standing verdict after tier 1: I,D — upholds my claim
+[r3   40.37s] standing verdict after tier 2: I,D — upholds my claim
+== case 13
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator 96e75ae4: 128.0× the 20000-sat fee (2560000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature —
+[PASS] r1-liar tier 2 arbitrator 76524317: 3.0× the 25000-sat fee (75000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — fa6
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 14.0× the 25000-sat fee (350000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 9
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 2985000 sats to the archivists — cefc47309fb520fb
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   82.51s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   95.17s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  116.71s] PASS tier 1 arbitrator 96e75ae4: 128.0× the 20000-sat fee (2560000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-sign
+[r1-liar  117.52s] PASS tier 2 arbitrator 76524317: 3.0× the 25000-sat fee (75000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  118.30s] PASS tier 2 arbitrator b7c63e1f: 14.0× the 25000-sat fee (350000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  121.09s] PASS seizure output distributed (§12) by the pool and the archivists: 2985000 sats to the archivists — cefc47309fb520fb
+[r3   82.52s] standing verdict after tier 1: I,D — upholds my claim
+[r3   94.88s] standing verdict after tier 2: I,D — upholds my claim
+== case 14
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator bc77f198: 4.0× the 20000-sat fee (80000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — dee
+[PASS] r1-liar tier 2 arbitrator 5ef8d82e: 56.0× the 25000-sat fee (1400000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 128.0× the 25000-sat fee (3200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature —
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 4505000 sats to the archivists — b9d2943eb09a5c3b
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.52s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   95.11s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  116.65s] PASS tier 1 arbitrator bc77f198: 4.0× the 20000-sat fee (80000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar  117.48s] PASS tier 2 arbitrator 5ef8d82e: 56.0× the 25000-sat fee (1400000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  118.27s] PASS tier 2 arbitrator 96e75ae4: 128.0× the 25000-sat fee (3200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-sign
+[r1-liar  121.04s] PASS seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 4505000 sats to the archivists — b9d2943eb09a5c3b
+[r3   27.92s] standing verdict after tier 1: I,D — upholds my claim
+[r3   94.91s] standing verdict after tier 2: I,D — upholds my claim
+== case 15
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator 5ef8d82e: 80.0× the 20000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 1 arbitrator 96e75ae4: 128.0× the 20000-sat fee (2560000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature —
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 128.0× the 25000-sat fee (3200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature —
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 28.0× the 25000-sat fee (700000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 7
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 4030000 sats to a vindicated dissenter, 175000 sats to the appellant (appeal subsidy and excess), 3855000 sats to the a
+[r1-liar] 28 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar  209.82s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  232.36s] PASS tier 1 arbitrator 5ef8d82e: 80.0× the 20000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  233.17s] PASS tier 1 arbitrator 96e75ae4: 128.0× the 20000-sat fee (2560000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-sign
+[r1-liar  233.98s] PASS tier 2 arbitrator 96e75ae4: 128.0× the 25000-sat fee (3200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-sign
+[r1-liar  234.78s] PASS tier 2 arbitrator b7c63e1f: 28.0× the 25000-sat fee (700000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  238.33s] PASS seizure output distributed (§12) by the pool and the archivists: 4030000 sats to a vindicated dissenter, 175000 sats to the appellant (appeal subsidy and excess), 3855000 sats
+[r3  209.60s] standing verdict after tier 2: I,D — upholds my claim
+== case 16
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1 arbitrator 5ef8d82e: 80.0× the 20000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 2 arbitrator 76524317: 3.0× the 25000-sat fee (75000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 47d
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 28.0× the 25000-sat fee (700000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 3
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 2200000 sats to the archivists — 9787f142b14bd65b
+[r1-liar] 25 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.50s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   40.76s] standing verdict after tier 2: I,D — against my claim
+[r1-liar   62.32s] PASS tier 1 arbitrator 5ef8d82e: 80.0× the 20000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar   63.13s] PASS tier 2 arbitrator 76524317: 3.0× the 25000-sat fee (75000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signatur
+[r1-liar   63.93s] PASS tier 2 arbitrator b7c63e1f: 28.0× the 25000-sat fee (700000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar   66.81s] PASS seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 2200000 sats to the archivists — 9787f142b14bd65b
+[r3   27.93s] standing verdict after tier 1: I,D — upholds my claim
+[r3   40.26s] standing verdict after tier 2: I,D — upholds my claim
+== case 17
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator 5ef8d82e: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 24.0× the 25000-sat fee (600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 7
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 3800000 sats to the archivists — 4cd5ec8e95ec3b39
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.49s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   95.12s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  116.70s] PASS tier 2 arbitrator 5ef8d82e: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  117.49s] PASS tier 2 arbitrator 96e75ae4: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  118.30s] PASS tier 2 arbitrator b7c63e1f: 24.0× the 25000-sat fee (600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signat
+[r1-liar  121.09s] PASS seizure output distributed (§12) by the pool and the archivists: 3800000 sats to the archivists — 4cd5ec8e95ec3b39
+[r3   27.90s] standing verdict after tier 1: I,D — upholds my claim
+[r3   94.92s] standing verdict after tier 2: I,D — upholds my claim
+== case 18
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 128.0× the 25000-sat fee (3200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature —
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 56.0× the 25000-sat fee (1400000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 4600000 sats to the archivists — 95ac189a245564d0
+[r1-liar] 25 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.48s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   95.07s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  116.67s] PASS tier 2 arbitrator 96e75ae4: 128.0× the 25000-sat fee (3200000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-sign
+[r1-liar  117.46s] PASS tier 2 arbitrator b7c63e1f: 56.0× the 25000-sat fee (1400000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  119.44s] PASS seizure output distributed (§12) by the pool and the archivists: 4600000 sats to the archivists — 95ac189a245564d0
+[r3   27.89s] standing verdict after tier 1: I,D — upholds my claim
+[r3   94.88s] standing verdict after tier 2: I,D — upholds my claim
+== case 19
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator 5ef8d82e: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 2 arbitrator 96e75ae4: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 40.0× the 25000-sat fee (1000000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 4200000 sats to the archivists — b20dbcf284b9e89a
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   28.51s] standing verdict after tier 1: I,D — against my claim
+[r1-liar   95.05s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  116.65s] PASS tier 2 arbitrator 5ef8d82e: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  117.43s] PASS tier 2 arbitrator 96e75ae4: 64.0× the 25000-sat fee (1600000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  118.23s] PASS tier 2 arbitrator b7c63e1f: 40.0× the 25000-sat fee (1000000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  121.00s] PASS seizure output distributed (§12) by the pool and the archivists: 4200000 sats to the archivists — b20dbcf284b9e89a
+[r3   27.91s] standing verdict after tier 1: I,D — upholds my claim
+[r3   94.85s] standing verdict after tier 2: I,D — upholds my claim
+== case 20
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 2 arbitrator b7c63e1f: 80.0× the 25000-sat fee (2000000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 2000000 sats to the archivists — ce7d7617be9f8f7a
+[r1-liar] 23 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r1-liar   88.48s] standing verdict after tier 1: I,D — against my claim
+[r1-liar  100.85s] standing verdict after tier 2: I,D — against my claim
+[r1-liar  122.40s] PASS tier 2 arbitrator b7c63e1f: 80.0× the 25000-sat fee (2000000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signa
+[r1-liar  123.62s] PASS seizure output distributed (§12) by the pool and the archivists: 2000000 sats to the archivists — ce7d7617be9f8f7a
+[r3   88.20s] standing verdict after tier 1: I,D — upholds my claim
+[r3  100.46s] standing verdict after tier 2: I,D — upholds my claim
+== case units (§10.2-10.3)
+review draws seen by seated arbitrators: 165; of which drawn: 50
+cases drawn: 6 of 20
+units released by the pool's co-signature: 101; failed: 0
+arb1 (capital for 3 units): seat offers declined for capital 13, units taken 11
+== momentum when seated, by arbitrator (case order)
+arb1: 0.00 0.00 0.00 0.00 0.00 0.00 0.69 0.38 0.07 0.00 0.00 
+arb2: 0.00 0.20 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 
+arb3: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 
+arb4: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 
+arb5: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 
+arb6: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 
+arb7: 0.00 0.00 0.00 0.00 0.00 0.00 0.67 0.31 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 
+arb8: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 
+arb9: 0.00 0.18 0.00 0.00 0.00 0.23 0.00 0.00 0.00 0.00 0.00 0.16 0.30 0.00 0.00 0.00 0.00 0.00 
+arb10: 0.00 0.00 0.00 0.00 0.22 0.42 1.62 1.80 1.44 1.09 0.74 0.38 0.66 0.31 0.57 0.21 
+arb11: 0.00 0.50 1.03 1.65 1.85 2.52 2.65 2.78 3.91 4.53 5.13 5.34 5.43 
+arb12: 0.00 0.31 0.99 1.70 1.88 2.52 2.66 2.92 3.53 3.75 3.86 4.47 4.58 
+arb13: 0.00 0.62 1.21 1.73 2.43 3.13 3.79 4.46 5.09 5.71 6.32 6.91 7.50 7.50 8.63 9.19 9.74 

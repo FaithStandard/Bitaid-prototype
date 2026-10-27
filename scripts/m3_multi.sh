@@ -56,4 +56,4 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
   echo "arb$i: $(grep -o 'momentum [0-9.]*' $L/arb$i.log | cut -d' ' -f2 | tr '\n' ' ')" >> $L/cases.txt
 done
 cat $L/cases.txt | tail -40
-grep -h "passed" $L/*.out | grep -v " 0 failed" && exit 1 || exit 0
+grep -h "] [0-9]* passed, [0-9]* failed" $L/*.out | grep -v " 0 failed" && exit 1 || exit 0
