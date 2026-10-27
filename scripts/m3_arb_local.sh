@@ -24,11 +24,11 @@ for i in 1 2 3 4 5 6 7 8 9; do
   # CAPTURE=1: a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
   # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
   if [ -n "$CAPTURE" ]; then case $i in 1) extra="--tiers 1,2";; 4|8) extra="--corrupt --tiers 1";; *) extra="--tiers 2";; esac; fi
-  # CHALLENGE=1: no party appeals; arb1, the honest dissenter, stakes a challenge bond and opens tier 2 itself
+  # CHALLENGE=1: no party appeals; arb1, the honest dissenter, buys the re-roll and opens tier 2 itself
   [ -n "$CHALLENGE" ] && [ $i = 1 ] && extra="$extra --challenge"
   # (the challenger cannot sit on the tier it opens, so the corrupt pair also serve tier 2: 6 honest of 8)
   [ -n "$CHALLENGE" ] && [ -n "$CAPTURE" ] && { [ $i = 4 ] || [ $i = 8 ]; } && extra="--corrupt --tiers 1,2"
-  # CHALLENGE=bad: an honest tier 1 (arb1, arb2) outvotes corrupt arb4, which challenges anyway and loses its bond
+  # CHALLENGE=bad: an honest tier 1 (arb1, arb2) outvotes corrupt arb4, which re-rolls anyway and loses its fees
   if [ "$CHALLENGE" = bad ]; then case $i in 1|2) extra="--tiers 1,2";; 4) extra="--corrupt --tiers 1 --challenge";; 8) extra="--corrupt --tiers 2";; *) extra="--tiers 2";; esac; fi
   BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 300 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done

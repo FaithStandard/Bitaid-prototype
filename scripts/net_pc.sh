@@ -55,7 +55,7 @@ start)
     # CAPTURE=1 (default; CAPTURE=0 for a random draw): a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
     # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
     if [ "${CAPTURE:-1}" = 1 ]; then case $i in 1) extra="--tiers 1,2";; 4|8) extra="--corrupt --tiers 1";; *) extra="--tiers 2";; esac; fi
-    # CHALLENGE=1 (default): no party appeals; arb1, the honest dissenter, stakes a challenge bond and opens tier 2
+    # CHALLENGE=1 (default): no party appeals; arb1, the honest dissenter, buys the re-roll to tier 2
     [ "${CHALLENGE:-1}" = 1 ] && [ $i = 1 ] && extra="$extra --challenge"
     # (the challenger cannot sit on the tier it opens, so the corrupt pair also serve tier 2: 6 honest of 8)
     [ "${CHALLENGE:-1}" = 1 ] && [ "${CAPTURE:-1}" = 1 ] && { [ $i = 4 ] || [ $i = 8 ]; } && extra="--corrupt --tiers 1,2"

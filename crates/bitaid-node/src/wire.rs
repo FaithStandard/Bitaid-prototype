@@ -321,17 +321,6 @@ pub enum Msg {
         value: u64,
         sigs: Vec<String>,
     },
-    /// A seated arbitrator who dissented from its tier's verdict stakes a challenge bond to open the next
-    /// tier itself (§10.4): `stake` is an output under its bond's script holding `value`, and `sig` its
-    /// pre-signature of that output's forfeiture into the case's seizure output. It is sent before the
-    /// Escalate for `tier`.
-    Challenge {
-        case_id: Hex32,
-        tier: u32,
-        stake: String,
-        value: u64,
-        sig: String,
-    },
     /// Whoever collects a case's seizure output asks its archivists to co-sign the distribution (§12).
     SeizureRequest {
         case_id: Hex32,
@@ -394,7 +383,6 @@ impl Msg {
             Msg::VerdictReveal { .. } => "verdict-reveal",
             Msg::TierCommitted { .. } => "tier-committed",
             Msg::Forfeits { .. } => "forfeits",
-            Msg::Challenge { .. } => "challenge",
             Msg::SeizureRequest { .. } => "seizure-request",
             Msg::SeizureSig { .. } => "seizure-sig",
         }
@@ -434,7 +422,6 @@ impl Msg {
             | Msg::VerdictReveal { case_id, .. }
             | Msg::TierCommitted { case_id, .. }
             | Msg::Forfeits { case_id, .. }
-            | Msg::Challenge { case_id, .. }
             | Msg::SeizureRequest { case_id, .. }
             | Msg::SeizureSig { case_id, .. } => Some(case_id),
         }

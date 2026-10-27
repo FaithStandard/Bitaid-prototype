@@ -207,29 +207,13 @@ impl Bond {
         );
         (tx, d)
     }
-    /// The same keys holding another output (a challenge bond).
+    /// The same keys holding another output (a seat's stake).
     pub fn stake(&self, op: OutPoint, value: u64) -> Bond {
         Bond {
             op,
             value,
             ..self.clone()
         }
-    }
-    /// Forfeits the whole output into the seizure output (a challenge bond).
-    pub fn forfeit_all(
-        &self,
-        oracle: &XOnlyPublicKey,
-        seizure: &ScriptBuf,
-    ) -> (Transaction, [u8; 32]) {
-        let t = self.tree(oracle);
-        let tx = txbuild::payout(self.op, &[(self.value, seizure.clone())]);
-        let d = txbuild::scriptspend_digest(
-            &tx,
-            0,
-            &[txbuild::txout(self.value, t.script_pubkey())],
-            &t.scripts[bond_leaf::FORFEIT],
-        );
-        (tx, d)
     }
     /// The five pre-signed forfeitures' digests at a seat fee, in step order.
     pub fn forfeit_digests(
@@ -284,16 +268,8 @@ pub struct Tier {
     pub committed: bool,
     /// per seat, its stake and the five verified pre-signed forfeitures of it
     pub forfeits: HashMap<String, (Bond, Vec<String>)>,
-    /// when a dissenting arbitrator of the tier below opened this one: its challenge bond
-    pub challenge: Option<Challenge>,
-}
-
-/// A challenge bond (§10.4): a separate output under the challenger's bond script, its whole value
-/// pre-signed to the case's seizure output, forfeited only if the larger panel does not agree.
-#[derive(Clone, Debug)]
-pub struct Challenge {
-    pub stake: Bond,
-    pub sig: String,
+    /// opened by a dissenting arbitrator of the tier below, who bought the re-roll itself (§10.4)
+    pub challenger: bool,
 }
 
 /// A seat's stake, in tenths of the seat fee: the largest penalty step, 4× (more with momentum).
@@ -324,9 +300,6 @@ pub fn verify_forfeits(
         .then_some(st)
 }
 
-/// The challenge bond, in tenths of the case fee: 3× (§10.4, provisional).
-pub const CHALLENGE_STEPS: u64 = 30;
-
 impl Tier {
     pub fn verdict(&self) -> Option<Ballot> {
         if !self.committed || self.reveals.len() < self.seats.len() {
@@ -340,8 +313,6 @@ impl Tier {
 /// A forfeiture the final ruling calls for.
 #[derive(Clone, Debug)]
 pub struct Penalty {
-    /// a challenge bond the larger panel did not uphold, rather than an incoherent vote
-    pub challenge: bool,
     pub arbitrator: String,
     pub tier: u32,
     pub step: u64,
@@ -397,8 +368,8 @@ impl Replay {
             .unwrap_or(0);
         for k in 1..=max {
             let prev = rp.tiers.get(&(k - 1)).cloned();
-            // who opens tier k: a party, or a dissenter of tier k-1 who staked a challenge bond (§10.4)
-            let mut opener: Option<(String, Option<Challenge>)> = None;
+            // who opens tier k: a party, or a dissenter of tier k-1 buying the re-roll itself (§10.4)
+            let mut opener: Option<(String, bool)> = None;
             for e in &mine {
                 let Msg::Escalate { tier, .. } = &e.msg else {
                     continue;
@@ -408,56 +379,30 @@ impl Replay {
                 }
                 let s = &e.sender;
                 if rp.parties.iter().any(|p| &p.0 == s) {
-                    opener = Some((s.clone(), None));
+                    opener = Some((s.clone(), false));
                     break;
                 }
-                let (Some(pt), Some(spk)) = (prev.as_ref(), seizure.as_ref()) else {
+                let Some(pt) = prev.as_ref() else {
                     continue;
                 };
-                let (Some(pv), Some(bond)) = (pt.verdict(), pt.offers.get(s)) else {
+                let Some(pv) = pt.verdict() else {
                     continue;
                 };
-                let dissented = pt
+                if pt
                     .reveals
                     .iter()
-                    .any(|(x, v)| x == s && verdict_key(v) != verdict_key(&pv));
-                if !dissented {
-                    continue;
-                }
-                let ch = mine.iter().find_map(|c| match &c.msg {
-                    Msg::Challenge {
-                        tier,
-                        stake,
-                        value,
-                        sig,
-                        ..
-                    } if *tier == k && c.sender == *s => {
-                        let ch = Challenge {
-                            stake: bond.stake(OutPoint::from_str(stake).ok()?, *value),
-                            sig: sig.clone(),
-                        };
-                        let (_, d) = ch.stake.forfeit_all(&oracle, spk);
-                        let ok = *value >= CHALLENGE_STEPS * rp.base_fee / 10
-                            && rpc.paid_to(
-                                &ch.stake.op.txid.to_string(),
-                                &bond.tree(&oracle).script_pubkey(),
-                            ) >= *value
-                            && schnorr_ok(&bond.scoped, &d, sig);
-                        ok.then_some(ch)
-                    }
-                    _ => None,
-                });
-                if let Some(ch) = ch {
-                    opener = Some((s.clone(), Some(ch)));
+                    .any(|(x, v)| x == s && verdict_key(v) != verdict_key(&pv))
+                {
+                    opener = Some((s.clone(), true));
                     break;
                 }
             }
-            let Some((escalator, challenge)) = opener else {
+            let Some((escalator, challenger)) = opener else {
                 break;
             };
             let mut t = Tier {
                 escalator: escalator.clone(),
-                challenge,
+                challenger,
                 ..Default::default()
             };
             let mut vcommits: HashMap<String, String> = HashMap::new();
@@ -621,7 +566,6 @@ impl Replay {
                 let amount = step * fee / 10;
                 let (tx, digest) = bond.penalty_tx(&self.oracle, amount, &spk);
                 out.push(Penalty {
-                    challenge: false,
                     arbitrator: arb.clone(),
                     tier: *k,
                     step,
@@ -631,28 +575,6 @@ impl Replay {
                     tx,
                     digest,
                 });
-            }
-            // a challenge the larger panels did not uphold: the challenge bond is forfeit whole
-            if let Some(ch) = &t.challenge {
-                let prev_vote = self
-                    .tiers
-                    .get(&(k - 1))
-                    .and_then(|p| p.reveals.iter().find(|x| x.0 == t.escalator))
-                    .map(|x| verdict_key(&x.1));
-                if prev_vote.as_ref() != Some(&fk) {
-                    let (tx, digest) = ch.stake.forfeit_all(&self.oracle, &spk);
-                    out.push(Penalty {
-                        challenge: true,
-                        arbitrator: t.escalator.clone(),
-                        tier: *k,
-                        step: CHALLENGE_STEPS,
-                        amount: ch.stake.value,
-                        bond: ch.stake.clone(),
-                        pre: ch.sig.clone(),
-                        tx,
-                        digest,
-                    });
-                }
             }
         }
         out
@@ -704,18 +626,18 @@ impl Replay {
                 left -= each;
             }
         }
-        // a party's payout script, or a challenger's (the payout named in its bond's offer)
+        // a party's payout script, or that of a dissenter who bought a re-roll (from its offer below)
         let payout_of = |who: &str| {
             self.parties
                 .iter()
                 .find(|p| p.0 == who)
                 .and_then(|p| p.1.clone())
                 .or_else(|| {
-                    self.tiers.values().find_map(|t| {
-                        t.challenge
-                            .as_ref()
-                            .filter(|_| t.escalator == who)
-                            .map(|c| c.stake.payout.clone())
+                    self.tiers.iter().find_map(|(k, t)| {
+                        (t.challenger && t.escalator == who)
+                            .then(|| self.tiers.get(&(k - 1)).and_then(|p| p.offers.get(who)))
+                            .flatten()
+                            .map(|b| b.payout.clone())
                     })
                 })
         };
@@ -736,8 +658,8 @@ impl Replay {
             if *k < 2 || !t.fee_paid || left == 0 || !before(*k).1 {
                 continue;
             }
-            // a challenger's fees are refunded only if the larger panel agreed with it
-            if t.challenge.is_some() && !vind.iter().any(|v| v.0 == t.escalator) {
+            // a dissenter's fees are refunded only if the larger panel agreed with it
+            if t.challenger && !vind.iter().any(|v| v.0 == t.escalator) {
                 continue;
             }
             let Some(p) = payout_of(&t.escalator) else {
