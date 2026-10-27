@@ -2101,6 +2101,7 @@ struct SeatKeys {
 /// On taking a seat: set aside the seat's stake (4× its fee) under the bond's script and pre-sign its
 /// forfeitures — one per penalty step into the case's seizure output (§10.4, §12) and the seat
 /// forfeiture refunding the fee if this seat misses its commit deadline.
+#[allow(clippy::too_many_arguments)]
 fn take_seat(
     n: &mut Node,
     k: &SeatKeys,

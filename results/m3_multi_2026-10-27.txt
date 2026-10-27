@@ -1,0 +1,18 @@
+Bitaid M3 — momentum over 20 cases, one machine — 2026-10-27
+scripts/m3_multi.sh, CASES=20: one oracle pool (4 members, threshold 3), one archivist, 13 arbitrators kept
+running across the cases — arb1-8 honest (misread 5% of cases), arb9-10 sloppy (35%), arb11-12 corrupt (always
+against the footage), arb13 commits and never reveals. Each case: the attending vote deadlocks (r1 documented but
+claims it intervened), r1 escalates, 3 seats drawn; whoever tier 1 rules against appeals once to 7 seats; penalties
+taken from seat stakes and the seizure output distributed; the next case starts on the same pool and arbitrators.
+878 checks, 0 failed (20 callers, 20 + 20 responders). 19 cases settled by an attested verdict; 1 deadlocked (both
+tiers hung), announced by the pool, closing by its refund locktime.
+Momentum when seated (every seating, in order):
+  arb13 (never reveals): 0 0.25 0.77 0.77 1.86 2.40 2.97 3.54 3.54 3.54 4.12 4.71 5.27 5.87 6.47
+  arb11 (corrupt):       0 0 1.14 1.26 1.45 1.63 1.71 1.80 2.40 2.40 2.40 2.48 3.56 3.63 3.85 4.44 5.04 5.27
+  arb12 (corrupt):       0 0 0.28 0.48 0.67 0.76 1.36 1.97 2.06 2.28 2.53
+  arb9-10 (sloppy):      blips to 0.57 and 0.87, back to 0
+  arb1-8 (honest):       0 at almost every seating; arb6 reached 1.0 early (two errors while the pool's mean
+                         error was still low) and decayed to 0 by its 7th seating
+Penalties reached the cap: 128× the fee (2.56M sats at 20,000) for the never-revealing arbitrator; the corrupt
+pair paid 14×-80× by their last cases. Honest arbitrators paid the 2×-4× isolation penalty on their rare errors.
+Full per-case lines: results/m3_multi_2026-10-27_cases.txt.

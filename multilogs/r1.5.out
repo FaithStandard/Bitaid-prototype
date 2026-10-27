@@ -1,26 +1,27 @@
-[PASS] r1-liar alert 6aa09298 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r1-liar alert f955f9c3 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
 [PASS] r1-liar pre-signed set v0 verified (seat 1) — 39 payouts
-[PASS] r1-liar incident transaction on chain: every pot output exists — 3d7cd8490f33085bac32f1e6ff687401a3d3f465d78918777b72c258fcb7c4b3
+[PASS] r1-liar incident transaction on chain: every pot output exists — 06b75887560bd058d52c7b7723dd6c40160288502dbf3c56a0a69efc963090ef
 [PASS] r1-liar evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
 [PASS] r1-liar attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
-[PASS] r1-liar tier 1: 3 of 13 offering arbitrators drawn from block 810, case disclosed only to them — 8.0 s after escalating
+[PASS] r1-liar tier 1: 3 of 13 offering arbitrators drawn from block 958, case disclosed only to them — 8.0 s after escalating
 [PASS] r1-liar tier 1: every seat set aside a stake of 4× the 20000-sat fee under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
-[PASS] r1-liar tier 1: 3 × 20000 sats paid to the seats — 9bfc13f290db95e9
-[PASS] r1-liar tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — fa528bf56f5cbc03f881a09e49d882650404c99efb3d1c95f4f1ef505ba9375e
-[PASS] r1-liar tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 12.3 s from escalation
+[PASS] r1-liar tier 1: 3 × 20000 sats paid to the seats — f900ce07ddd9ac1f
+[PASS] r1-liar tier 1: 2 of 3 seats revealed by the reveal deadline; the missing reveal is charged as an incoherent vote
+[PASS] r1-liar tier 1: 2 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — a0c83bc80278862ec0fd7e48409d6562c0f42bb7e786f07d4a9cec2bfec4c3af
+[PASS] r1-liar tier 1: two-thirds verdict (3 of 3), unanimous — 66.7 s from escalation
 [PASS] r1-liar appealing the verdict against my claim to tier 2
-[PASS] r1-liar tier 2: 7 of 13 offering arbitrators drawn from block 816, case disclosed only to them — 8.0 s after escalating
+[PASS] r1-liar tier 2: 7 of 13 offering arbitrators drawn from block 964, case disclosed only to them — 8.0 s after escalating
 [PASS] r1-liar tier 2: every seat set aside a stake of 4× the 25000-sat fee under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 7 of 7
-[PASS] r1-liar tier 2: 7 × 25000 sats paid to the seats — 027f4b5722f62ba5
-[PASS] r1-liar tier 2: 6 of 7 seats revealed by the reveal deadline; the missing reveal is charged as an incoherent vote
-[PASS] r1-liar tier 2: 6 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — e02f2efa7c8c0d573e76e5d99b5470685a96aff433f97d85e3c1a98499b56116
-[PASS] r1-liar tier 2: two-thirds verdict (7 of 7), unanimous — 66.8 s from escalation
+[PASS] r1-liar tier 2: 7 × 25000 sats paid to the seats — 61c890f58bd6f21c
+[PASS] r1-liar tier 2: 7 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — b4557ea1f95bb25ab374e86187cdfaa6c27414b767857c1ec055001260cb817f
+[PASS] r1-liar tier 2: two-thirds verdict (5 of 7); 2 dissenter(s) owe 2.5× the fee each, settled against the final ruling — 12.6 s from escalation
 [PASS] r1-liar deposit: "returned" completes with the attestation
 [PASS] r1-liar reward: "paid (7, 3)" completes with the attestation
 [PASS] r1-liar bounty: "split (7, 3)" completes with the attestation
 [PASS] r1-liar my shares arrived at my payout address — 270000 sats
-[PASS] r1-liar tier 1 arbitrator 1fab8764: 5.0× the 20000-sat fee (100000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 3fd2ebd842cd9e11 (pool members [1, 3, 2])
-[PASS] r1-liar tier 2 arbitrator ac5ce5e4: 16.0× the 25000-sat fee (400000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — a0195525acc6c071 (pool members [4, 1, 3])
+[PASS] r1-liar tier 1 arbitrator 07d57013: 14.0× the 20000-sat fee (280000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — c2ea622e307653a0 (pool members [1, 4, 3])
+[PASS] r1-liar tier 2 arbitrator 2cab3101: 5.0× the 25000-sat fee (125000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 33d8d86ab5af0d6b (pool members [2, 1, 4])
+[PASS] r1-liar tier 2 arbitrator d072e2f7: 3.0× the 25000-sat fee (75000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 96409d1f0db881f4 (pool members [3, 2, 1])
 [PASS] r1-liar seizure distribution signed by 1 of 1 archivist(s) after their own replay
-[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 175000 sats to the appellant (appeal subsidy and excess), 325000 sats to the archivists — 8cdfa72b37651955
-[r1-liar] 25 passed, 0 failed
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 480000 sats to the archivists — cfb05a3b13ed2ad1
+[r1-liar] 26 passed, 0 failed

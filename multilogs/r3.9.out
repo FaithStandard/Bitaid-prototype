@@ -1,0 +1,6 @@
+[PASS] r3 alert 993df381 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r3 pre-signed set v0 verified (seat 0) — 39 payouts
+[PASS] r3 incident transaction on chain: every pot output exists — 0a9da1a2c8fcc1f84422e090fc6a1f1e98530bbe999d7f9f45118802665bbc21
+[PASS] r3 evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[PASS] r3 no tier reached a verdict and no party re-rolled the last: the deadlock stands, and the incident output closes by its refund locktime (§10.5)
+[r3] 5 passed, 0 failed
