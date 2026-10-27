@@ -13,6 +13,9 @@ pub struct Rpc {
     auth: String,
     pub wallet: String,
     used: Mutex<HashSet<String>>,
+    /// confirmed transactions and block hashes, which never change: a replay of a case asks for the
+    /// same ones many times, and over Tor each call costs a second or more
+    memo: Mutex<std::collections::HashMap<String, Value>>,
 }
 
 impl Rpc {
@@ -29,6 +32,7 @@ impl Rpc {
             auth,
             wallet: wallet.into(),
             used: Mutex::new(HashSet::new()),
+            memo: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -45,6 +49,13 @@ impl Rpc {
         } else {
             self.base.clone()
         };
+        // BITAID_RPC_DELAY_MS (tests): add latency to every call, as a chain reached over Tor has
+        if let Some(ms) = std::env::var("BITAID_RPC_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         let body = json!({"jsonrpc": "1.0", "id": "bitaid", "method": method, "params": params});
         let r = crate::http_for(&url)
             .post(&url)
@@ -70,6 +81,19 @@ impl Rpc {
     }
     pub fn wcall(&self, method: &str, params: Value) -> Result<Value, String> {
         self.post(true, method, params)
+    }
+
+    /// A transaction (verbose), memoised once it is confirmed.
+    fn tx_json(&self, txid: &str) -> Option<Value> {
+        let k = format!("tx:{txid}");
+        if let Some(v) = self.memo.lock().unwrap().get(&k) {
+            return Some(v.clone());
+        }
+        let v = self.call("getrawtransaction", json!([txid, true])).ok()?;
+        if v["confirmations"].as_u64().unwrap_or(0) > 0 {
+            self.memo.lock().unwrap().insert(k, v.clone());
+        }
+        Some(v)
     }
 
     pub fn height(&self) -> u32 {
@@ -255,8 +279,7 @@ impl Rpc {
     /// Whether transaction `txid` is confirmed and carries `data` in an OP_RETURN output.
     pub fn has_op_return(&self, txid: &str, data: &[u8]) -> bool {
         let want = format!("6a{:02x}{}", data.len(), hex::encode(data));
-        self.call("getrawtransaction", json!([txid, true]))
-            .ok()
+        self.tx_json(txid)
             .map(|v| {
                 v["confirmations"].as_u64().unwrap_or(0) > 0
                     && v["vout"]
@@ -286,8 +309,7 @@ impl Rpc {
     /// What `txid` paid to `spk` (0 if unknown).
     pub fn paid_to(&self, txid: &str, spk: &ScriptBuf) -> u64 {
         let h = spk.to_hex_string();
-        self.call("getrawtransaction", json!([txid, true]))
-            .ok()
+        self.tx_json(txid)
             .and_then(|v| v["vout"].as_array().cloned())
             .map(|o| {
                 o.iter()
@@ -298,9 +320,17 @@ impl Rpc {
             .unwrap_or(0)
     }
 
+    /// The hash of the block at `height` (memoised: regtest and the tests do not reorganise).
     pub fn block_hash(&self, height: u32) -> Option<String> {
-        self.call("getblockhash", json!([height]))
+        let k = format!("bh:{height}");
+        if let Some(v) = self.memo.lock().unwrap().get(&k) {
+            return v.as_str().map(String::from);
+        }
+        let h = self
+            .call("getblockhash", json!([height]))
             .ok()
-            .and_then(|v| v.as_str().map(String::from))
+            .and_then(|v| v.as_str().map(String::from))?;
+        self.memo.lock().unwrap().insert(k, json!(h));
+        Some(h)
     }
 }
