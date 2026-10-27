@@ -1,0 +1,13 @@
+[PASS] arb10 case c92c2e36: review draw at block 169 (40% for a split final panel): passed over
+[PASS] arb10 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 3b67dd4807a35a15 (pool members [3, 2, 4])
+[PASS] arb10 case cba04c42: review draw at block 220 (40% for a split final panel): passed over
+[PASS] arb10 tier 1 unit of 2000000 sats released under the bond's script by the pool's co-signature — e9c6bb6a8e0d6023 (pool members [2, 1, 4])
+[PASS] arb10 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — c7cda76f41ccbaed (pool members [4, 3, 2])
+[PASS] arb10 case 6976fcd5: review draw at block 299 (40% for a split final panel): drawn for review; units held
+[PASS] arb10 case 31e75b8d: review draw at block 329 (40% for a split final panel): drawn for review; units held
+[PASS] arb10 case 66b342e0: review draw at block 359 (5% for a unanimous final panel): passed over
+[PASS] arb10 case 92a51722: review draw at block 385 (40% for a split final panel): passed over
+[PASS] arb10 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 5d44181a081a4aa0 (pool members [2, 4, 3])
+[PASS] arb10 case 78ddc699: review draw at block 411 (40% for a split final panel): passed over
+[PASS] arb10 tier 1 unit of 2000000 sats released under the bond's script by the pool's co-signature — 5562cb126a8dfffa (pool members [1, 4, 2])
+[PASS] arb10 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 28a2ef270bcc3aad (pool members [3, 1, 4])

@@ -430,22 +430,38 @@ fn pool_member(mut n: Node) -> i32 {
                         None => {
                             // a case unit's release: the case closed and the review draw passed
                             // over it (§10.2, §10.3), by this member's own replay
-                            let rel = arb::Replay::build(&n.history, a, r, &n.rpc)
+                            let rp = arb::Replay::build(&n.history, a, r, &n.rpc);
+                            let rel = rp
+                                .as_ref()
                                 .map(|rp| rp.releasable(a, &n.rpc))
                                 .unwrap_or_default();
-                            match rel.iter().find(|x| x.3.compute_txid() == id && *input == 0) {
-                                Some((k, w, b, _, d)) => {
-                                    n.log(&format!(
+                            // after a confirmed review: the whole-unit forfeitures and their distribution
+                            let rev = rp
+                                .as_ref()
+                                .map(|rp| rp.review_due(a, r))
+                                .unwrap_or_default();
+                            if let Some((_, _, d, what)) = rev
+                                .iter()
+                                .find(|x| x.0 == id && x.1 == *input as usize)
+                                .cloned()
+                            {
+                                n.log(&format!("co-signing {what} for {}", &case_id[..8]));
+                                d
+                            } else {
+                                match rel.iter().find(|x| x.3.compute_txid() == id && *input == 0) {
+                                    Some((k, w, b, _, d)) => {
+                                        n.log(&format!(
                                         "co-signing the release of {}'s tier-{k} unit ({} sats) for {}: the review draw passed the case over",
                                         &w[..8],
                                         b.value,
                                         &case_id[..8]
                                     ));
-                                    *d
-                                }
-                                None => {
-                                    n.log("co-signature refused: not a forfeiture, distribution or release the case calls for");
-                                    continue;
+                                        *d
+                                    }
+                                    None => {
+                                        n.log("co-signature refused: not a forfeiture, distribution or release the case calls for");
+                                        continue;
+                                    }
                                 }
                             }
                         }
@@ -874,6 +890,10 @@ fn archivist(mut n: Node) -> i32 {
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
     let idle = num("--exit-after", 900u64);
     let mut last = Instant::now();
+    // the staged review (§10.3): this archivist convenes it for the cases it holds first; cases whose
+    // review is settled, and when each case was last looked at
+    let mut settled: std::collections::HashSet<String> = Default::default();
+    let mut looked: HashMap<String, Instant> = HashMap::new();
     loop {
         if last.elapsed() > secs(idle) {
             n.log(&format!(
@@ -884,6 +904,29 @@ fn archivist(mut n: Node) -> i32 {
             return 0;
         }
         let Some(env) = n.wait(secs(1), |env, _| Some(env.clone())) else {
+            // idle: convene any review stage now due
+            if let Some(v) = view.as_ref() {
+                let due: Vec<String> = rosters
+                    .iter()
+                    .filter(|(c, r)| {
+                        r.archivists.first() == Some(&me)
+                            && !settled.contains(*c)
+                            && looked.get(*c).is_none_or(|t| t.elapsed() > secs(5))
+                    })
+                    .map(|(c, _)| c.clone())
+                    .collect();
+                for c in due {
+                    looked.insert(c.clone(), Instant::now());
+                    let (Some(a), Some(r)) = (alerts.get(&c).cloned(), rosters.get(&c).cloned())
+                    else {
+                        continue;
+                    };
+                    if convene_review(&mut n, v, &a, &r) {
+                        settled.insert(c);
+                    }
+                    last = Instant::now();
+                }
+            }
             continue;
         };
         last = Instant::now();
@@ -959,8 +1002,19 @@ fn archivist(mut n: Node) -> i32 {
                 let Some(rp) = arb::Replay::build(&n.history, a, r, &n.rpc) else {
                     continue;
                 };
-                let pens = rp.penalties();
-                let Some((dist, prev)) = rp.distribution(&pens) else {
+                let mut pens = rp.penalties();
+                let mut called = rp.distribution(&pens);
+                // after a confirmed review, the distribution of what it seized (§12)
+                if called.as_ref().map(|d| d.0.compute_txid()) != Some(t.compute_txid()) {
+                    let rpens = rp.review_penalties();
+                    if let Some(d) = rp.review_distribution(a, r, &rpens) {
+                        if d.0.compute_txid() == t.compute_txid() {
+                            pens = rpens;
+                            called = Some(d);
+                        }
+                    }
+                }
+                let Some((dist, prev)) = called else {
                     n.log("distribution not signed: the case calls for none");
                     continue;
                 };
@@ -1523,11 +1577,9 @@ fn wait_forfeits(
             continue;
         };
         let max = arb::max_step(arb::momentum(&logs, &w, height));
-        if let Some(st) =
-            arb::verify_forfeits(
-                &b, &stake, value, &sigs, oxo, fee, spk, refund, max, case_value, &n.rpc,
-            )
-        {
+        if let Some(st) = arb::verify_forfeits(
+            &b, &stake, value, &sigs, oxo, fee, spk, refund, max, case_value, &n.rpc,
+        ) {
             out.insert(w, (st, sigs.last().cloned().unwrap_or_default()));
         }
     }
@@ -1547,6 +1599,8 @@ fn escalate_tier(
     let c = a.case_hex.clone();
     let value: u64 = a.template.pots.iter().sum();
     let size = bitaid_node::arb::panel_size(tier);
+    // a stage of the staged review (§10.3): seats unpaid and unstaked, an 80% finding
+    let review = arb::is_review(tier);
     let okey = view.key_hex();
     n.send_case(
         &c,
@@ -1586,7 +1640,7 @@ fn escalate_tier(
             (u.script_pubkey == b.tree(&oxo).script_pubkey()
                 && u.value.to_sat() == b.value
                 && b.value >= ARB_BOND_FLOOR)
-            .then_some(b)
+                .then_some(b)
         })();
         match ok {
             Some(b) => offers.push((who, b.payout.clone(), b)),
@@ -1658,52 +1712,70 @@ fn escalate_tier(
         .unwrap_or_default();
     let seizure = arb::seizure_tree(&r_arch, &oxo).map(|t| t.0.script_pubkey());
     let mut stakes: HashMap<String, (arb::Bond, String)> = HashMap::new();
-    let got = wait_forfeits(
-        n,
-        &c,
-        tier,
-        &seats,
-        &offers,
-        &oxo,
-        fee,
-        seizure.as_ref(),
-        &refund_spk,
-        h,
-        value,
-    );
-    n.check(
+    if review {
+        n.send_case(
+            &c,
+            &seats,
+            Msg::FeePaid {
+                case_id: c.clone(),
+                tier,
+                txid: String::new(),
+            },
+            false,
+        );
+    }
+    let got = if review {
+        Default::default()
+    } else {
+        wait_forfeits(
+            n,
+            &c,
+            tier,
+            &seats,
+            &offers,
+            &oxo,
+            fee,
+            seizure.as_ref(),
+            &refund_spk,
+            h,
+            value,
+        )
+    };
+    if !review {
+        n.check(
         &format!("tier {tier}: every seat committed a case unit of at least twice the case value ({} sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture", 2 * value),
         got.len() == seats.len(),
         &format!("{} of {}", got.len(), seats.len()),
     );
-    stakes.extend(got);
-    // each seat paid its fee directly by whoever escalated (§10.6, §11.11)
-    let pay: Vec<(bitcoin::ScriptBuf, u64)> = seats
-        .iter()
-        .map(|sid| (offers.iter().find(|o| &o.0 == sid).unwrap().1.clone(), fee))
-        .collect();
-    match n.rpc.pay_many(&pay) {
-        Ok(txid) => {
-            n.rpc.mine(1).ok();
-            n.send_case(
-                &c,
-                &seats,
-                Msg::FeePaid {
-                    case_id: c.clone(),
-                    tier,
-                    txid: txid.to_string(),
-                },
-                false,
-            );
-            n.check(
-                &format!("tier {tier}: {size} × {fee} sats paid to the seats"),
-                true,
-                &txid.to_string()[..16],
-            );
-        }
-        Err(e) => {
-            n.check(&format!("tier {tier}: fees paid"), false, &e);
-            return None;
+        stakes.extend(got);
+        // each seat paid its fee directly by whoever escalated (§10.6, §11.11)
+        let pay: Vec<(bitcoin::ScriptBuf, u64)> = seats
+            .iter()
+            .map(|sid| (offers.iter().find(|o| &o.0 == sid).unwrap().1.clone(), fee))
+            .collect();
+        match n.rpc.pay_many(&pay) {
+            Ok(txid) => {
+                n.rpc.mine(1).ok();
+                n.send_case(
+                    &c,
+                    &seats,
+                    Msg::FeePaid {
+                        case_id: c.clone(),
+                        tier,
+                        txid: txid.to_string(),
+                    },
+                    false,
+                );
+                n.check(
+                    &format!("tier {tier}: {size} × {fee} sats paid to the seats"),
+                    true,
+                    &txid.to_string()[..16],
+                );
+            }
+            Err(e) => {
+                n.check(&format!("tier {tier}: fees paid"), false, &e);
+                return None;
+            }
         }
     }
     // §10.4: a seat that has not committed its vote by the deadline is forfeit — its pre-signed seat
@@ -1744,6 +1816,64 @@ fn escalate_tier(
             break;
         }
         for m in missing {
+            if review {
+                n.rpc.mine(1).ok();
+                let h = n.rpc.height();
+                let bh = n.rpc.block_hash(h).unwrap_or_default();
+                let left: Vec<String> = ids
+                    .iter()
+                    .filter(|o| !seats.contains(o) && !forfeited.contains(o))
+                    .cloned()
+                    .collect();
+                let Some(new) = bitaid_node::arb::draw(&bh, &c, tier, &left, 1).pop() else {
+                    n.check(&format!("review stage {}: an offer left to replace a reviewer who never committed", tier - arb::REVIEW_BASE), false, "none");
+                    return None;
+                };
+                let pos = seats.iter().position(|x| *x == m).unwrap();
+                seats[pos] = new.clone();
+                forfeited.push(m.clone());
+                let key = n.case_keys[&c];
+                n.send_case(
+                    &c,
+                    std::slice::from_ref(&new),
+                    Msg::Reseated {
+                        case_id: c.clone(),
+                        tier,
+                        height: h,
+                        block_hash: bh,
+                        replaced: m.clone(),
+                        seat: new.clone(),
+                        sealed_key: hex::encode(wire::seal(
+                            &n.keys,
+                            &wire::xonly(&new).unwrap(),
+                            c.as_bytes(),
+                            &key,
+                        )),
+                    },
+                    false,
+                );
+                n.send_case(
+                    &c,
+                    std::slice::from_ref(&new),
+                    Msg::FeePaid {
+                        case_id: c.clone(),
+                        tier,
+                        txid: String::new(),
+                    },
+                    false,
+                );
+                n.check(
+                    &format!(
+                        "review stage {}: reviewer {} never committed; {} drawn in its place",
+                        tier - arb::REVIEW_BASE,
+                        &m[..8],
+                        &new[..8]
+                    ),
+                    true,
+                    "",
+                );
+                continue;
+            }
             let Some((stake, sig)) = stakes.get(&m).cloned() else {
                 n.check(
                     &format!("tier {tier}: seat forfeiture of {}", &m[..8]),
@@ -1916,6 +2046,23 @@ fn escalate_tier(
         .unwrap_or(false);
     n.check(&format!("tier {tier}: {} of {size} verdicts revealed; roster and answers committed on chain (OP_RETURN)", reveals.len()), on_chain, &committed.unwrap_or_default());
     let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
+    if review {
+        let v = arb::supermajority_of(size, &votes, 4, 5);
+        n.check(
+            &format!(
+                "review stage {}: {} of {size} findings revealed; {}",
+                tier - arb::REVIEW_BASE,
+                votes.len(),
+                match &v {
+                    Some(v) => format!("80% found {}", verdict_classes(v)),
+                    None => "no 80% finding".into(),
+                }
+            ),
+            true,
+            &format!("{:.1} s from convening", t0.elapsed().as_secs_f64()),
+        );
+        return v;
+    }
     let verdict = bitaid_node::arb::supermajority(size, &votes);
     match &verdict {
         Some(v) => {
@@ -2207,6 +2354,7 @@ fn release_units(
     r: &Rostered,
     cold: Scalar,
     session: &mut u32,
+    announced: &mut std::collections::HashSet<String>,
 ) -> Option<bool> {
     let rp = arb::Replay::build(&n.history, a, r, &n.rpc)?;
     let Some(dr) = rp.review_draw(a, &n.rpc) else {
@@ -2216,26 +2364,30 @@ fn release_units(
     };
     let c = rp.case.clone();
     let me = n.me();
-    n.check(
-        &format!(
-            "case {}: review draw at block {} ({}% for a {} final panel): {}",
-            &c[..8],
-            dr.height,
-            dr.rate_bp / 100,
-            if dr.split { "split" } else { "unanimous" },
-            if dr.drawn {
-                "drawn for review; units held"
-            } else {
-                "passed over"
-            }
-        ),
-        true,
-        "",
-    );
+    let first = announced.insert(c.clone());
+    if first {
+        n.check(
+            &format!(
+                "case {}: review draw at block {} ({}% for a {} final panel): {}",
+                &c[..8],
+                dr.height,
+                dr.rate_bp / 100,
+                if dr.split { "split" } else { "unanimous" },
+                if dr.drawn {
+                    "drawn for review; units held"
+                } else {
+                    "passed over"
+                }
+            ),
+            true,
+            "",
+        );
+    }
     let oxo = wire::xonly(&view.key_hex()).unwrap();
-    if dr.drawn {
+    let state = rp.review_state(a, &n.rpc);
+    if let arb::ReviewState::Pending(_) = state {
         // --greedy-release: ask for the release anyway; every pool member's replay must refuse
-        if flag("--greedy-release") {
+        if first && flag("--greedy-release") {
             if let Some((_, _, b, tx, d)) = rp
                 .units()
                 .into_iter()
@@ -2247,15 +2399,56 @@ fn release_units(
                 .next()
             {
                 let me_n = u16::from_str_radix(&me[..4], 16).unwrap_or(0) as u32;
-                let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, 100_000 + me_n * 256 + 200);
+                let res = pool::cosign(
+                    n,
+                    view,
+                    &c,
+                    &serialize_hex(&tx),
+                    0,
+                    &d,
+                    100_000 + me_n * 256 + 200,
+                );
                 n.check(
-                    &format!("the pool refuses to release a {}-sat unit of a case drawn for review", b.value),
+                    &format!(
+                        "the pool refuses to release a {}-sat unit of a case drawn for review",
+                        b.value
+                    ),
                     res.is_err(),
                     &res.err().unwrap_or_default(),
                 );
             }
         }
-        return Some(false);
+        return None;
+    }
+    match &state {
+        arb::ReviewState::Confirmed(_) => {
+            let held = rp.overturned_voters().iter().any(|x| x.1 == me);
+            n.check(
+                &format!(
+                    "case {}: the staged review confirmed a different verdict; {}",
+                    &c[..8],
+                    if held {
+                        "this arbitrator voted for the overturned one: its unit is held for seizure"
+                    } else {
+                        "units of those who did not vote for the overturned one released"
+                    }
+                ),
+                true,
+                "",
+            );
+            if held {
+                return Some(false);
+            }
+        }
+        arb::ReviewState::Cleared(st) => n.check(
+            &format!(
+                "case {}: the staged review cleared the verdict at stage {st}; units released",
+                &c[..8]
+            ),
+            true,
+            "",
+        ),
+        _ => {}
     }
     let mut ok = true;
     for (k, w, b, mut tx, d) in rp.releasable(a, &n.rpc) {
@@ -2288,6 +2481,224 @@ fn release_units(
         );
     }
     Some(ok)
+}
+
+/// The staged review of a case, as its convener runs it (§10.3): once the pool has attested the case
+/// and its review draw is mined, convene the stage that is due, if any. True once nothing more is due:
+/// the draw passed the case over, or the review cleared or confirmed.
+fn convene_review(n: &mut Node, view: &PoolView, a: &Alerted, r: &Rostered) -> bool {
+    let c = a.case_hex.clone();
+    let attested: std::collections::HashSet<&String> = n
+        .history
+        .iter()
+        .filter(|e| matches!(&e.msg, Msg::AttestShare { case_id, .. } if *case_id == c))
+        .map(|e| &e.sender)
+        .collect();
+    if attested.len() < view.t {
+        return false;
+    }
+    let Some(rp) = arb::Replay::build_core(&n.history, a, r, &n.rpc) else {
+        return false;
+    };
+    if rp.final_ruling().is_none() {
+        // never arbitrated: nothing for a review panel to check in the prototype
+        return true;
+    }
+    let Some(dr) = rp.review_draw(a, &n.rpc) else {
+        return false;
+    };
+    match rp.review_state(a, &n.rpc) {
+        arb::ReviewState::NotDrawn => {
+            n.log(&format!(
+                "case {}: review draw at block {} passed it over ({}%)",
+                &c[..8],
+                dr.height,
+                dr.rate_bp / 100
+            ));
+            true
+        }
+        arb::ReviewState::Pending(st) => {
+            let k = arb::REVIEW_BASE + st;
+            if rp.reviews.contains_key(&k)
+                || n.history.iter().any(|e| {
+                    matches!(&e.msg, Msg::Escalate { case_id, tier, .. } if *case_id == c && *tier == k)
+                })
+            {
+                // convened already; its panel has not committed yet
+                return false;
+            }
+            if st == 1 {
+                n.check(
+                    &format!(
+                        "case {}: drawn for review at block {} ({}% for a {} final panel); convening the staged review",
+                        &c[..8],
+                        dr.height,
+                        dr.rate_bp / 100,
+                        if dr.split { "split" } else { "unanimous" }
+                    ),
+                    true,
+                    "",
+                );
+            }
+            escalate_tier(n, a, view, k, &format!("staged review, stage {st}"));
+            false
+        }
+        arb::ReviewState::Cleared(st) => {
+            n.check(
+                &format!(
+                    "case {}: the staged review cleared the verdict at stage {st}",
+                    &c[..8]
+                ),
+                true,
+                "",
+            );
+            true
+        }
+        arb::ReviewState::Confirmed(v) => {
+            n.check(
+                &format!(
+                    "case {}: three review panels in turn found {} at 80%: the verdict is overturned",
+                    &c[..8],
+                    verdict_classes(&v)
+                ),
+                true,
+                "",
+            );
+            collect_review_seizure(n, view, a, r);
+            true
+        }
+    }
+}
+
+/// After a confirmed review, as its convener: take the whole unit of everyone who voted for the
+/// overturned verdict by their pre-signed forfeitures and the pool's co-signature, then distribute it
+/// (§12) with this archivist's signature and the pool's.
+fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Rostered) {
+    let Some(rp) = arb::Replay::build(&n.history, a, r, &n.rpc) else {
+        return;
+    };
+    let c = a.case_hex.clone();
+    let oxo = wire::xonly(&view.key_hex()).unwrap();
+    let pens = rp.review_penalties();
+    n.check(
+        &format!(
+            "case {}: {} arbitrator(s) voted for the overturned verdict, each unit held since the draw",
+            &c[..8],
+            pens.len()
+        ),
+        !pens.is_empty(),
+        "",
+    );
+    let mut session = 300_000u32;
+    for p in &pens {
+        let mut tx = p.tx.clone();
+        let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &p.digest, session).and_then(
+            |(osig, _, signers)| {
+                p.bond.witness(
+                    &oxo,
+                    &mut tx,
+                    &hex::decode(&p.pre).unwrap_or_default(),
+                    &osig,
+                );
+                n.rpc.package(&tx).map(|t| (t, signers))
+            },
+        );
+        session += 10;
+        n.check(
+            &format!(
+                "tier {} arbitrator {}: its whole unit ({} sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature",
+                p.tier,
+                &p.arbitrator[..8],
+                p.amount
+            ),
+            res.is_ok(),
+            &match &res {
+                Ok((t, s)) => format!("{} (pool members {s:?})", &t.to_string()[..16]),
+                Err(e) => e.clone(),
+            },
+        );
+        if res.is_err() {
+            return;
+        }
+    }
+    n.rpc.mine(1).ok();
+    let Some((mut dist, prev)) = rp.review_distribution(a, r, &pens) else {
+        n.check(
+            "review seizure distribution",
+            false,
+            "the case calls for none",
+        );
+        return;
+    };
+    let secp = Secp256k1::new();
+    let me = n.keys.x_only_public_key().0;
+    for i in 0..dist.input.len() {
+        let Some(d) = rp.distribution_digest(&dist, &prev, i) else {
+            return;
+        };
+        let mine = secp
+            .sign_schnorr(&bitcoin::secp256k1::Message::from_digest(d), &n.keys)
+            .serialize()
+            .to_vec();
+        let m: HashMap<bitcoin::XOnlyPublicKey, Vec<u8>> = [(me, mine)].into_iter().collect();
+        match pool::cosign(n, view, &c, &serialize_hex(&dist), i as u32, &d, session) {
+            Ok((osig, _, _)) => {
+                if rp.distribution_witness(&mut dist, i, &osig, &m).is_none() {
+                    n.check(
+                        "review seizure distribution witness",
+                        false,
+                        "more archivist signatures needed than this one",
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                n.check("pool co-signed the review seizure distribution", false, &e);
+                return;
+            }
+        }
+        session += 10;
+    }
+    let res = n.rpc.package(&dist);
+    n.rpc.mine(1).ok();
+    let detail: Vec<String> = dist
+        .output
+        .iter()
+        .filter(|o| o.value.to_sat() > 0)
+        .map(|o| {
+            let who = if r.payout_spks.contains(&o.script_pubkey) {
+                "to a responder"
+            } else if rp
+                .reviews
+                .values()
+                .any(|t| t.offers.values().any(|b| b.payout == o.script_pubkey))
+            {
+                "to a reviewer (premium)"
+            } else if rp
+                .tiers
+                .values()
+                .any(|t| t.offers.values().any(|b| b.payout == o.script_pubkey))
+            {
+                "to a vindicated dissenter"
+            } else {
+                "to the caller or the archivists"
+            };
+            format!("{} sats {who}", o.value.to_sat())
+        })
+        .collect();
+    n.check(
+        &format!(
+            "review seizure distributed (§12) by the pool and the archivist: {}",
+            detail.join(", ")
+        ),
+        res.as_ref()
+            .map(|t| n.rpc.confirmations(t) > 0)
+            .unwrap_or(false),
+        &match &res {
+            Ok(t) => t.to_string()[..16].to_string(),
+            Err(e) => e.clone(),
+        },
+    );
 }
 
 /// An arbitrator: posts a bond, offers seats blind, and when seated reviews the evidence and votes.
@@ -2346,6 +2757,7 @@ fn arbitrator(mut n: Node) -> i32 {
     // final cases whose review draw this arbitrator waits for, to release its units (§10.2, §10.3)
     let mut pending: HashMap<String, Instant> = HashMap::new();
     let mut release_session = 0u32;
+    let mut announced: std::collections::HashSet<String> = Default::default();
     let pool_ids: std::collections::HashSet<String> = view.ids.values().cloned().collect();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
     let mut challenge_at: HashMap<(String, u32), Instant> = HashMap::new();
@@ -2437,7 +2849,15 @@ fn arbitrator(mut n: Node) -> i32 {
                 continue;
             };
             pending.insert(c.clone(), Instant::now());
-            match release_units(&mut n, &view, &a, &r, bc, &mut release_session) {
+            match release_units(
+                &mut n,
+                &view,
+                &a,
+                &r,
+                bc,
+                &mut release_session,
+                &mut announced,
+            ) {
                 None => {}
                 Some(true) => {
                     pending.remove(&c);
@@ -2490,6 +2910,37 @@ fn arbitrator(mut n: Node) -> i32 {
                     continue;
                 }
                 escalator.insert((case_id.clone(), tier), s);
+                if arb::is_review(tier) {
+                    // a review panel is independent of the case: no one who sat on it reviews it,
+                    // and no unit is committed (reviewers rule on a closed case, §10.3)
+                    if seated
+                        .iter()
+                        .any(|((c, t), v)| *c == case_id && !arb::is_review(*t) && v.contains(&me))
+                    {
+                        continue;
+                    }
+                    n.send_case(
+                        &case_id,
+                        &[],
+                        Msg::SeatOffer {
+                            case_id: case_id.clone(),
+                            tier,
+                            bond: bond.to_string(),
+                            bond_scoped: hex::encode(xo(&bs).serialize()),
+                            bond_cold: hex::encode(xo(&bc).serialize()),
+                            bond_fallback: bf,
+                            bond_value,
+                            payout_spk: payout.to_hex_string(),
+                        },
+                        false,
+                    );
+                    n.log(&format!(
+                        "offered a seat on review stage {} of {}",
+                        tier - arb::REVIEW_BASE,
+                        &case_id[..8]
+                    ));
+                    continue;
+                }
                 // --tiers 1,2: the tiers this arbitrator serves (an operator's choice of workload)
                 if let Some(ts) = arg("--tiers") {
                     if !ts.split(',').any(|x| x.trim().parse() == Ok(tier)) {
@@ -2560,16 +3011,20 @@ fn arbitrator(mut n: Node) -> i32 {
                             payout: payout.clone(),
                             okey: okey.clone(),
                         };
-                        let u = take_seat(
-                            &mut n,
-                            &seat,
-                            alerts.get(&case_id),
-                            rosters.get(&case_id),
-                            &case_id,
-                            tier,
-                            &refund,
-                            height,
-                        );
+                        let u = if arb::is_review(tier) {
+                            None
+                        } else {
+                            take_seat(
+                                &mut n,
+                                &seat,
+                                alerts.get(&case_id),
+                                rosters.get(&case_id),
+                                &case_id,
+                                tier,
+                                &refund,
+                                height,
+                            )
+                        };
                         if let Some(u) = u {
                             units.insert((case_id.clone(), tier), u);
                         }
@@ -2616,7 +3071,8 @@ fn arbitrator(mut n: Node) -> i32 {
                             payout: payout.clone(),
                             okey: okey.clone(),
                         };
-                        if let Some(u) = take_seat(
+                        if arb::is_review(tier) {
+                        } else if let Some(u) = take_seat(
                             &mut n,
                             &sk,
                             alerts.get(&case_id),

@@ -1,21 +1,9 @@
-[PASS] r3 alert 35b12cbb in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r3 alert 70d507d0 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
 [PASS] r3 pre-signed set v0 verified (seat 0) — 39 payouts
-[PASS] r3 incident transaction on chain: every pot output exists — 62f2ff307038e3b7087fb420615f976aefae300880e177989b8c42142731e4f3
+[PASS] r3 incident transaction on chain: every pot output exists — cf21c98b8e941e9b40a458b4c91aeff133860668003432d09e387cec607c439e
 [PASS] r3 evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
-[PASS] r3 appealing the verdict against my claim to tier 2
-[PASS] r3 tier 2: 7 of 13 offering arbitrators drawn from block 986, case disclosed only to them — 8.0 s after escalating
-[PASS] r3 tier 2: every seat set aside a stake of 4× the 25000-sat fee under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 7 of 7
-[PASS] r3 tier 2: 7 × 25000 sats paid to the seats — 1cc7eb47007facf8
-[PASS] r3 tier 2: 7 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 41206d4ce2d2fc0c2e4f77316c9aea3c7590f55b40be3ac209c0da01cbc83ba5
-[PASS] r3 tier 2: two-thirds verdict (5 of 7); 2 dissenter(s) owe 2.5× the fee each, settled against the final ruling — 12.6 s from escalation
 [PASS] r3 deposit: "returned" completed by the attestation and broadcast — already broadcast by another party
 [PASS] r3 reward: "paid (7, 3)" completed by the attestation and broadcast — already broadcast by another party
 [PASS] r3 bounty: "split (7, 3)" completed by the attestation and broadcast — already broadcast by another party
 [PASS] r3 my shares arrived at my payout address — 630000 sats
-[PASS] r3 tier 1 arbitrator 0fd069ae: 2.5× the 20000-sat fee (50000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — a9b7acbd31ce6ab0 (pool members [3, 2, 4])
-[PASS] r3 tier 1 arbitrator 2cab3101: 6.0× the 20000-sat fee (120000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — da047ccd0218dc92 (pool members [1, 4, 2])
-[PASS] r3 tier 2 arbitrator 75bb0dcd: 2.5× the 25000-sat fee (62500 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — b68a73893c85a816 (pool members [3, 2, 1])
-[PASS] r3 tier 2 arbitrator d072e2f7: 3.0× the 25000-sat fee (75000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 12988735d9c43798 (pool members [4, 3, 2])
-[PASS] r3 seizure distribution signed by 1 of 1 archivist(s) after their own replay
-[PASS] r3 seizure output distributed (§12) by the pool and the archivists: 153750 sats to a vindicated dissenter, 153750 sats to the appellant (appeal subsidy and excess) — 67ba00501a9c37f5
-[r3] 20 passed, 0 failed
+[r3] 8 passed, 0 failed

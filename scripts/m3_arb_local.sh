@@ -18,8 +18,9 @@ sleep 0.5
 for i in 1 2 3 4; do
   BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $P --exit-after 300 2>$L/pool$i.log & PIDS="$PIDS $!"
 done
-BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist $P --listen 127.0.0.1:7481 --exit-after 300 2>$L/archivist.log & PIDS="$PIDS $!"
-for i in 1 2 3 4 5 6 7 8 9 10; do
+BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist $P --listen 127.0.0.1:7481 --exit-after 600 >$L/archivist.out 2>$L/archivist.log & PIDS="$PIDS $!"
+# ARBS=16: enough arbitrators beyond the case's panels for review panels of 5 (REVIEW_PCT=100)
+for i in $(seq 1 ${ARBS:-10}); do
   extra=""; [ $i = 4 ] && extra="--corrupt"; [ $i = 8 ] && extra="--corrupt"
   # CAPTURE=1: a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
   # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
@@ -35,11 +36,13 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   [ $i = 10 ] && extra="--tiers 2"
   [ $i = 1 ] && extra="$extra --greedy-release"
   [ -n "$STALL" ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-vote"
-  BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 300 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
+  BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 600 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done
 sleep 2
 COMMON="$P --mine --settle-wait 600"
 R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
+# NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
+[ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
 BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
 BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
@@ -48,11 +51,13 @@ BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --wind
 for p in $RP; do wait $p; done
 # §10.2-10.3: every seated arbitrator waits for the case's review draw and, if passed over, releases its
 # units with the pool's co-signature; give them time before stopping the network
-for i in $(seq 1 90); do
-  n=0; for f in $(grep -l "case unit" $L/arb*.log 2>/dev/null); do grep -q "review draw\|not released" ${f%.log}.out || n=$((n+1)); done
+for i in $(seq 1 ${RELEASE_WAIT:-90}); do
+  n=0; for f in $(grep -l "case unit" $L/arb*.log 2>/dev/null); do grep -q "passed over\|staged review cleared\|staged review confirmed" ${f%.log}.out || n=$((n+1)); done
   [ $n = 0 ] && break; sleep 2
 done
-grep -h "review draw\|unit of\|FAIL" $L/arb*.out | sort | uniq -c | tee arb_release.txt
+sleep 20
+grep -h "review\|FAIL" $L/archivist.out
+grep -h "review\|unit of\|FAIL" $L/arb*.out | sort | uniq -c | tee arb_release.txt
 kill $PIDS 2>/dev/null
 [ "$CHALLENGE" = bad ] && CHALLENGER=4
 [ -n "$CHALLENGE" ] && for i in $(seq 1 150); do grep -q "passed" $L/arb${CHALLENGER:-1}.out 2>/dev/null && break; sleep 2; done

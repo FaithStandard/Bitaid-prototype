@@ -1,8 +1,8 @@
-[PASS] caller oracle pool found and checked: 4 members, threshold 3, 300 nonces — e5b39b0a0a00a47d
-[PASS] caller registration: funding output (no key path) and template committed — a0b28771d3fe1f27b8d936db68cce1cbada06a9bc20c000249fb7a5b8946fd28:1
+[PASS] caller oracle pool found and checked: 4 members, threshold 3, 300 nonces — 833b4f4b9793a551
+[PASS] caller registration: funding output (no key path) and template committed — 5677558e6e3a8091570bebc298665d60da59cd07179898d17400ce3c4b254ea4:1
 [PASS] caller 2 responder(s) accepted within the joining window, bonds checked on chain — first after 0.33 s
 [PASS] caller pre-signed set v0 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
-[PASS] caller pool co-signed the incident (FROST, 3 of 4 members) — 1 session(s), signers [2, 4, 3], 0.79 s
+[PASS] caller pool co-signed the incident (FROST, 3 of 4 members) — 1 session(s), signers [4, 3, 2], 0.76 s
 [PASS] caller incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
 [PASS] caller evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
 [PASS] caller deposit: "returned" completed by the attestation and broadcast

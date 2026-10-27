@@ -15,7 +15,20 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 /// Panel size of a tier: 3 at first instance, 7, 15, 31, then doubling (§10.5).
+/// Review stages are numbered above every arbitration tier: stage s is tier REVIEW_BASE + s (§10.3).
+pub const REVIEW_BASE: u32 = 100;
+/// Panels of the staged review: 30 in production, 5 at prototype scale.
+pub const REVIEW_PANEL: usize = 5;
+pub const REVIEW_STAGES: u32 = 3;
+
+pub fn is_review(tier: u32) -> bool {
+    tier > REVIEW_BASE
+}
+
 pub fn panel_size(tier: u32) -> usize {
+    if is_review(tier) {
+        return REVIEW_PANEL;
+    }
     match tier {
         0 | 1 => 3,
         2 => 7,
@@ -27,6 +40,11 @@ pub fn panel_size(tier: u32) -> usize {
 
 /// Fee per seat at a tier: the base plus 25% per tier above the first (§10.5).
 pub fn seat_fee(base: u64, tier: u32) -> u64 {
+    // review panels are not paid per seat: arbitrators review to keep their coherence current, and
+    // reviewers share the 3× premium only when a fraud is confirmed (§10.3, §12)
+    if is_review(tier) {
+        return 0;
+    }
     base * (100 + 25 * (tier.saturating_sub(1) as u64)) / 100
 }
 
@@ -58,7 +76,12 @@ pub fn verdict_key(v: &Ballot) -> Vec<u8> {
 
 /// The verdict that at least two thirds of the panel gave, if any (§10.5: every tier decides by ⅔).
 pub fn supermajority(n: usize, votes: &[Ballot]) -> Option<Ballot> {
-    let need = (2 * n).div_ceil(3);
+    supermajority_of(n, votes, 2, 3)
+}
+
+/// A verdict held by at least num/den of the `n` seats.
+pub fn supermajority_of(n: usize, votes: &[Ballot], num: usize, den: usize) -> Option<Ballot> {
+    let need = (num * n).div_ceil(den);
     for v in votes {
         let k = verdict_key(v);
         if votes.iter().filter(|x| verdict_key(x) == k).count() >= need {
@@ -155,8 +178,8 @@ pub fn unit_value(case_value: u64, max: u64, fee: u64) -> u64 {
 pub fn review_rate_bp(case_value: u64, split: bool) -> u64 {
     let r = match case_value {
         0..=1_000_000 => 500,
-        ..=10_000_000 => 1_000,
-        ..=100_000_000 => 2_000,
+        1_000_001..=10_000_000 => 1_000,
+        10_000_001..=100_000_000 => 2_000,
         _ => 4_000,
     };
     if split {
@@ -357,6 +380,8 @@ pub fn schnorr_ok(key: &XOnlyPublicKey, digest: &[u8; 32], sig_hex: &str) -> boo
 /// One tier as every party can rebuild it from the log.
 #[derive(Clone, Debug, Default)]
 pub struct Tier {
+    /// a stage of the staged review rather than an arbitration tier
+    pub review: bool,
     pub escalator: String,
     pub offers: HashMap<String, Bond>,
     pub seats: Vec<String>,
@@ -423,8 +448,27 @@ impl Tier {
             return None;
         }
         let v: Vec<Ballot> = self.reveals.iter().map(|x| x.1.clone()).collect();
-        supermajority(self.seats.len(), &v)
+        if self.review {
+            // each review panel decides at 80% (§10.3)
+            supermajority_of(self.seats.len(), &v, 4, 5)
+        } else {
+            supermajority(self.seats.len(), &v)
+        }
     }
+}
+
+/// Where a case's staged review stands (§10.3).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum ReviewState {
+    /// the draw passed the case over, or its block is not yet mined
+    #[default]
+    NotDrawn,
+    /// drawn; stage `s` is due or under way
+    Pending(u32),
+    /// a stage found nothing wrong at 80% (or no 80% finding): the verdict stands
+    Cleared(u32),
+    /// three panels in turn found the same different verdict, each at 80%
+    Confirmed(Ballot),
 }
 
 /// The outcome of a case's review draw.
@@ -460,6 +504,12 @@ pub struct Replay {
     /// the parties: caller and seats, with the seats' payout scripts
     pub parties: Vec<(String, Option<ScriptBuf>)>,
     pub tiers: BTreeMap<u32, Tier>,
+    /// stages of the staged review, by tier number (REVIEW_BASE + s)
+    pub reviews: BTreeMap<u32, Tier>,
+    /// who convenes the staged review: the case's first archivist in the prototype
+    pub convener: Option<String>,
+    /// where the staged review stands, as of the replay
+    pub review: ReviewState,
 }
 
 impl Replay {
@@ -513,6 +563,9 @@ impl Replay {
             archivists: r.archivists.clone(),
             parties,
             tiers: BTreeMap::new(),
+            reviews: BTreeMap::new(),
+            convener: r.archivists.first().cloned(),
+            review: ReviewState::NotDrawn,
         };
         let mine: Vec<&Envelope> = hist
             .iter()
@@ -522,7 +575,7 @@ impl Replay {
         let max = mine
             .iter()
             .filter_map(|e| match &e.msg {
-                Msg::Escalate { tier, .. } => Some(*tier),
+                Msg::Escalate { tier, .. } if !is_review(*tier) => Some(*tier),
                 _ => None,
             })
             .max()
@@ -561,161 +614,29 @@ impl Replay {
             let Some((escalator, challenger)) = opener else {
                 break;
             };
-            let mut t = Tier {
-                escalator: escalator.clone(),
-                challenger,
-                ..Default::default()
-            };
-            let mut vcommits: HashMap<String, String> = HashMap::new();
-            for e in &mine {
-                let s = &e.sender;
-                match &e.msg {
-                    Msg::SeatOffer { tier, .. } if *tier == k => {
-                        if let Some(b) = Bond::from_offer(&e.msg) {
-                            t.offers.entry(s.clone()).or_insert(b);
-                        }
-                    }
-                    Msg::VerdictCommit {
-                        tier, commitment, ..
-                    } if *tier == k => {
-                        vcommits.entry(s.clone()).or_insert(commitment.clone());
-                    }
-                    _ => {}
-                }
-            }
-            for e in &mine {
-                if let Msg::Seated {
-                    tier,
-                    height,
-                    block_hash,
-                    offers,
-                    seats,
-                    ..
-                } = &e.msg
-                {
-                    if *tier != k || e.sender != escalator || !t.seats.is_empty() {
-                        continue;
-                    }
-                    if offers.iter().all(|o| t.offers.contains_key(o))
-                        && draw(block_hash, &case, k, offers, panel_size(k)) == *seats
-                        && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
-                    {
-                        t.seats = seats.clone();
-                        t.listed = offers.clone();
-                        for x in seats {
-                            t.seat_height.insert(x.clone(), *height);
-                        }
-                        if let Msg::Seated { refund_spk, .. } = &e.msg {
-                            t.refund = ScriptBuf::from_hex(refund_spk).ok();
-                        }
-                    }
-                }
-            }
-            // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4)
-            for e in &mine {
-                if let Msg::Reseated {
-                    tier,
-                    height,
-                    block_hash,
-                    replaced,
-                    seat,
-                    ..
-                } = &e.msg
-                {
-                    if *tier != k || e.sender != escalator {
-                        continue;
-                    }
-                    let Some(pos) = t.seats.iter().position(|x| x == replaced) else {
-                        continue;
-                    };
-                    let left: Vec<String> = t
-                        .listed
-                        .iter()
-                        .filter(|o| !t.seats.contains(o) && !t.forfeited.contains(o))
-                        .cloned()
-                        .collect();
-                    if !vcommits.contains_key(replaced)
-                        && draw(block_hash, &case, k, &left, 1) == vec![seat.clone()]
-                        && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
-                    {
-                        t.forfeited.push(replaced.clone());
-                        t.seats[pos] = seat.clone();
-                        t.seat_height.insert(seat.clone(), *height);
-                    }
-                }
-            }
-            let fee = seat_fee(rp.base_fee, k);
-            // each seat paid its fee by the escalator, in one transaction or several
-            let fee_txs: Vec<&String> = mine
-                .iter()
-                .filter_map(|e| match &e.msg {
-                    Msg::FeePaid { tier, txid, .. } if *tier == k && e.sender == escalator => {
-                        Some(txid)
-                    }
-                    _ => None,
-                })
-                .collect();
-            t.fee_paid = !t.seats.is_empty()
-                && t.seats.iter().all(|x| {
-                    fee_txs
-                        .iter()
-                        .any(|txid| rpc.paid_to(txid, &t.offers[x].payout) >= fee)
-                });
-            for e in &mine {
-                if let Msg::VerdictReveal {
-                    tier,
-                    verdict,
-                    salt,
-                    ..
-                } = &e.msg
-                {
-                    let ok = *tier == k
-                        && t.seats.contains(&e.sender)
-                        && !t.reveals.iter().any(|x| x.0 == e.sender)
-                        && vcommits.get(&e.sender).map(|c| {
-                            *c == hex::encode(
-                                verdict.commitment(&wire::h32(salt).unwrap_or_default()),
-                            )
-                        }) == Some(true);
-                    if ok {
-                        t.reveals.push((e.sender.clone(), verdict.clone()));
-                    }
-                }
-            }
-            for e in &mine {
-                if let Msg::TierCommitted { tier, txid, .. } = &e.msg {
-                    let cm = tier_commitment(&case, k, &t.seats, &t.reveals);
-                    if *tier == k && t.fee_paid && !t.committed && rpc.has_op_return(txid, &cm) {
-                        t.committed = true;
-                        t.commit_txid = Some(txid.clone());
-                    }
-                }
-            }
-            t.committers = t
-                .seats
-                .iter()
-                .chain(t.forfeited.iter())
-                .filter(|x| vcommits.contains_key(*x))
-                .cloned()
-                .collect();
-            for e in &mine {
-                if let Msg::Forfeits {
-                    tier,
-                    stake,
-                    value,
-                    sigs,
-                    ..
-                } = &e.msg
-                {
-                    let s = &e.sender;
-                    if *tier == k && (t.seats.contains(s) || t.forfeited.contains(s)) {
-                        t.raw_forfeits
-                            .push((s.clone(), stake.clone(), *value, sigs.clone()));
-                    }
-                }
-            }
+            let t = read_tier(&mine, &case, k, &escalator, challenger, rp.base_fee, rpc);
             rp.tiers.insert(k, t);
         }
+        // the staged review (§10.3): convened only on a case the draw selected, each stage only after
+        // the one before found a different verdict at 80%
+        let conv = rp.convener.clone();
+        for st in 1..=REVIEW_STAGES {
+            let k = REVIEW_BASE + st;
+            if rp.review_state(a, rpc) != ReviewState::Pending(st) {
+                break;
+            }
+            let Some(conv) = conv.as_ref() else { break };
+            let opened = mine.iter().any(|e| {
+                matches!(&e.msg, Msg::Escalate { tier, .. } if *tier == k) && &e.sender == conv
+            });
+            if !opened {
+                break;
+            }
+            let mut t = read_tier(&mine, &case, k, conv, false, rp.base_fee, rpc);
+            t.review = true;
+            rp.reviews.insert(k, t);
+        }
+        rp.review = rp.review_state(a, rpc);
         Some(rp)
     }
 
@@ -740,8 +661,7 @@ impl Replay {
         seizure_tree(&self.archivists, &self.oracle).map(|t| t.0.script_pubkey())
     }
 
-    /// The final ruling: the last tier that reached two thirds (hung tiers above it decide nothing).
-/// The review draw of a closed case (§10.3): the block whose hash seeds it, and whether it selected
+    /// The review draw of a closed case (§10.3): the block whose hash seeds it, and whether it selected
     /// the case. None while the case has no committed verdict or the block is not yet mined.
     pub fn review_draw(&self, a: &Alerted, rpc: &Rpc) -> Option<ReviewDraw> {
         let (ft, fv) = self.final_ruling()?;
@@ -775,6 +695,42 @@ impl Replay {
         })
     }
 
+    /// Where the case's staged review stands (§10.3): each stage reviews the case afresh; one that finds
+    /// the final verdict (or no verdict at 80%) clears it; three that find the same other verdict confirm.
+    pub fn review_state(&self, a: &Alerted, rpc: &Rpc) -> ReviewState {
+        let Some(dr) = self.review_draw(a, rpc) else {
+            return ReviewState::NotDrawn;
+        };
+        let Some((_, fv)) = self.final_ruling() else {
+            return ReviewState::NotDrawn;
+        };
+        if !dr.drawn {
+            return ReviewState::NotDrawn;
+        }
+        let fk = verdict_key(&fv);
+        let mut prev: Option<Vec<u8>> = None;
+        for st in 1..=REVIEW_STAGES {
+            let Some(t) = self.reviews.get(&(REVIEW_BASE + st)) else {
+                return ReviewState::Pending(st);
+            };
+            if !t.committed {
+                return ReviewState::Pending(st);
+            }
+            let Some(v) = t.verdict() else {
+                return ReviewState::Cleared(st);
+            };
+            let k = verdict_key(&v);
+            if k == fk || prev.as_ref().is_some_and(|p| *p != k) {
+                return ReviewState::Cleared(st);
+            }
+            if st == REVIEW_STAGES {
+                return ReviewState::Confirmed(v);
+            }
+            prev = Some(k);
+        }
+        ReviewState::Cleared(REVIEW_STAGES)
+    }
+
     /// Each seat's case unit: (tier, arbitrator, unit). Every unit the replay verified.
     pub fn units(&self) -> Vec<(u32, String, Bond)> {
         let mut v: Vec<(u32, String, Bond)> = self
@@ -793,19 +749,31 @@ impl Replay {
     /// The units the oracle may release now: the case is closed, the draw passed it over, and the seat
     /// owes no penalty (a penalised unit's remainder is already returned under the bond's script by
     /// its forfeiture) and was not forfeit for a missed deadline. Each with its release digest.
-    pub fn releasable(&self, a: &Alerted, rpc: &Rpc) -> Vec<(u32, String, Bond, Transaction, [u8; 32])> {
+    pub fn releasable(
+        &self,
+        a: &Alerted,
+        rpc: &Rpc,
+    ) -> Vec<(u32, String, Bond, Transaction, [u8; 32])> {
         let Some(dr) = self.review_draw(a, rpc) else {
             return vec![];
         };
-        if dr.drawn {
+        // drawn: held until the staged review clears the case, or, if it confirms a different
+        // verdict, released except for those who voted for the overturned one (§10.3)
+        let state = self.review_state(a, rpc);
+        if dr.drawn && !matches!(state, ReviewState::Cleared(_) | ReviewState::Confirmed(_)) {
             return vec![];
         }
+        let seized: Vec<(u32, String)> = match state {
+            ReviewState::Confirmed(_) => self.overturned_voters(),
+            _ => vec![],
+        };
         let pens = self.penalties();
         self.units()
             .into_iter()
             .filter(|(k, s, _)| {
                 !pens.iter().any(|p| p.tier == *k && p.arbitrator == *s)
                     && !self.tiers[k].forfeited.contains(s)
+                    && !seized.iter().any(|x| x.0 == *k && x.1 == *s)
             })
             .map(|(k, s, b)| {
                 let (tx, d) = b.release_tx(&self.oracle);
@@ -814,6 +782,7 @@ impl Replay {
             .collect()
     }
 
+    /// The final ruling: the last tier that reached two thirds (hung tiers above it decide nothing).
     pub fn final_ruling(&self) -> Option<(u32, Ballot)> {
         self.tiers
             .iter()
@@ -1031,6 +1000,17 @@ impl Replay {
             }
         }
         let _ = fk;
+        Some(self.dist_tx(pens, outs, &spk))
+    }
+
+    /// A distribution of the seizure output: `outs` merged one per recipient, spending the outputs of
+    /// `pens` in their order.
+    fn dist_tx(
+        &self,
+        pens: &[Penalty],
+        outs: Vec<(u64, ScriptBuf)>,
+        spk: &ScriptBuf,
+    ) -> (Transaction, Vec<TxOut>) {
         // one output per recipient
         let mut merged: Vec<(u64, ScriptBuf)> = vec![];
         for (v, s) in outs {
@@ -1066,7 +1046,205 @@ impl Replay {
             .iter()
             .map(|p| txbuild::txout(p.amount, spk.clone()))
             .collect();
-        Some((tx, prev))
+        (tx, prev)
+    }
+
+    /// Who voted, on any arbitration tier, for the verdict a confirmed review overturned (§12).
+    pub fn overturned_voters(&self) -> Vec<(u32, String)> {
+        let (ReviewState::Confirmed(_), Some((_, fv))) = (&self.review, self.final_ruling()) else {
+            return vec![];
+        };
+        let fk = verdict_key(&fv);
+        let mut v: Vec<(u32, String)> = self
+            .tiers
+            .iter()
+            .flat_map(|(k, t)| {
+                t.reveals
+                    .iter()
+                    .filter(|x| verdict_key(&x.1) == fk)
+                    .map(move |x| (*k, x.0.clone()))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// The forfeitures a confirmed review calls for (§10.2, B.1): the whole case unit of everyone who
+    /// voted for the overturned verdict, by the forfeiture each pre-signed for that purpose.
+    pub fn review_penalties(&self) -> Vec<Penalty> {
+        let Some(spk) = self.seizure_spk() else {
+            return vec![];
+        };
+        let mut out = vec![];
+        for (k, w) in self.overturned_voters() {
+            let Some((bond, pre)) = self.tiers[&k].forfeits.get(&w) else {
+                continue;
+            };
+            // pre-signed in order: the steps, the whole unit, the seat forfeiture
+            let Some(sig) = pre.len().checked_sub(2).and_then(|i| pre.get(i)) else {
+                continue;
+            };
+            let (tx, digest) = bond.penalty_tx(&self.oracle, bond.value, &spk);
+            out.push(Penalty {
+                arbitrator: w,
+                tier: k,
+                step: 0,
+                amount: bond.value,
+                bond: bond.clone(),
+                pre: sig.clone(),
+                tx,
+                digest,
+            });
+        }
+        out
+    }
+
+    /// What each payout script receives under `v` (the attending-vote payout rules, §9).
+    fn paid_under(a: &Alerted, r: &Rostered, v: &Ballot) -> Vec<(u64, ScriptBuf)> {
+        let parties = crate::case::terms(a, r).parties;
+        let crate::settle::Decision::Settled(ends) = crate::settle::decide(
+            r.seats.len(),
+            a.template.pots,
+            &a.template,
+            std::slice::from_ref(v),
+        ) else {
+            return vec![];
+        };
+        let mut m: Vec<(u64, ScriptBuf)> = vec![];
+        for e in ends {
+            for (x, s) in
+                bitaid_core::payouts::outputs(&e, a.template.pots[e.pot.index()], &parties)
+            {
+                match m.iter_mut().find(|y| y.1 == s) {
+                    Some(y) => y.0 += x,
+                    None => m.push((x, s)),
+                }
+            }
+        }
+        m
+    }
+
+    /// The distribution of what a confirmed review seized (§12): restitution first — each party paid
+    /// the difference between what the overturned verdict paid it and what the confirmed one would
+    /// have — then the dissenters who voted for the confirmed verdict, their earlier penalty refunded
+    /// with the fee it cost them; then the review premium, 3× the base fee to each reviewer whose
+    /// finding was confirmed; the excess to the harmed parties.
+    pub fn review_distribution(
+        &self,
+        a: &Alerted,
+        r: &Rostered,
+        pens: &[Penalty],
+    ) -> Option<(Transaction, Vec<TxOut>)> {
+        let ReviewState::Confirmed(cv) = &self.review else {
+            return None;
+        };
+        let spk = self.seizure_spk()?;
+        let (_, fv) = self.final_ruling()?;
+        let mut left: u64 = pens.iter().map(|p| p.amount).sum();
+        if left == 0 {
+            return None;
+        }
+        let mut outs: Vec<(u64, ScriptBuf)> = vec![];
+        let before = Self::paid_under(a, r, &fv);
+        let after = Self::paid_under(a, r, cv);
+        let mut harmed: Vec<ScriptBuf> = vec![];
+        for (x, s) in &after {
+            let had = before.iter().find(|y| y.1 == *s).map(|y| y.0).unwrap_or(0);
+            if *x > had {
+                let owed = (*x - had).min(left);
+                outs.push((owed, s.clone()));
+                left -= owed;
+                harmed.push(s.clone());
+            }
+        }
+        // the dissenters vindicated by the review: their penalty back, and the fee it cost them
+        let ck = verdict_key(cv);
+        let first = self.penalties();
+        for (k, t) in &self.tiers {
+            for (w, v) in &t.reveals {
+                if verdict_key(v) != ck || left == 0 {
+                    continue;
+                }
+                let Some(b) = t.offers.get(w) else { continue };
+                let back = first
+                    .iter()
+                    .filter(|p| p.tier == *k && p.arbitrator == *w)
+                    .map(|p| p.amount)
+                    .sum::<u64>()
+                    + seat_fee(self.base_fee, *k);
+                let x = back.min(left);
+                outs.push((x, b.payout.clone()));
+                left -= x;
+            }
+        }
+        // the premium to the reviewers whose finding was confirmed
+        for t in self.reviews.values() {
+            for (w, v) in &t.reveals {
+                if verdict_key(v) != ck || left == 0 {
+                    continue;
+                }
+                let Some(b) = t.offers.get(w) else { continue };
+                let x = (3 * self.base_fee).min(left);
+                outs.push((x, b.payout.clone()));
+                left -= x;
+            }
+        }
+        if left > 0 {
+            let to = if harmed.is_empty() {
+                let secp = Secp256k1::verification_only();
+                self.archivists
+                    .iter()
+                    .filter_map(|x| wire::xonly(x))
+                    .map(|k| ScriptBuf::new_p2tr(&secp, k, None))
+                    .collect()
+            } else {
+                harmed
+            };
+            let each = left / to.len().max(1) as u64;
+            for s in to {
+                outs.push((each, s));
+            }
+        }
+        Some(self.dist_tx(pens, outs, &spk))
+    }
+
+    /// Every co-signature a confirmed review calls for: the whole-unit forfeitures and each input of
+    /// their distribution, as (txid, input, digest, description).
+    pub fn review_due(
+        &self,
+        a: &Alerted,
+        r: &Rostered,
+    ) -> Vec<(bitcoin::Txid, usize, [u8; 32], String)> {
+        let pens = self.review_penalties();
+        let mut out: Vec<(bitcoin::Txid, usize, [u8; 32], String)> = pens
+            .iter()
+            .map(|p| {
+                (
+                    p.tx.compute_txid(),
+                    0,
+                    p.digest,
+                    format!(
+                        "the forfeiture of the whole {}-sat tier-{} unit of {} (review confirmed)",
+                        p.amount,
+                        p.tier,
+                        &p.arbitrator[..8]
+                    ),
+                )
+            })
+            .collect();
+        if let Some((dist, prev)) = self.review_distribution(a, r, &pens) {
+            for i in 0..dist.input.len() {
+                if let Some(d) = self.distribution_digest(&dist, &prev, i) {
+                    out.push((
+                        dist.compute_txid(),
+                        i,
+                        d,
+                        format!("input {i} of the review seizure's distribution"),
+                    ));
+                }
+            }
+        }
+        out
     }
 
     /// The digest of input `i` of the distribution (DISTRIBUTE leaf).
@@ -1120,6 +1298,170 @@ impl Replay {
 }
 
 // =================================================================== momentum across cases
+
+/// One tier (or review stage) `k` of `case` as the log records it: offers, the draw, replacements,
+/// fees, reveals, the on-chain commitment and the seats' pre-signed forfeitures (verified later).
+fn read_tier(
+    mine: &[&Envelope],
+    case: &str,
+    k: u32,
+    escalator: &str,
+    challenger: bool,
+    base_fee: u64,
+    rpc: &Rpc,
+) -> Tier {
+    let mut t = Tier {
+        escalator: escalator.to_string(),
+        challenger,
+        ..Default::default()
+    };
+    let mut vcommits: HashMap<String, String> = HashMap::new();
+    for e in mine {
+        let s = &e.sender;
+        match &e.msg {
+            Msg::SeatOffer { tier, .. } if *tier == k => {
+                if let Some(b) = Bond::from_offer(&e.msg) {
+                    t.offers.entry(s.clone()).or_insert(b);
+                }
+            }
+            Msg::VerdictCommit {
+                tier, commitment, ..
+            } if *tier == k => {
+                vcommits.entry(s.clone()).or_insert(commitment.clone());
+            }
+            _ => {}
+        }
+    }
+    for e in mine {
+        if let Msg::Seated {
+            tier,
+            height,
+            block_hash,
+            offers,
+            seats,
+            ..
+        } = &e.msg
+        {
+            if *tier != k || e.sender != escalator || !t.seats.is_empty() {
+                continue;
+            }
+            if offers.iter().all(|o| t.offers.contains_key(o))
+                && draw(block_hash, case, k, offers, panel_size(k)) == *seats
+                && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
+            {
+                t.seats = seats.clone();
+                t.listed = offers.clone();
+                for x in seats {
+                    t.seat_height.insert(x.clone(), *height);
+                }
+                if let Msg::Seated { refund_spk, .. } = &e.msg {
+                    t.refund = ScriptBuf::from_hex(refund_spk).ok();
+                }
+            }
+        }
+    }
+    // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4)
+    for e in mine {
+        if let Msg::Reseated {
+            tier,
+            height,
+            block_hash,
+            replaced,
+            seat,
+            ..
+        } = &e.msg
+        {
+            if *tier != k || e.sender != escalator {
+                continue;
+            }
+            let Some(pos) = t.seats.iter().position(|x| x == replaced) else {
+                continue;
+            };
+            let left: Vec<String> = t
+                .listed
+                .iter()
+                .filter(|o| !t.seats.contains(o) && !t.forfeited.contains(o))
+                .cloned()
+                .collect();
+            if !vcommits.contains_key(replaced)
+                && draw(block_hash, case, k, &left, 1) == vec![seat.clone()]
+                && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
+            {
+                t.forfeited.push(replaced.clone());
+                t.seats[pos] = seat.clone();
+                t.seat_height.insert(seat.clone(), *height);
+            }
+        }
+    }
+    let fee = seat_fee(base_fee, k);
+    // each seat paid its fee by the escalator, in one transaction or several
+    let fee_txs: Vec<&String> = mine
+        .iter()
+        .filter_map(|e| match &e.msg {
+            Msg::FeePaid { tier, txid, .. } if *tier == k && e.sender == escalator => Some(txid),
+            _ => None,
+        })
+        .collect();
+    t.fee_paid = !t.seats.is_empty()
+        && (fee == 0
+            || t.seats.iter().all(|x| {
+                fee_txs
+                    .iter()
+                    .any(|txid| rpc.paid_to(txid, &t.offers[x].payout) >= fee)
+            }));
+    for e in mine {
+        if let Msg::VerdictReveal {
+            tier,
+            verdict,
+            salt,
+            ..
+        } = &e.msg
+        {
+            let ok = *tier == k
+                && t.seats.contains(&e.sender)
+                && !t.reveals.iter().any(|x| x.0 == e.sender)
+                && vcommits.get(&e.sender).map(|c| {
+                    *c == hex::encode(verdict.commitment(&wire::h32(salt).unwrap_or_default()))
+                }) == Some(true);
+            if ok {
+                t.reveals.push((e.sender.clone(), verdict.clone()));
+            }
+        }
+    }
+    for e in mine {
+        if let Msg::TierCommitted { tier, txid, .. } = &e.msg {
+            let cm = tier_commitment(case, k, &t.seats, &t.reveals);
+            if *tier == k && t.fee_paid && !t.committed && rpc.has_op_return(txid, &cm) {
+                t.committed = true;
+                t.commit_txid = Some(txid.clone());
+            }
+        }
+    }
+    t.committers = t
+        .seats
+        .iter()
+        .chain(t.forfeited.iter())
+        .filter(|x| vcommits.contains_key(*x))
+        .cloned()
+        .collect();
+    for e in mine {
+        if let Msg::Forfeits {
+            tier,
+            stake,
+            value,
+            sigs,
+            ..
+        } = &e.msg
+        {
+            let s = &e.sender;
+            if *tier == k && (t.seats.contains(s) || t.forfeited.contains(s)) {
+                t.raw_forfeits
+                    .push((s.clone(), stake.clone(), *value, sigs.clone()));
+            }
+        }
+    }
+    t
+}
 
 /// One committed tier of some case, as the ledger of momentum reads it.
 #[derive(Clone, Debug)]

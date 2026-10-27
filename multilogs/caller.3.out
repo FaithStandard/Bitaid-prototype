@@ -1,10 +1,10 @@
-[PASS] caller oracle pool found and checked: 4 members, threshold 3, 300 nonces — e5b39b0a0a00a47d
-[PASS] caller registration: funding output (no key path) and template committed — 80de9db25b0524cd0558f7fef4a909708a4975c8c86ccf1c77f3e71c1ebdb368:0
-[PASS] caller 2 responder(s) accepted within the joining window, bonds checked on chain — first after 0.33 s
+[PASS] caller oracle pool found and checked: 4 members, threshold 3, 300 nonces — 833b4f4b9793a551
+[PASS] caller registration: funding output (no key path) and template committed — 2d07744dcc6ed06df5d60d49801bc18c3a2ef8d68c20a1dafb517ef8b83dcb65:0
+[PASS] caller 2 responder(s) accepted within the joining window, bonds checked on chain — first after 0.40 s
 [PASS] caller pre-signed set v0 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
-[PASS] caller pool co-signed the incident (FROST, 3 of 4 members) — 1 session(s), signers [4, 2, 3], 0.79 s
+[PASS] caller pool co-signed the incident (FROST, 3 of 4 members) — 1 session(s), signers [2, 4, 1], 0.77 s
 [PASS] caller incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
-[PASS] caller evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[PASS] caller evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.00 s
 [PASS] caller deposit: "returned" completed by the attestation and broadcast
 [PASS] caller reward: "paid (7, 3)" completed by the attestation and broadcast
 [PASS] caller bounty: "split (7, 3)" completed by the attestation and broadcast
