@@ -321,12 +321,16 @@ pub enum Msg {
         from: Vec<Hex32>,
     },
     /// Drawn reviewer (§10.3): accepts the review seat, or posts the fee it pays a replacement (re-posted
-    /// as it rises until someone offers).
+    /// as it rises until someone offers); or an eligible arbitrator offering to take a leaver's seat.
     ReviewAnswer {
         case_id: Hex32,
         tier: u32,
         accept: bool,
         fee: u64,
+        /// an eligible arbitrator offering to take `seat`, a leaver's, at its posted `fee`; empty for a
+        /// drawn reviewer's own answer
+        #[serde(default)]
+        seat: Hex32,
     },
     /// Review convener: the case key, sealed to a reviewer that accepted or took a seat by replacement.
     ReviewKey {

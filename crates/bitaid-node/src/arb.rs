@@ -1447,12 +1447,11 @@ fn read_tier(
                         && matches!(&x.msg, Msg::ReviewAnswer { tier, accept: false, .. } if *tier == k)
                 });
                 let offered = from.iter().all(|w| {
-                    !t.seats.contains(w)
-                        && !t.forfeited.contains(w)
-                        && mine.iter().any(|x| {
-                            &x.sender == w
-                                && matches!(&x.msg, Msg::SeatOffer { tier, .. } if *tier == k)
-                        })
+                    !t.seats.contains(w) && !t.forfeited.contains(w) && mine.iter().any(|x| {
+                        &x.sender == w
+                            && matches!(&x.msg, Msg::ReviewAnswer { tier, accept: true, seat, .. }
+                                    if *tier == k && seat == replaced)
+                    })
                 });
                 if !(left_it && offered) {
                     continue;

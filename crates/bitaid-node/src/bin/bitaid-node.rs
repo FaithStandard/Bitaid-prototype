@@ -2581,6 +2581,15 @@ fn convene_review(n: &mut Node, view: &PoolView, a: &Alerted, r: &Rostered) -> b
                 return false;
             }
             if st == 1 {
+                // the review takes up a closed case: its penalties taken and distributed first
+                if let Some(full) = arb::Replay::build(&n.history, a, r, &n.rpc) {
+                    let pens = full.penalties();
+                    if let Some((d, _)) = full.distribution(&pens) {
+                        if n.rpc.confirmations(&d.compute_txid()) == 0 {
+                            return false;
+                        }
+                    }
+                }
                 n.check(
                     &format!(
                         "case {}: drawn for review at block {} ({}% for a {} final panel); convening the staged review",
@@ -2722,15 +2731,14 @@ fn review_stage(
         .map(|x| (x.clone(), S::Drawn(Instant::now())))
         .collect();
     let mut gone: Vec<String> = vec![];
-    let mut offers: Vec<String> = vec![];
+    // per leaver: the eligible arbitrators that offered to take its seat at its current fee
+    let mut offers: HashMap<String, Vec<String>> = HashMap::new();
     let window = secs(num("--review-window", 30u64));
     let end = Instant::now() + secs(600);
     while state.values().any(|x| !matches!(x, S::Keyed)) && Instant::now() < end {
         let cc = c.clone();
         let got = n.wait(secs(1), |env, _| match &env.msg {
-            Msg::ReviewAnswer { case_id, tier, .. }
-            | Msg::SeatOffer { case_id, tier, .. }
-            | Msg::FeePaid { case_id, tier, .. }
+            Msg::ReviewAnswer { case_id, tier, .. } | Msg::FeePaid { case_id, tier, .. }
                 if *case_id == cc && *tier == k =>
             {
                 Some(env.clone())
@@ -2740,6 +2748,24 @@ fn review_stage(
         if let Some(env) = got {
             let w = env.sender.clone();
             match &env.msg {
+                // an offer to take a leaver's seat at the fee it posted
+                Msg::ReviewAnswer {
+                    accept: true,
+                    fee,
+                    seat,
+                    ..
+                } if !seat.is_empty() => {
+                    if matches!(state.get(seat), Some(S::Leaving(f)) if *fee <= *f)
+                        && eligible.contains(&w)
+                        && !seats.contains(&w)
+                        && !gone.contains(&w)
+                    {
+                        let l = offers.entry(seat.clone()).or_default();
+                        if !l.contains(&w) {
+                            l.push(w.clone());
+                        }
+                    }
+                }
                 Msg::ReviewAnswer { accept, fee, .. } => match state.get(&w).cloned() {
                     Some(S::Drawn(_)) | Some(S::Leaving(_)) if *accept => {
                         let sk = seal(n, &w);
@@ -2770,20 +2796,12 @@ fn review_stage(
                         n.check(&format!("review stage {st}: {} would rather not serve and posted a replacement fee from {fee} sats", &w[..8]), true, "");
                         state.insert(w.clone(), S::Leaving(*fee));
                     }
-                    Some(S::Leaving(_)) => {
+                    Some(S::Leaving(f)) if *fee > f => {
+                        // the fee rose: earlier offers were for less
                         state.insert(w.clone(), S::Leaving(*fee));
                     }
                     _ => {}
                 },
-                Msg::SeatOffer { .. } => {
-                    if eligible.contains(&w)
-                        && !seats.contains(&w)
-                        && !gone.contains(&w)
-                        && !offers.contains(&w)
-                    {
-                        offers.push(w.clone());
-                    }
-                }
                 Msg::FeePaid { txid, .. } => {
                     // a leaver paid its replacement: the replacement gets the case
                     let paid = state.iter().find_map(|(x, v)| match v {
@@ -2852,7 +2870,9 @@ fn review_stage(
             gone.push(m.clone());
             state.remove(&m);
             state.insert(new.clone(), S::Drawn(Instant::now()));
-            offers.retain(|x| *x != new);
+            for l in offers.values_mut() {
+                l.retain(|x| *x != new);
+            }
             n.send_case(
                 &c,
                 std::slice::from_ref(&new),
@@ -2879,18 +2899,26 @@ fn review_stage(
             })
             .collect();
         for (m, fee) in leavers {
-            if offers.is_empty() {
-                break;
+            let from: Vec<String> = offers
+                .get(&m)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|w| !seats.contains(w) && !gone.contains(w))
+                .collect();
+            if from.is_empty() {
+                continue;
             }
             n.rpc.mine(1).ok();
             let h = n.rpc.height();
             let bh = n.rpc.block_hash(h).unwrap_or_default();
-            let from = offers.clone();
             let new = arb::draw(&bh, &c, k, &from, 1).pop().unwrap();
             let pos = seats.iter().position(|x| *x == m).unwrap();
             seats[pos] = new.clone();
             gone.push(m.clone());
-            offers.retain(|x| *x != new);
+            for l in offers.values_mut() {
+                l.retain(|x| *x != new);
+            }
             state.remove(&m);
             state.insert(new.clone(), S::AwaitPay(m.clone(), fee));
             n.send_case(
@@ -2908,7 +2936,7 @@ fn review_stage(
                 },
                 false,
             );
-            n.check(&format!("review stage {st}: {} replaced at {fee} sats by {}, drawn blind from {} offer(s) — not chosen by the leaver", &m[..8], &new[..8], from.len()), true, "");
+            n.check(&format!("review stage {st}: {} replaced at {fee} sats by {}, drawn blind from the {} arbitrator(s) who offered at that fee — not chosen by the leaver", &m[..8], &new[..8], from.len()), true, "");
         }
     }
     if state.values().any(|x| !matches!(x, S::Keyed)) {
@@ -3154,6 +3182,7 @@ fn answer_review(
             tier,
             accept: !leave,
             fee: if leave { fee0 } else { 0 },
+            seat: String::new(),
         },
         false,
     );
@@ -3258,7 +3287,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut announced: std::collections::HashSet<String> = Default::default();
     // review seats this arbitrator is leaving: when the fee was last raised, and the fee (§10.3)
     let mut leaving: HashMap<(String, u32), (Instant, u64)> = HashMap::new();
-    let mut review_offered: std::collections::HashSet<(String, u32)> = Default::default();
+    let mut review_offered: std::collections::HashSet<(String, u32, String)> = Default::default();
     let pool_ids: std::collections::HashSet<String> = view.ids.values().cloned().collect();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
     let mut challenge_at: HashMap<(String, u32), Instant> = HashMap::new();
@@ -3359,6 +3388,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     tier: k.1,
                     accept: false,
                     fee,
+                    seat: String::new(),
                 },
                 false,
             );
@@ -3923,15 +3953,16 @@ fn arbitrator(mut n: Node) -> i32 {
                     ));
                 }
             }
-            // a drawn reviewer posting a replacement fee: offer for the seat if the fee is worth it to
-            // this arbitrator and it is eligible (sat on neither the case nor this review)
+            // a drawn reviewer posting a replacement fee: offer to take that seat if the fee is worth
+            // it to this arbitrator and it is eligible (sat on neither the case nor this review)
             Msg::ReviewAnswer {
                 case_id,
                 tier,
                 accept: false,
                 fee,
+                ..
             } => {
-                let key = (case_id.clone(), tier);
+                let key = (case_id.clone(), tier, s.clone());
                 if s == me
                     || fee < num("--review-price", 0u64)
                     || flag("--review-leave")
@@ -3947,20 +3978,18 @@ fn arbitrator(mut n: Node) -> i32 {
                 n.send_case(
                     &case_id,
                     &[],
-                    Msg::SeatOffer {
+                    Msg::ReviewAnswer {
                         case_id: case_id.clone(),
                         tier,
-                        bond: bond.to_string(),
-                        bond_scoped: hex::encode(xo(&bs).serialize()),
-                        bond_cold: hex::encode(xo(&bc).serialize()),
-                        bond_fallback: bf,
-                        bond_value,
-                        payout_spk: payout.to_hex_string(),
+                        accept: true,
+                        fee,
+                        seat: s.clone(),
                     },
                     false,
                 );
                 n.log(&format!(
-                    "offered to take a review seat on {} for {fee} sats",
+                    "offered to take {}'s review seat on {} for {fee} sats",
+                    &s[..8],
                     &case_id[..8]
                 ));
             }
