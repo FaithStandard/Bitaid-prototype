@@ -176,6 +176,16 @@ fn pool_member(mut n: Node) -> i32 {
     #[allow(clippy::type_complexity)]
     let mut due_arb: HashMap<String, Vec<(bitcoin::Txid, usize, [u8; 32], String)>> =
         HashMap::new();
+    // per case, when last replayed: the review's seizure due and the units releasable
+    #[allow(clippy::type_complexity)]
+    let mut later_due: HashMap<
+        String,
+        (
+            Instant,
+            Vec<(bitcoin::Txid, usize, [u8; 32], String)>,
+            Vec<(u32, String, arb::Bond, Transaction, [u8; 32])>,
+        ),
+    > = HashMap::new();
     // arbitration, per case: the current tier, who escalated it and at what height
     let mut esc: HashMap<String, (u32, String, u32)> = HashMap::new();
     let mut offers: HashMap<(String, u32), HashMap<String, (bool, String)>> = HashMap::new(); // sender -> (bond ok, payout)
@@ -404,8 +414,9 @@ fn pool_member(mut n: Node) -> i32 {
                         &[txbuild::txout(a.funding_value, tree.script_pubkey())],
                         &tree.scripts[funding_leaf::ACCEPT],
                     )
-                } else if let Some((d, what)) =
-                    seat_forfeit_due(&n, a, r, &t, *input, &vcommits, &fee_at)
+                } else if let Some((d, what)) = (!done.contains(case_id))
+                    .then(|| seat_forfeit_due(&n, a, r, &t, *input, &vcommits, &fee_at))
+                    .flatten()
                 {
                     // a seat that missed its commit deadline: its seat forfeiture refunds the fee
                     n.log(&format!("co-signing {what} for {}", &case_id[..8]));
@@ -430,16 +441,32 @@ fn pool_member(mut n: Node) -> i32 {
                         None => {
                             // a case unit's release: the case closed and the review draw passed
                             // over it (§10.2, §10.3), by this member's own replay
-                            let rp = arb::Replay::build(&n.history, a, r, &n.rpc);
-                            let rel = rp
-                                .as_ref()
-                                .map(|rp| rp.releasable(a, &n.rpc))
-                                .unwrap_or_default();
-                            // after a confirmed review: the whole-unit forfeitures and their distribution
-                            let rev = rp
-                                .as_ref()
-                                .map(|rp| rp.review_due(a, r))
-                                .unwrap_or_default();
+                            // replayed at most every few seconds per case (releases and a review's
+                            // seizure come in bursts, and a replay is slow on a phone over Tor),
+                            // unless the transaction asked for is not among those last found due
+                            let stale = match later_due.get(case_id) {
+                                None => true,
+                                Some(x) => {
+                                    let known = x.1.iter().any(|y| y.0 == id)
+                                        || x.2.iter().any(|y| y.3.compute_txid() == id);
+                                    x.0.elapsed() > secs(20) || (!known && x.0.elapsed() > secs(3))
+                                }
+                            };
+                            if stale {
+                                let rp = arb::Replay::build(&n.history, a, r, &n.rpc);
+                                let rel = rp
+                                    .as_ref()
+                                    .map(|rp| rp.releasable(a, &n.rpc))
+                                    .unwrap_or_default();
+                                // after a confirmed review: the whole-unit forfeitures and their
+                                // distribution
+                                let rev = rp
+                                    .as_ref()
+                                    .map(|rp| rp.review_due(a, r))
+                                    .unwrap_or_default();
+                                later_due.insert(case_id.clone(), (Instant::now(), rev, rel));
+                            }
+                            let (_, rev, rel) = later_due[case_id].clone();
                             if let Some((_, _, d, what)) = rev
                                 .iter()
                                 .find(|x| x.0 == id && x.1 == *input as usize)
@@ -524,6 +551,12 @@ fn pool_member(mut n: Node) -> i32 {
                     Err(why) => n.log(&format!("session {session}: {why}")),
                 }
             }
+            // review stages are checked by replay when the pool is asked to co-sign what they decide,
+            // not followed message by message (§10.3)
+            Msg::Escalate { tier, .. }
+            | Msg::SeatOffer { tier, .. }
+            | Msg::Reseated { tier, .. }
+                if arb::is_review(*tier) => {}
             Msg::Escalate { case_id, tier, .. } => {
                 let (Some(a), Some(r)) = (alerts.get(case_id), rosters.get(case_id)) else {
                     continue;
