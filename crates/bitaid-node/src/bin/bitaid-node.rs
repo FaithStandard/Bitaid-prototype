@@ -181,6 +181,7 @@ fn pool_member(mut n: Node) -> i32 {
     let mut offers: HashMap<(String, u32), HashMap<String, (bool, String)>> = HashMap::new(); // sender -> (bond ok, payout)
     let mut panels: HashMap<(String, u32), Vec<String>> = HashMap::new();
     let mut fees_ok: std::collections::HashSet<(String, u32)> = Default::default();
+    let mut fee_at: HashMap<(String, u32, String), Instant> = HashMap::new();
     let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
     let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut verdicts: HashMap<String, Ballot> = HashMap::new();
@@ -388,6 +389,12 @@ fn pool_member(mut n: Node) -> i32 {
                         &[txbuild::txout(a.funding_value, tree.script_pubkey())],
                         &tree.scripts[funding_leaf::ACCEPT],
                     )
+                } else if let Some((d, what)) =
+                    seat_forfeit_due(&n, a, r, &t, *input, &vcommits, &fee_at)
+                {
+                    // a seat that missed its commit deadline: its seat forfeiture refunds the fee
+                    n.log(&format!("co-signing {what} for {}", &case_id[..8]));
+                    d
                 } else if done.contains(case_id) {
                     // after the case is final: a forfeiture or the seizure distribution, only if this
                     // member's own replay of the log calls for exactly that transaction
@@ -578,6 +585,41 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log(&format!("tier {tier} panel rejected: block {block_ok}, offers {offers_ok}, draw {draw_ok}"));
                 }
             }
+            Msg::Reseated {
+                case_id,
+                tier,
+                replaced,
+                seat,
+                ..
+            } => {
+                let (Some(a), Some(r)) = (alerts.get(case_id), rosters.get(case_id)) else {
+                    continue;
+                };
+                // this member's replay checks the draw from the offers left and that the replaced
+                // seat never committed
+                let ok = arb::Replay::build(&n.history, a, r, &n.rpc)
+                    .and_then(|rp| {
+                        rp.tiers
+                            .get(tier)
+                            .map(|t| t.forfeited.contains(replaced) && t.seats.contains(seat))
+                    })
+                    .unwrap_or(false);
+                let key = (case_id.clone(), *tier);
+                match (ok, panels.get_mut(&key)) {
+                    (true, Some(list)) => {
+                        if let Some(p) = list.iter().position(|x| x == replaced) {
+                            list[p] = seat.clone();
+                        }
+                        fees_ok.remove(&key);
+                        n.log(&format!(
+                            "tier {tier}: {} replaced by {} (seat forfeit; replacement drawn)",
+                            &replaced[..8],
+                            &seat[..8]
+                        ));
+                    }
+                    _ => n.log("replacement seat rejected"),
+                }
+            }
             Msg::FeePaid {
                 case_id,
                 tier,
@@ -589,13 +631,24 @@ fn pool_member(mut n: Node) -> i32 {
                 };
                 let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, *tier);
                 let seen = offers.get(&key).cloned().unwrap_or_default();
-                let paid = seats.iter().all(|sid| {
-                    seen.get(sid)
+                // fees may be paid in several transactions (a replacement seat is paid on its own)
+                for sid in seats.clone() {
+                    let ok = seen
+                        .get(&sid)
                         .and_then(|x| bitcoin::ScriptBuf::from_hex(&x.1).ok())
                         .map(|spk| n.rpc.paid_to(txid, &spk) >= fee)
-                        .unwrap_or(false)
-                });
-                if paid {
+                        .unwrap_or(false);
+                    if ok {
+                        // the seat's commit deadline runs from when this member saw it paid
+                        fee_at
+                            .entry((case_id.clone(), *tier, sid))
+                            .or_insert(Instant::now());
+                    }
+                }
+                if seats
+                    .iter()
+                    .all(|sid| fee_at.contains_key(&(case_id.clone(), *tier, sid.clone())))
+                {
                     fees_ok.insert(key);
                 }
             }
@@ -1374,6 +1427,54 @@ type EvidenceItem = (String, Vec<(String, u64)>, Vec<String>);
 
 const ARB_BOND_FLOOR: u64 = 10_000_000; // 0.1 BTC (§10.2)
 
+/// Waits for the pre-signed forfeitures of `who` and keeps those that verify: per seat, its stake and its
+/// seat forfeiture's pre-signature.
+#[allow(clippy::too_many_arguments)]
+fn wait_forfeits(
+    n: &mut Node,
+    c: &str,
+    tier: u32,
+    who: &[String],
+    offers: &[(String, bitcoin::ScriptBuf, arb::Bond)],
+    oxo: &bitcoin::XOnlyPublicKey,
+    fee: u64,
+    seizure: Option<&bitcoin::ScriptBuf>,
+    refund: &bitcoin::ScriptBuf,
+) -> HashMap<String, (arb::Bond, String)> {
+    let mut out = HashMap::new();
+    let Some(spk) = seizure else {
+        return out;
+    };
+    let (cc, ww) = (c.to_string(), who.to_vec());
+    let got = n.collect(
+        secs(90),
+        |env, _| match &env.msg {
+            Msg::Forfeits {
+                case_id,
+                tier: t,
+                stake,
+                value,
+                sigs,
+            } if *case_id == cc && *t == tier && ww.contains(&env.sender) => {
+                Some((env.sender.clone(), stake.clone(), *value, sigs.clone()))
+            }
+            _ => None,
+        },
+        |v| v.len() >= ww.len(),
+    );
+    for (w, stake, value, sigs) in got {
+        let Some(b) = offers.iter().find(|o| o.0 == w).map(|o| o.2.clone()) else {
+            continue;
+        };
+        if let Some(st) =
+            arb::verify_forfeits(&b, &stake, value, &sigs, oxo, fee, spk, refund, &n.rpc)
+        {
+            out.insert(w, (st, sigs.last().cloned().unwrap_or_default()));
+        }
+    }
+    out
+}
+
 /// The escalating party's side of one arbitration tier (§10.1–10.5): escalate, collect blind seat
 /// offers, draw the panel from a block mined after offers close, disclose the case to the seats,
 /// pay each its fee, then read the revealed verdicts and the tier commitment.
@@ -1461,6 +1562,9 @@ fn escalate_tier(
             ))
         })
         .collect();
+    let mut seats = seats;
+    // where a seat that misses its commit deadline refunds its fee (§10.4)
+    let refund_spk = n.rpc.new_spk().unwrap_or_default();
     n.send_case(
         &c,
         &seats,
@@ -1472,6 +1576,7 @@ fn escalate_tier(
             offers: ids.clone(),
             seats: seats.clone(),
             sealed_keys: sealed,
+            refund_spk: refund_spk.to_hex_string(),
         },
         false,
     );
@@ -1491,40 +1596,25 @@ fn escalate_tier(
             _ => None,
         })
         .unwrap_or_default();
-    if let Some((st, _)) = arb::seizure_tree(&r_arch, &oxo) {
-        let spk = st.script_pubkey();
-        let (cc, ss) = (c.clone(), seats.clone());
-        let mut good: std::collections::HashSet<String> = Default::default();
-        let got = n.collect(
-            secs(90),
-            |env, _| match &env.msg {
-                Msg::Forfeits {
-                    case_id,
-                    tier: t,
-                    stake,
-                    value,
-                    sigs,
-                } if *case_id == cc && *t == tier && ss.contains(&env.sender) => {
-                    Some((env.sender.clone(), stake.clone(), *value, sigs.clone()))
-                }
-                _ => None,
-            },
-            |v| v.len() >= seats.len(),
-        );
-        for (who, stake, value, sigs) in got {
-            let Some(b) = offers.iter().find(|o| o.0 == who).map(|o| o.2.clone()) else {
-                continue;
-            };
-            if arb::verify_forfeits(&b, &stake, value, &sigs, &oxo, fee, &spk, &n.rpc).is_some() {
-                good.insert(who);
-            }
-        }
-        n.check(
-            &format!("tier {tier}: every seat set aside a stake of 4× the {fee}-sat fee under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output)"),
-            good.len() == seats.len(),
-            &format!("{} of {}", good.len(), seats.len()),
-        );
-    }
+    let seizure = arb::seizure_tree(&r_arch, &oxo).map(|t| t.0.script_pubkey());
+    let mut stakes: HashMap<String, (arb::Bond, String)> = HashMap::new();
+    let got = wait_forfeits(
+        n,
+        &c,
+        tier,
+        &seats,
+        &offers,
+        &oxo,
+        fee,
+        seizure.as_ref(),
+        &refund_spk,
+    );
+    n.check(
+        &format!("tier {tier}: every seat set aside a stake of 4× the {fee}-sat fee under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture"),
+        got.len() == seats.len(),
+        &format!("{} of {}", got.len(), seats.len()),
+    );
+    stakes.extend(got);
     // each seat paid its fee directly by whoever escalated (§10.6, §11.11)
     let pay: Vec<(bitcoin::ScriptBuf, u64)> = seats
         .iter()
@@ -1552,6 +1642,151 @@ fn escalate_tier(
         Err(e) => {
             n.check(&format!("tier {tier}: fees paid"), false, &e);
             return None;
+        }
+    }
+    // §10.4: a seat that has not committed its vote by the deadline is forfeit — its pre-signed seat
+    // forfeiture, co-signed by the pool, refunds its fee to the payer — and a replacement is drawn
+    let mut committed_by: std::collections::HashSet<String> = Default::default();
+    let mut forfeited: Vec<String> = vec![];
+    let mut session = 400u32;
+    loop {
+        let (cc, ss) = (c.clone(), seats.clone());
+        let deadline = secs(a.template.commit_deadline as u64 + 15);
+        let have = committed_by.clone();
+        for who in n.collect(
+            deadline,
+            |env, _| match &env.msg {
+                Msg::VerdictCommit {
+                    case_id, tier: t, ..
+                } if *case_id == cc && *t == tier && ss.contains(&env.sender) => {
+                    Some(env.sender.clone())
+                }
+                _ => None,
+            },
+            |v| {
+                v.iter()
+                    .chain(have.iter())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    >= ss.len()
+            },
+        ) {
+            committed_by.insert(who);
+        }
+        let missing: Vec<String> = seats
+            .iter()
+            .filter(|x| !committed_by.contains(*x))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            break;
+        }
+        for m in missing {
+            let Some((stake, sig)) = stakes.get(&m).cloned() else {
+                n.check(
+                    &format!("tier {tier}: seat forfeiture of {}", &m[..8]),
+                    false,
+                    "no pre-signed seat forfeiture",
+                );
+                return None;
+            };
+            let (mut tx, d) = stake.penalty_tx(&oxo, fee, &refund_spk);
+            let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, session).and_then(
+                |(osig, _, _)| {
+                    stake.witness(&oxo, &mut tx, &hex::decode(&sig).unwrap_or_default(), &osig);
+                    n.rpc.package(&tx)
+                },
+            );
+            session += 10;
+            n.check(
+                &format!(
+                    "tier {tier}: arbitrator {} missed its commit deadline ({} s); its seat forfeiture refunded the {fee}-sat fee to the payer, co-signed by the pool",
+                    &m[..8],
+                    a.template.commit_deadline
+                ),
+                res.is_ok(),
+                &match &res {
+                    Ok(t) => t.to_string()[..16].to_string(),
+                    Err(e) => e.clone(),
+                },
+            );
+            // a replacement drawn from the offers left, by a block mined after the forfeiture
+            n.rpc.mine(1).ok();
+            let h = n.rpc.height();
+            let bh = n.rpc.block_hash(h).unwrap_or_default();
+            let left: Vec<String> = ids
+                .iter()
+                .filter(|o| !seats.contains(o) && !forfeited.contains(o))
+                .cloned()
+                .collect();
+            let Some(new) = bitaid_node::arb::draw(&bh, &c, tier, &left, 1).pop() else {
+                n.check(
+                    &format!("tier {tier}: an offer left to replace the forfeited seat"),
+                    false,
+                    "none; the escalation lapses",
+                );
+                return None;
+            };
+            let pos = seats.iter().position(|x| *x == m).unwrap();
+            seats[pos] = new.clone();
+            forfeited.push(m.clone());
+            let key = n.case_keys[&c];
+            n.send_case(
+                &c,
+                std::slice::from_ref(&new),
+                Msg::Reseated {
+                    case_id: c.clone(),
+                    tier,
+                    height: h,
+                    block_hash: bh,
+                    replaced: m.clone(),
+                    seat: new.clone(),
+                    sealed_key: hex::encode(wire::seal(
+                        &n.keys,
+                        &wire::xonly(&new).unwrap(),
+                        c.as_bytes(),
+                        &key,
+                    )),
+                },
+                false,
+            );
+            let got = wait_forfeits(
+                n,
+                &c,
+                tier,
+                std::slice::from_ref(&new),
+                &offers,
+                &oxo,
+                fee,
+                seizure.as_ref(),
+                &refund_spk,
+            );
+            stakes.extend(got);
+            let spk = offers.iter().find(|o| o.0 == new).unwrap().1.clone();
+            match n.rpc.pay_many(&[(spk, fee)]) {
+                Ok(txid) => {
+                    n.rpc.mine(1).ok();
+                    n.send_case(
+                        &c,
+                        std::slice::from_ref(&new),
+                        Msg::FeePaid {
+                            case_id: c.clone(),
+                            tier,
+                            txid: txid.to_string(),
+                        },
+                        false,
+                    );
+                    n.check(
+                        &format!("tier {tier}: replacement {} drawn from the {} offers left by block {h}, staked, pre-signed and paid", &new[..8], left.len()),
+                        stakes.contains_key(&new),
+                        &txid.to_string()[..16],
+                    );
+                }
+                Err(e) => {
+                    n.check(&format!("tier {tier}: replacement fee paid"), false, &e);
+                    return None;
+                }
+            }
         }
     }
     // the revealed verdicts and the tier commitment
@@ -1648,11 +1883,24 @@ fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, start: Duration) -> Option<O
         } if *case_id == cc && *t == tier => Some(seats.clone()),
         _ => None,
     })?;
-    let (cc, ss) = (c.clone(), seats.clone());
+    let (cc, mut ss) = (c.clone(), seats.clone());
     let mut seen = std::collections::HashSet::new();
     let votes: Vec<Ballot> = n.collect(
         secs(num("--verdict-wait", 600u64)),
         |env, _| match &env.msg {
+            // a seat forfeit for missing its commit deadline, and its replacement (§10.4)
+            Msg::Reseated {
+                case_id,
+                tier: t,
+                replaced,
+                seat,
+                ..
+            } if *case_id == cc && *t == tier => {
+                if let Some(p) = ss.iter().position(|x| x == replaced) {
+                    ss[p] = seat.clone();
+                }
+                None
+            }
             Msg::VerdictReveal {
                 case_id,
                 tier: t,
@@ -1670,6 +1918,52 @@ fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, start: Duration) -> Option<O
         |v| v.len() >= seats.len(),
     );
     Some(bitaid_node::arb::supermajority(seats.len(), &votes))
+}
+
+/// A seat forfeiture this member's own records call for: the seat was paid at least the template's
+/// commit deadline ago (by this member's clock), has not committed a vote, and the transaction is its
+/// pre-signed seat forfeiture refunding the fee to the payer (§10.4).
+#[allow(clippy::type_complexity)]
+fn seat_forfeit_due(
+    n: &Node,
+    a: &Alerted,
+    r: &Rostered,
+    t: &Transaction,
+    input: u32,
+    vcommits: &HashMap<(String, u32), HashMap<String, String>>,
+    fee_at: &HashMap<(String, u32, String), Instant>,
+) -> Option<([u8; 32], String)> {
+    if input != 0 {
+        return None;
+    }
+    let rp = arb::Replay::build(&n.history, a, r, &n.rpc)?;
+    let id = t.compute_txid();
+    for (k, tier) in &rp.tiers {
+        for seat in tier.seats.iter() {
+            let Some((tx, d, _, _)) = rp.seat_forfeit(*k, seat) else {
+                continue;
+            };
+            if tx.compute_txid() != id {
+                continue;
+            }
+            let paid = fee_at.get(&(a.case_hex.clone(), *k, seat.clone()))?;
+            let voted = vcommits
+                .get(&(a.case_hex.clone(), *k))
+                .map(|m| m.contains_key(seat))
+                .unwrap_or(false);
+            if voted || paid.elapsed() < secs(a.template.commit_deadline as u64) {
+                return None;
+            }
+            return Some((
+                d,
+                format!(
+                    "the seat forfeiture of {} on tier {k} (no vote by the deadline)",
+                    &seat[..8]
+                ),
+            ));
+        }
+    }
+    None
 }
 
 /// What a final case calls for, as this node's own replay of the log computes it: the forfeitures
@@ -1723,6 +2017,79 @@ fn verdict_classes(v: &Ballot) -> String {
         .join(",")
 }
 
+/// An arbitrator's bond keys, for taking a seat.
+struct SeatKeys {
+    bond: OutPoint,
+    bond_value: u64,
+    bs: Scalar,
+    bc: Scalar,
+    bf: u32,
+    payout: bitcoin::ScriptBuf,
+    okey: String,
+}
+
+/// On taking a seat: set aside the seat's stake (4× its fee) under the bond's script and pre-sign its
+/// forfeitures — one per penalty step into the case's seizure output (§10.4, §12) and the seat
+/// forfeiture refunding the fee if this seat misses its commit deadline.
+fn take_seat(
+    n: &mut Node,
+    k: &SeatKeys,
+    a: Option<&Alerted>,
+    r: Option<&Rostered>,
+    case_id: &str,
+    tier: u32,
+    refund: &bitcoin::ScriptBuf,
+) {
+    let (Some(a), Some(r)) = (a, r) else {
+        return;
+    };
+    let oxo = wire::xonly(&k.okey).unwrap();
+    let me_bond = arb::Bond {
+        op: k.bond,
+        value: k.bond_value,
+        scoped: xo(&k.bs),
+        cold: xo(&k.bc),
+        fallback: k.bf,
+        payout: k.payout.clone(),
+    };
+    let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo) else {
+        n.log("case names no archivists; no seizure output to forfeit to");
+        return;
+    };
+    let fee = arb::seat_fee(a.template.arb_fee, tier);
+    // the seat's stake: its own output, so forfeitures pre-signed for seats held at once never spend
+    // the same coin
+    let value = arb::SEAT_STAKE_STEPS * fee / 10;
+    let sop = match n.rpc.fund(&me_bond.tree(&oxo).script_pubkey(), value) {
+        Ok(op) => op,
+        Err(e) => {
+            n.log(&format!("seat stake not posted: {e}"));
+            return;
+        }
+    };
+    n.rpc.mine(1).ok();
+    let stake = me_bond.stake(sop, value);
+    let sigs: Vec<String> = stake
+        .forfeit_digests(&oxo, fee, &st.script_pubkey(), refund)
+        .iter()
+        .map(|d| hex::encode(sign_bip340(&k.bs, d)))
+        .collect();
+    if !flag("--no-forfeits") {
+        n.send_case(
+            case_id,
+            &[],
+            Msg::Forfeits {
+                case_id: case_id.to_string(),
+                tier,
+                stake: sop.to_string(),
+                value,
+                sigs,
+            },
+            false,
+        );
+    }
+}
+
 /// An arbitrator: posts a bond, offers seats blind, and when seated reviews the evidence and votes.
 fn arbitrator(mut n: Node) -> i32 {
     let secp = Secp256k1::new();
@@ -1770,6 +2137,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut reveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut mine: HashMap<(String, u32), (Ballot, [u8; 32])> = HashMap::new();
     let mut revealed: std::collections::HashSet<(String, u32)> = Default::default();
+    let mut refunds: HashMap<(String, u32), bitcoin::ScriptBuf> = HashMap::new();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
     let mut challenge_at: HashMap<(String, u32), Instant> = HashMap::new();
     let idle = num("--exit-after", 3600u64);
@@ -1921,11 +2289,14 @@ fn arbitrator(mut n: Node) -> i32 {
                 tier,
                 seats,
                 sealed_keys,
+                refund_spk,
                 ..
             } => {
                 if escalator.get(&(case_id.clone(), tier)) != Some(&s) {
                     continue;
                 }
+                let refund = bitcoin::ScriptBuf::from_hex(&refund_spk).unwrap_or_default();
+                refunds.insert((case_id.clone(), tier), refund.clone());
                 if let Some(pos) = seats.iter().position(|x| *x == me) {
                     if let Some(k) = hex::decode(&sealed_keys[pos]).ok().and_then(|k| {
                         wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
@@ -1935,62 +2306,77 @@ fn arbitrator(mut n: Node) -> i32 {
                             "seated on tier {tier} of {} (seat {pos}); case disclosed",
                             &case_id[..8]
                         ));
-                        // pre-sign the bond's forfeitures for this seat, one per penalty step (§10.4)
-                        'forfeit: {
-                            let oxo = wire::xonly(&okey).unwrap();
-                            let me_bond = arb::Bond {
-                                op: bond,
-                                value: bond_value,
-                                scoped: xo(&bs),
-                                cold: xo(&bc),
-                                fallback: bf,
-                                payout: payout.clone(),
-                            };
-                            let (Some(a), Some(r)) = (alerts.get(&case_id), rosters.get(&case_id))
-                            else {
-                                break 'forfeit;
-                            };
-                            let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo) else {
-                                n.log("case names no archivists; no seizure output to forfeit to");
-                                break 'forfeit;
-                            };
-                            let fee = arb::seat_fee(a.template.arb_fee, tier);
-                            // the seat's stake: its own output, so forfeitures pre-signed for seats
-                            // held at once never spend the same coin
-                            let value = arb::SEAT_STAKE_STEPS * fee / 10;
-                            let sop = match n.rpc.fund(&me_bond.tree(&oxo).script_pubkey(), value) {
-                                Ok(op) => op,
-                                Err(e) => {
-                                    n.log(&format!("seat stake not posted: {e}"));
-                                    break 'forfeit;
-                                }
-                            };
-                            n.rpc.mine(1).ok();
-                            let stake = me_bond.stake(sop, value);
-                            let mut sigs = vec![];
-                            for stp in arb::STEPS {
-                                let (_, d) =
-                                    stake.penalty_tx(&oxo, stp * fee / 10, &st.script_pubkey());
-                                sigs.push(hex::encode(sign_bip340(&bs, &d)));
-                            }
-                            if !flag("--no-forfeits") {
-                                n.send_case(
-                                    &case_id,
-                                    &[],
-                                    Msg::Forfeits {
-                                        case_id: case_id.clone(),
-                                        tier,
-                                        stake: sop.to_string(),
-                                        value,
-                                        sigs,
-                                    },
-                                    false,
-                                );
-                            }
-                        }
+                        let seat = SeatKeys {
+                            bond,
+                            bond_value,
+                            bs,
+                            bc,
+                            bf,
+                            payout: payout.clone(),
+                            okey: okey.clone(),
+                        };
+                        take_seat(
+                            &mut n,
+                            &seat,
+                            alerts.get(&case_id),
+                            rosters.get(&case_id),
+                            &case_id,
+                            tier,
+                            &refund,
+                        );
                     }
                 }
                 seated.insert((case_id, tier), seats);
+            }
+            // §10.4: a seat that missed its commit deadline, replaced; the replacement takes the seat
+            Msg::Reseated {
+                case_id,
+                tier,
+                replaced,
+                seat,
+                sealed_key,
+                ..
+            } => {
+                let key = (case_id.clone(), tier);
+                if escalator.get(&key) != Some(&s) {
+                    continue;
+                }
+                if let Some(list) = seated.get_mut(&key) {
+                    if let Some(p) = list.iter().position(|x| *x == replaced) {
+                        list[p] = seat.clone();
+                    }
+                }
+                if seat == me {
+                    if let Some(k) = hex::decode(&sealed_key).ok().and_then(|k| {
+                        wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
+                    }) {
+                        n.add_case_key(&case_id, k.try_into().unwrap());
+                        n.log(&format!(
+                            "drawn on tier {tier} of {} to replace {}, whose seat was forfeit; case disclosed",
+                            &case_id[..8],
+                            &replaced[..8]
+                        ));
+                        let refund = refunds.get(&key).cloned().unwrap_or_default();
+                        let sk = SeatKeys {
+                            bond,
+                            bond_value,
+                            bs,
+                            bc,
+                            bf,
+                            payout: payout.clone(),
+                            okey: okey.clone(),
+                        };
+                        take_seat(
+                            &mut n,
+                            &sk,
+                            alerts.get(&case_id),
+                            rosters.get(&case_id),
+                            &case_id,
+                            tier,
+                            &refund,
+                        );
+                    }
+                }
             }
             Msg::FeePaid {
                 case_id,
@@ -2122,6 +2508,11 @@ fn arbitrator(mut n: Node) -> i32 {
                     shows.len(),
                     verdict_classes(&verdict)
                 ));
+                if flag("--no-vote") {
+                    n.log("(test) took the seat and the fee, and never commits a vote");
+                    mine.insert(key, (verdict, [0u8; 32]));
+                    continue;
+                }
                 let salt: [u8; 32] = rand::random();
                 n.send_case(
                     &case_id,
@@ -2291,6 +2682,7 @@ fn caller(mut n: Node) -> i32 {
         arb_fee: num("--arb-fee", 20_000u64),
         refund_delay: 12_960,
         refund_xpub: bitcoin::bip32::Xpub::from_priv(&secp, &xpriv).to_string(),
+        commit_deadline: num("--commit-deadline", 60u32),
     };
     let total: u64 = template.pots.iter().sum();
     let fallback = n.rpc.height() + 52_560;

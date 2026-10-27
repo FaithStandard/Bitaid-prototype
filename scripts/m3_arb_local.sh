@@ -19,7 +19,7 @@ for i in 1 2 3 4; do
   BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $P --exit-after 300 2>$L/pool$i.log & PIDS="$PIDS $!"
 done
 BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist $P --listen 127.0.0.1:7481 --exit-after 300 2>$L/archivist.log & PIDS="$PIDS $!"
-for i in 1 2 3 4 5 6 7 8 9; do
+for i in 1 2 3 4 5 6 7 8 9 10; do
   extra=""; [ $i = 4 ] && extra="--corrupt"; [ $i = 8 ] && extra="--corrupt"
   # CAPTURE=1: a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
   # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
@@ -30,6 +30,10 @@ for i in 1 2 3 4 5 6 7 8 9; do
   [ -n "$CHALLENGE" ] && [ -n "$CAPTURE" ] && { [ $i = 4 ] || [ $i = 8 ]; } && extra="--corrupt --tiers 1,2"
   # CHALLENGE=bad: an honest tier 1 (arb1, arb2) outvotes corrupt arb4, which re-rolls anyway and loses its fees
   if [ "$CHALLENGE" = bad ]; then case $i in 1|2) extra="--tiers 1,2";; 4) extra="--corrupt --tiers 1 --challenge";; 8) extra="--corrupt --tiers 2";; *) extra="--tiers 2";; esac; fi
+  # STALL: arb9 and arb10 serve tier 2 but never vote: a seated one misses its commit deadline, its seat
+  # forfeiture refunds the fee and a replacement is drawn (§10.4); arb10 otherwise sits idle
+  [ $i = 10 ] && extra="--tiers 2"
+  [ -n "$STALL" ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-vote"
   BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 300 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done
 sleep 2
@@ -39,7 +43,7 @@ R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
 BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
 BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
-BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-window 8 --alert-delay 4 > $L/caller.out 2>$L/caller.log
+BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-window 8 --alert-delay 4 --commit-deadline 20 > $L/caller.out 2>$L/caller.log
 for p in $RP; do wait $p; done
 kill $PIDS 2>/dev/null
 [ "$CHALLENGE" = bad ] && CHALLENGER=4

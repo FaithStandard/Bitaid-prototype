@@ -221,11 +221,14 @@ impl Bond {
         oracle: &XOnlyPublicKey,
         fee: u64,
         seizure: &ScriptBuf,
+        refund: &ScriptBuf,
     ) -> Vec<[u8; 32]> {
-        STEPS
+        let mut v: Vec<[u8; 32]> = STEPS
             .iter()
             .map(|st| self.penalty_tx(oracle, st * fee / 10, seizure).1)
-            .collect()
+            .collect();
+        v.push(self.penalty_tx(oracle, fee, refund).1);
+        v
     }
     /// Completes a forfeiture with the arbitrator's pre-signature and the oracle's co-signature.
     pub fn witness(
@@ -270,13 +273,18 @@ pub struct Tier {
     pub forfeits: HashMap<String, (Bond, Vec<String>)>,
     /// opened by a dissenting arbitrator of the tier below, who bought the re-roll itself (§10.4)
     pub challenger: bool,
+    /// where a forfeited seat's fee goes back to (the payer's refund script, from the Seated message)
+    pub refund: Option<ScriptBuf>,
+    /// seats that missed their commit deadline and were replaced
+    pub forfeited: Vec<String>,
 }
 
 /// A seat's stake, in tenths of the seat fee: the largest penalty step, 4× (more with momentum).
 pub const SEAT_STAKE_STEPS: u64 = 40;
 
 /// Checks a seat's pre-signed forfeitures: the stake is an output of at least 4× the fee under the
-/// seat-holder's bond script, and each signature is its scoped key's over that step's forfeiture.
+/// seat-holder's bond script, and each signature is its scoped key's over that step's forfeiture, the
+/// last over its seat forfeiture (the fee back to the payer's refund script).
 #[allow(clippy::too_many_arguments)]
 pub fn verify_forfeits(
     bond: &Bond,
@@ -286,10 +294,11 @@ pub fn verify_forfeits(
     oracle: &XOnlyPublicKey,
     fee: u64,
     seizure: &ScriptBuf,
+    refund: &ScriptBuf,
     rpc: &Rpc,
 ) -> Option<Bond> {
     let st = bond.stake(OutPoint::from_str(stake).ok()?, value);
-    let ds = st.forfeit_digests(oracle, fee, seizure);
+    let ds = st.forfeit_digests(oracle, fee, seizure, refund);
     (value >= SEAT_STAKE_STEPS * fee / 10
         && sigs.len() == ds.len()
         && ds
@@ -440,24 +449,61 @@ impl Replay {
                         && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
                     {
                         t.seats = seats.clone();
+                        if let Msg::Seated { refund_spk, .. } = &e.msg {
+                            t.refund = ScriptBuf::from_hex(refund_spk).ok();
+                        }
+                    }
+                }
+            }
+            // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4)
+            for e in &mine {
+                if let Msg::Reseated {
+                    tier,
+                    height,
+                    block_hash,
+                    replaced,
+                    seat,
+                    ..
+                } = &e.msg
+                {
+                    if *tier != k || e.sender != escalator {
+                        continue;
+                    }
+                    let Some(pos) = t.seats.iter().position(|x| x == replaced) else {
+                        continue;
+                    };
+                    let left: Vec<String> = t
+                        .offers
+                        .keys()
+                        .filter(|o| !t.seats.contains(o) && !t.forfeited.contains(o))
+                        .cloned()
+                        .collect();
+                    if !vcommits.contains_key(replaced)
+                        && draw(block_hash, &case, k, &left, 1) == vec![seat.clone()]
+                        && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
+                    {
+                        t.forfeited.push(replaced.clone());
+                        t.seats[pos] = seat.clone();
                     }
                 }
             }
             let fee = seat_fee(rp.base_fee, k);
-            for e in &mine {
-                if let Msg::FeePaid { tier, txid, .. } = &e.msg {
-                    if *tier == k
-                        && e.sender == escalator
-                        && !t.fee_paid
-                        && !t.seats.is_empty()
-                        && t.seats
-                            .iter()
-                            .all(|x| rpc.paid_to(txid, &t.offers[x].payout) >= fee)
-                    {
-                        t.fee_paid = true;
+            // each seat paid its fee by the escalator, in one transaction or several
+            let fee_txs: Vec<&String> = mine
+                .iter()
+                .filter_map(|e| match &e.msg {
+                    Msg::FeePaid { tier, txid, .. } if *tier == k && e.sender == escalator => {
+                        Some(txid)
                     }
-                }
-            }
+                    _ => None,
+                })
+                .collect();
+            t.fee_paid = !t.seats.is_empty()
+                && t.seats.iter().all(|x| {
+                    fee_txs
+                        .iter()
+                        .any(|txid| rpc.paid_to(txid, &t.offers[x].payout) >= fee)
+                });
             for e in &mine {
                 if let Msg::VerdictReveal {
                     tier,
@@ -498,18 +544,19 @@ impl Replay {
                     } = &e.msg
                     {
                         let s = &e.sender;
-                        let Some(b) = t
-                            .offers
-                            .get(s)
-                            .filter(|_| *tier == k && t.seats.contains(s))
-                        else {
+                        let Some(b) = t.offers.get(s).filter(|_| {
+                            *tier == k && (t.seats.contains(s) || t.forfeited.contains(s))
+                        }) else {
                             continue;
                         };
                         if t.forfeits.contains_key(s) {
                             continue;
                         }
+                        let Some(refund) = t.refund.clone() else {
+                            continue;
+                        };
                         if let Some(st) =
-                            verify_forfeits(b, stake, *value, sigs, &oracle, fee, spk, rpc)
+                            verify_forfeits(b, stake, *value, sigs, &oracle, fee, spk, &refund, rpc)
                         {
                             t.forfeits.insert(s.clone(), (st, sigs.clone()));
                         }
@@ -519,6 +566,23 @@ impl Replay {
             rp.tiers.insert(k, t);
         }
         Some(rp)
+    }
+
+    /// The seat forfeiture of `seat` on `tier`: its stake pays the fee back to the payer's refund script,
+    /// the rest re-bonded (§10.4). Returns the transaction, its digest, the seat's pre-signature and stake.
+    pub fn seat_forfeit(
+        &self,
+        tier: u32,
+        seat: &str,
+    ) -> Option<(Transaction, [u8; 32], String, Bond)> {
+        let t = self.tiers.get(&tier)?;
+        let (stake, sigs) = t.forfeits.get(seat)?;
+        let (tx, d) = stake.penalty_tx(
+            &self.oracle,
+            seat_fee(self.base_fee, tier),
+            t.refund.as_ref()?,
+        );
+        Some((tx, d, sigs.get(STEPS.len())?.clone(), stake.clone()))
     }
 
     pub fn seizure_spk(&self) -> Option<ScriptBuf> {

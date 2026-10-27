@@ -41,6 +41,9 @@ pub struct Template {
     pub refund_delay: u32,
     /// account xpub from which the per-case refund address is derived (§3, no address reuse)
     pub refund_xpub: String,
+    /// seconds a seated arbitrator has to commit its vote before its seat is forfeit (§10.4: 1,008
+    /// blocks in production)
+    pub commit_deadline: u32,
 }
 
 impl Template {
@@ -290,6 +293,20 @@ pub enum Msg {
         offers: Vec<Hex32>,
         seats: Vec<Hex32>,
         sealed_keys: Vec<String>,
+        /// where a forfeited seat's fee is refunded to the payer
+        refund_spk: String,
+    },
+    /// The escalating party, after a seat missed its commit deadline and its seat forfeiture refunded the
+    /// fee: the replacement drawn from the remaining offers by a block mined after the forfeiture, and
+    /// the case key sealed to it (§10.4).
+    Reseated {
+        case_id: Hex32,
+        tier: u32,
+        height: u32,
+        block_hash: Hex32,
+        replaced: Hex32,
+        seat: Hex32,
+        sealed_key: String,
     },
     /// The escalating party paid each seated arbitrator its fee directly.
     FeePaid {
@@ -311,7 +328,8 @@ pub enum Msg {
     },
     /// Seated arbitrator, on taking the seat: the forfeitures of its seat stake pre-signed with its bond's
     /// scoped key, one per penalty step (2×, 2.5×, 3×, 3.5×, 4× the seat fee), each paying the case's
-    /// seizure output (§10.4, §12).
+    /// seizure output (§10.4, §12), then its seat forfeiture, refunding the fee to the payer if it misses
+    /// its commit deadline.
     Forfeits {
         case_id: Hex32,
         tier: u32,
@@ -378,6 +396,7 @@ impl Msg {
             Msg::Escalate { .. } => "escalate",
             Msg::SeatOffer { .. } => "seat-offer",
             Msg::Seated { .. } => "seated",
+            Msg::Reseated { .. } => "reseated",
             Msg::FeePaid { .. } => "fee-paid",
             Msg::VerdictCommit { .. } => "verdict-commit",
             Msg::VerdictReveal { .. } => "verdict-reveal",
@@ -417,6 +436,7 @@ impl Msg {
             | Msg::Escalate { case_id, .. }
             | Msg::SeatOffer { case_id, .. }
             | Msg::Seated { case_id, .. }
+            | Msg::Reseated { case_id, .. }
             | Msg::FeePaid { case_id, .. }
             | Msg::VerdictCommit { case_id, .. }
             | Msg::VerdictReveal { case_id, .. }

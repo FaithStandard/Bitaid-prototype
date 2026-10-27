@@ -50,7 +50,7 @@ start)
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait 3600 $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait 3600 $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pc --listen 127.0.0.1:7480 --public-url http://$ONION:7480 $P $X >/dev/null 2>"$L/archivist.log" </dev/null &
-  for i in 1 2 3 4 5 6 7 8 9; do
+  for i in 1 2 3 4 5 6 7 8 9 10; do
     extra=""; for c in ${CORRUPT:-4 8}; do [ $i = $c ] && extra="--corrupt"; done
     # CAPTURE=1 (default; CAPTURE=0 for a random draw): a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
     # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
@@ -59,6 +59,10 @@ start)
     [ "${CHALLENGE:-1}" = 1 ] && [ $i = 1 ] && extra="$extra --challenge"
     # (the challenger cannot sit on the tier it opens, so the corrupt pair also serve tier 2: 6 honest of 8)
     [ "${CHALLENGE:-1}" = 1 ] && [ "${CAPTURE:-1}" = 1 ] && { [ $i = 4 ] || [ $i = 8 ]; } && extra="--corrupt --tiers 1,2"
+    # STALL: arb9 and arb10 serve tier 2 but never vote: a seated one misses its commit deadline, its seat
+    # forfeiture refunds the fee and a replacement is drawn (§10.4); arb10 otherwise sits idle
+    [ $i = 10 ] && extra="--tiers 2"
+    [ "${STALL:-1}" = 1 ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-vote"
     BITAID_WALLET=w nohup target/release/bitaid-node --role arbitrator --name arb$i-pc $P $extra --offer-window 40 $X >"$L/arb$i.out" 2>"$L/arb$i.log" </dev/null &
   done
   sleep 2
