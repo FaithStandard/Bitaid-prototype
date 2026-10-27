@@ -26,7 +26,7 @@ responder|caller)
     BITAID_WALLET=r1 $BIN --role responder --name r1 $P --mine $CLAIM --broadcast --settle-wait 1800 --lat 13.6935 --lon -89.2190
   else
     BITAID_WALLET=w $BIN --role pool-member --name pool4-liar --id 4 --n 4 --t 3 --liar --setup-wait 3600 $P --exit-after 3600 2>pool.log & PM=$!
-    BITAID_WALLET=caller $BIN --role caller --name caller $P --mine --window 30 --dispute-window 20 --settle-wait 1800
+    BITAID_WALLET=caller $BIN --role caller --name caller $P --mine --window 30 --dispute-window 20 --settle-wait 1800 ${REVIEW_PCT:+--review-pct $REVIEW_PCT}
     sleep 5
   fi
   # the pool member stays up a while: after settlement the pool still co-signs the penalties and the

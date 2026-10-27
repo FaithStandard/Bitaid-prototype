@@ -428,8 +428,26 @@ fn pool_member(mut n: Node) -> i32 {
                             d
                         }
                         None => {
-                            n.log("co-signature refused: not a forfeiture or distribution the case calls for");
-                            continue;
+                            // a case unit's release: the case closed and the review draw passed
+                            // over it (§10.2, §10.3), by this member's own replay
+                            let rel = arb::Replay::build(&n.history, a, r, &n.rpc)
+                                .map(|rp| rp.releasable(a, &n.rpc))
+                                .unwrap_or_default();
+                            match rel.iter().find(|x| x.3.compute_txid() == id && *input == 0) {
+                                Some((k, w, b, _, d)) => {
+                                    n.log(&format!(
+                                        "co-signing the release of {}'s tier-{k} unit ({} sats) for {}: the review draw passed the case over",
+                                        &w[..8],
+                                        b.value,
+                                        &case_id[..8]
+                                    ));
+                                    *d
+                                }
+                                None => {
+                                    n.log("co-signature refused: not a forfeiture, distribution or release the case calls for");
+                                    continue;
+                                }
+                            }
                         }
                     }
                 } else {
@@ -2178,6 +2196,100 @@ fn take_seat(
     Some(value)
 }
 
+/// After a case is final: waits for its review draw (mining to the draw block on regtest) and, if the
+/// draw passed the case over, releases this arbitrator's units back under its bond's script with the
+/// pool's co-signature (§10.2, §10.3). None while the draw block is not yet mined; Some(true) when the
+/// units are free, Some(false) when the case was drawn and the units stay held through the review.
+fn release_units(
+    n: &mut Node,
+    view: &pool::PoolView,
+    a: &Alerted,
+    r: &Rostered,
+    cold: Scalar,
+    session: &mut u32,
+) -> Option<bool> {
+    let rp = arb::Replay::build(&n.history, a, r, &n.rpc)?;
+    let Some(dr) = rp.review_draw(a, &n.rpc) else {
+        // regtest: nobody else mines, so the arbitrator mines toward the draw block itself
+        n.rpc.mine(1).ok();
+        return None;
+    };
+    let c = rp.case.clone();
+    let me = n.me();
+    n.check(
+        &format!(
+            "case {}: review draw at block {} ({}% for a {} final panel): {}",
+            &c[..8],
+            dr.height,
+            dr.rate_bp / 100,
+            if dr.split { "split" } else { "unanimous" },
+            if dr.drawn {
+                "drawn for review; units held"
+            } else {
+                "passed over"
+            }
+        ),
+        true,
+        "",
+    );
+    let oxo = wire::xonly(&view.key_hex()).unwrap();
+    if dr.drawn {
+        // --greedy-release: ask for the release anyway; every pool member's replay must refuse
+        if flag("--greedy-release") {
+            if let Some((_, _, b, tx, d)) = rp
+                .units()
+                .into_iter()
+                .filter(|u| u.1 == me)
+                .map(|(k, w, b)| {
+                    let (tx, d) = b.release_tx(&oxo);
+                    (k, w, b, tx, d)
+                })
+                .next()
+            {
+                let me_n = u16::from_str_radix(&me[..4], 16).unwrap_or(0) as u32;
+                let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, 100_000 + me_n * 256 + 200);
+                n.check(
+                    &format!("the pool refuses to release a {}-sat unit of a case drawn for review", b.value),
+                    res.is_err(),
+                    &res.err().unwrap_or_default(),
+                );
+            }
+        }
+        return Some(false);
+    }
+    let mut ok = true;
+    for (k, w, b, mut tx, d) in rp.releasable(a, &n.rpc) {
+        if w != me {
+            continue;
+        }
+        let csig = sign_bip340(&cold, &d);
+        // signing sessions are numbered per case, and every seat of the case releases at once:
+        // each arbitrator takes its own range, from its key, so requests never share a session
+        let me_n = u16::from_str_radix(&me[..4], 16).unwrap_or(0) as u32;
+        let first = 100_000 + me_n * 256 + (*session % 256);
+        let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, first).and_then(
+            |(osig, _, signers)| {
+                b.release_witness(&oxo, &mut tx, &csig, &osig);
+                n.rpc.package(&tx).map(|t| (t, signers))
+            },
+        );
+        *session += 10;
+        ok &= res.is_ok();
+        n.check(
+            &format!(
+                "tier {k} unit of {} sats released under the bond's script by the pool's co-signature",
+                b.value
+            ),
+            res.is_ok(),
+            &match &res {
+                Ok((t, s)) => format!("{} (pool members {s:?})", &t.to_string()[..16]),
+                Err(e) => e.clone(),
+            },
+        );
+    }
+    Some(ok)
+}
+
 /// An arbitrator: posts a bond, offers seats blind, and when seated reviews the evidence and votes.
 fn arbitrator(mut n: Node) -> i32 {
     let secp = Secp256k1::new();
@@ -2226,11 +2338,14 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut mine: HashMap<(String, u32), (Ballot, [u8; 32])> = HashMap::new();
     let mut revealed: std::collections::HashSet<(String, u32)> = Default::default();
     let mut refunds: HashMap<(String, u32), bitcoin::ScriptBuf> = HashMap::new();
-    // case units committed per seat, out of --capital (§10.2); released once the case is final
-    // (the review draw that should hold them a little longer is not built yet)
+    // case units committed per seat, out of --capital (§10.2); released once the case is closed and
+    // its review draw has passed it over, or held through the review if drawn
     let capital = num("--capital", 1_000_000_000u64);
     let mut units: HashMap<(String, u32), u64> = HashMap::new();
     let mut final_by: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    // final cases whose review draw this arbitrator waits for, to release its units (§10.2, §10.3)
+    let mut pending: HashMap<String, Instant> = HashMap::new();
+    let mut release_session = 0u32;
     let pool_ids: std::collections::HashSet<String> = view.ids.values().cloned().collect();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
     let mut challenge_at: HashMap<(String, u32), Instant> = HashMap::new();
@@ -2310,6 +2425,35 @@ fn arbitrator(mut n: Node) -> i32 {
             );
             collect_seizure(&mut n, &a, &r, &view);
             n.summary();
+        }
+        let ready: Vec<String> = pending
+            .iter()
+            .filter(|(_, t)| t.elapsed() > secs(3))
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in ready {
+            let (Some(a), Some(r)) = (alerts.get(&c).cloned(), rosters.get(&c).cloned()) else {
+                pending.remove(&c);
+                continue;
+            };
+            pending.insert(c.clone(), Instant::now());
+            match release_units(&mut n, &view, &a, &r, bc, &mut release_session) {
+                None => {}
+                Some(true) => {
+                    pending.remove(&c);
+                    let mine: Vec<(String, u32)> =
+                        units.keys().filter(|k| k.0 == c).cloned().collect();
+                    let v: u64 = mine.iter().filter_map(|k| units.remove(k)).sum();
+                    n.log(&format!(
+                        "case {}: {} unit(s), {v} sats, back to free capital",
+                        &c[..8],
+                        mine.len()
+                    ));
+                }
+                Some(false) => {
+                    pending.remove(&c);
+                }
+            }
         }
         let Some(env) = n.wait(secs(2), |env, _| Some(env.clone())) else {
             continue;
@@ -2739,21 +2883,16 @@ fn arbitrator(mut n: Node) -> i32 {
                     }
                 }
             }
-            // the pool attested the final outcome: the case's units return to free capital
+            // the pool attested the final outcome: the case's units wait for its review draw
             Msg::AttestShare { case_id, .. } if pool_ids.contains(&s) => {
                 let who = final_by.entry(case_id.clone()).or_default();
                 who.insert(s.clone());
-                if who.len() == view.t {
-                    let freed: Vec<(String, u32)> =
-                        units.keys().filter(|k| k.0 == case_id).cloned().collect();
-                    let v: u64 = freed.iter().filter_map(|k| units.remove(k)).sum();
-                    if v > 0 {
-                        n.log(&format!(
-                            "case {} final: {} unit(s), {v} sats, back to free capital",
-                            &case_id[..8],
-                            freed.len()
-                        ));
-                    }
+                if who.len() == view.t && units.keys().any(|k| k.0 == case_id) {
+                    n.log(&format!(
+                        "case {} final; its units wait for the review draw",
+                        &case_id[..8]
+                    ));
+                    pending.insert(case_id.clone(), Instant::now());
                 }
             }
             _ => {}
@@ -2820,6 +2959,8 @@ fn caller(mut n: Node) -> i32 {
         refund_delay: 12_960,
         refund_xpub: bitcoin::bip32::Xpub::from_priv(&secp, &xpriv).to_string(),
         commit_deadline: num("--commit-deadline", 60u32),
+        review_delay: num("--review-delay", 2u32),
+        review_pct: arg("--review-pct").and_then(|x| x.parse().ok()),
     };
     let total: u64 = template.pots.iter().sum();
     let fallback = n.rpc.height() + 52_560;

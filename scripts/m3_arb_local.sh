@@ -33,6 +33,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   # STALL: arb9 and arb10 serve tier 2 but never vote: a seated one misses its commit deadline, its seat
   # forfeiture refunds the fee and a replacement is drawn (§10.4); arb10 otherwise sits idle
   [ $i = 10 ] && extra="--tiers 2"
+  [ $i = 1 ] && extra="$extra --greedy-release"
   [ -n "$STALL" ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-vote"
   BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 300 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done
@@ -43,8 +44,15 @@ R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
 BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
 BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
-BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-window 8 --alert-delay 4 --commit-deadline 20 > $L/caller.out 2>$L/caller.log
+BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-window 8 --alert-delay 4 --commit-deadline 20 ${REVIEW_PCT:+--review-pct $REVIEW_PCT} > $L/caller.out 2>$L/caller.log
 for p in $RP; do wait $p; done
+# §10.2-10.3: every seated arbitrator waits for the case's review draw and, if passed over, releases its
+# units with the pool's co-signature; give them time before stopping the network
+for i in $(seq 1 90); do
+  n=0; for f in $(grep -l "case unit" $L/arb*.log 2>/dev/null); do grep -q "review draw\|not released" ${f%.log}.out || n=$((n+1)); done
+  [ $n = 0 ] && break; sleep 2
+done
+grep -h "review draw\|unit of\|FAIL" $L/arb*.out | sort | uniq -c | tee arb_release.txt
 kill $PIDS 2>/dev/null
 [ "$CHALLENGE" = bad ] && CHALLENGER=4
 [ -n "$CHALLENGE" ] && for i in $(seq 1 150); do grep -q "passed" $L/arb${CHALLENGER:-1}.out 2>/dev/null && break; sleep 2; done

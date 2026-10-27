@@ -150,6 +150,30 @@ pub fn unit_value(case_value: u64, max: u64, fee: u64) -> u64 {
     (2 * case_value).max(max * fee / 10)
 }
 
+/// The review sampling rate in basis points (§10.3): 5% up to 0.01 BTC, 10% up to 0.1 BTC, 20% up to
+/// 1 BTC, 40% above, and at least 40% when the final panel was split.
+pub fn review_rate_bp(case_value: u64, split: bool) -> u64 {
+    let r = match case_value {
+        0..=1_000_000 => 500,
+        ..=10_000_000 => 1_000,
+        ..=100_000_000 => 2_000,
+        _ => 4_000,
+    };
+    if split {
+        r.max(4_000)
+    } else {
+        r
+    }
+}
+
+/// Whether the draw seeded by `block_hash` selects `case` for review at `rate_bp`.
+pub fn review_drawn(case: &str, block_hash: &str, rate_bp: u64) -> bool {
+    let mut b = hex::decode(block_hash).unwrap_or_default();
+    b.extend(hex::decode(case).unwrap_or_default());
+    let h = tagged("Bitaid/review-draw", &b);
+    u64::from_be_bytes(h[..8].try_into().unwrap()) % 10_000 < rate_bp
+}
+
 pub fn max_step(d: f64) -> u64 {
     step_of(4.0 * multiplier(d))
 }
@@ -252,8 +276,8 @@ impl Bond {
             ..self.clone()
         }
     }
-    /// The pre-signed forfeitures' digests at a seat fee: one per step up to `max`, then the seat
-    /// forfeiture refunding the fee.
+    /// The pre-signed forfeitures' digests at a seat fee: one per step up to `max`, the whole unit,
+    /// then the seat forfeiture refunding the fee.
     pub fn forfeit_digests(
         &self,
         oracle: &XOnlyPublicKey,
@@ -266,8 +290,39 @@ impl Bond {
             .iter()
             .map(|st| self.penalty_tx(oracle, st * fee / 10, seizure).1)
             .collect();
+        // the whole unit, co-signed only on a finding confirmed by the staged review (§10.2, B.1)
+        v.push(self.penalty_tx(oracle, self.value, seizure).1);
         v.push(self.penalty_tx(oracle, fee, refund).1);
         v
+    }
+    /// A unit's release (§10.2): the whole output back under the bond's script, signed by the cold
+    /// key and co-signed by the oracle once the case is closed and the review draw passed it over.
+    pub fn release_tx(&self, oracle: &XOnlyPublicKey) -> (Transaction, [u8; 32]) {
+        let t = self.tree(oracle);
+        let tx = txbuild::payout(self.op, &[(self.value, t.script_pubkey())]);
+        let d = txbuild::scriptspend_digest(
+            &tx,
+            0,
+            &[txbuild::txout(self.value, t.script_pubkey())],
+            &t.scripts[bond_leaf::WITHDRAW],
+        );
+        (tx, d)
+    }
+    /// Completes a release with the cold key's signature and the oracle's co-signature.
+    pub fn release_witness(
+        &self,
+        oracle: &XOnlyPublicKey,
+        tx: &mut Transaction,
+        cold_sig: &[u8],
+        osig: &[u8; 64],
+    ) {
+        let t = self.tree(oracle);
+        tx.input[0].witness = Witness::from_slice(&[
+            osig.to_vec(),
+            cold_sig.to_vec(),
+            t.scripts[bond_leaf::WITHDRAW].to_bytes(),
+            t.control(bond_leaf::WITHDRAW).serialize(),
+        ]);
     }
     /// Completes a forfeiture with the arbitrator's pre-signature and the oracle's co-signature.
     pub fn witness(
@@ -370,6 +425,15 @@ impl Tier {
         let v: Vec<Ballot> = self.reveals.iter().map(|x| x.1.clone()).collect();
         supermajority(self.seats.len(), &v)
     }
+}
+
+/// The outcome of a case's review draw.
+#[derive(Clone, Debug)]
+pub struct ReviewDraw {
+    pub height: u32,
+    pub split: bool,
+    pub rate_bp: u64,
+    pub drawn: bool,
 }
 
 /// A forfeiture the final ruling calls for.
@@ -677,6 +741,79 @@ impl Replay {
     }
 
     /// The final ruling: the last tier that reached two thirds (hung tiers above it decide nothing).
+/// The review draw of a closed case (§10.3): the block whose hash seeds it, and whether it selected
+    /// the case. None while the case has no committed verdict or the block is not yet mined.
+    pub fn review_draw(&self, a: &Alerted, rpc: &Rpc) -> Option<ReviewDraw> {
+        let (ft, fv) = self.final_ruling()?;
+        // closed at the last tier commitment on chain (a later tier that hung or lapsed included)
+        let close = self
+            .tiers
+            .values()
+            .filter_map(|t| t.commit_txid.as_ref().and_then(|x| rpc.tx_height(x)))
+            .max()?;
+        let height = close + a.template.review_delay.max(1);
+        if rpc.height() < height {
+            return None;
+        }
+        let hash = rpc.block_hash(height)?;
+        let fk = verdict_key(&fv);
+        let split = self.tiers[&ft]
+            .reveals
+            .iter()
+            .any(|x| verdict_key(&x.1) != fk)
+            || self.tiers[&ft].reveals.len() < self.tiers[&ft].seats.len();
+        let value: u64 = a.template.pots.iter().sum();
+        let rate_bp = match a.template.review_pct {
+            None => review_rate_bp(value, split),
+            Some(p) => p.min(100) as u64 * 100,
+        };
+        Some(ReviewDraw {
+            height,
+            split,
+            rate_bp,
+            drawn: review_drawn(&self.case, &hash, rate_bp),
+        })
+    }
+
+    /// Each seat's case unit: (tier, arbitrator, unit). Every unit the replay verified.
+    pub fn units(&self) -> Vec<(u32, String, Bond)> {
+        let mut v: Vec<(u32, String, Bond)> = self
+            .tiers
+            .iter()
+            .flat_map(|(k, t)| {
+                t.forfeits
+                    .iter()
+                    .map(move |(s, (b, _))| (*k, s.clone(), b.clone()))
+            })
+            .collect();
+        v.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+        v
+    }
+
+    /// The units the oracle may release now: the case is closed, the draw passed it over, and the seat
+    /// owes no penalty (a penalised unit's remainder is already returned under the bond's script by
+    /// its forfeiture) and was not forfeit for a missed deadline. Each with its release digest.
+    pub fn releasable(&self, a: &Alerted, rpc: &Rpc) -> Vec<(u32, String, Bond, Transaction, [u8; 32])> {
+        let Some(dr) = self.review_draw(a, rpc) else {
+            return vec![];
+        };
+        if dr.drawn {
+            return vec![];
+        }
+        let pens = self.penalties();
+        self.units()
+            .into_iter()
+            .filter(|(k, s, _)| {
+                !pens.iter().any(|p| p.tier == *k && p.arbitrator == *s)
+                    && !self.tiers[k].forfeited.contains(s)
+            })
+            .map(|(k, s, b)| {
+                let (tx, d) = b.release_tx(&self.oracle);
+                (k, s, b, tx, d)
+            })
+            .collect()
+    }
+
     pub fn final_ruling(&self) -> Option<(u32, Ballot)> {
         self.tiers
             .iter()

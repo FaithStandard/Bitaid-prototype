@@ -44,6 +44,14 @@ pub struct Template {
     /// seconds a seated arbitrator has to commit its vote before its seat is forfeit (§10.4: 1,008
     /// blocks in production)
     pub commit_deadline: u32,
+    /// blocks after the final tier's commitment whose hash seeds the review draw (§10.3; in
+    /// production the first block after the escalation window closes)
+    #[serde(default)]
+    pub review_delay: u32,
+    /// review rate in percent for this case's draw, in place of the protocol's rates by value
+    /// (§10.3). A test setting: production cases carry none
+    #[serde(default)]
+    pub review_pct: Option<u8>,
 }
 
 impl Template {

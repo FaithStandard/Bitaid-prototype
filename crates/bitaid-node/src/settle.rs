@@ -153,6 +153,8 @@ mod tests {
             refund_delay: 100,
             refund_xpub: String::new(),
             commit_deadline: 20,
+            review_delay: 2,
+            review_pct: None,
         }
     }
     fn ballot(classes: &[Class], ok: bool) -> Ballot {

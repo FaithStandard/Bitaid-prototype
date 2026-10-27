@@ -1,0 +1,10 @@
+      1 [PASS] arb1 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb1 the pool refuses to release a 2000000-sat unit of a case drawn for review — only 0 members committed
+      1 [PASS] arb10 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb3 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb4 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb5 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb6 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb7 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb8 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb9 case b739b864: review draw at block 135 (100% for a unanimous final panel): drawn for review; units held
