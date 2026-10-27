@@ -1,0 +1,67 @@
+Staged review, local regtest, 2026-10-27
+
+1) CAPTURE=1 NOAPPEAL=1 REVIEW_PCT=100 ARBS=20: captured tier 1 stands, drawn, confirmed
+[caller] 11 passed, 0 failed
+[r1-liar] 17 passed, 0 failed
+[r3] 8 passed, 0 failed
+[PASS] archivist case 5c97207e: drawn for review at block 133 (100% for a split final panel); convening the staged review
+[PASS] archivist tier 101: 5 of 17 offering arbitrators drawn from block 136, case disclosed only to them — 25.0 s after escalating
+[PASS] archivist tier 101: 5 of 5 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 041e1e4d063bf841809e0a9ab9187839dcf979660717eb82111419ea50806a84
+[PASS] archivist review stage 1: 5 of 5 findings revealed; 80% found I,D — 29.3 s from convening
+[PASS] archivist tier 102: 5 of 12 offering arbitrators drawn from block 139, case disclosed only to them — 25.0 s after escalating
+[PASS] archivist tier 102: 5 of 5 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 019ceacb9a4d6a94db4a56bcc4ffefb1a636f75c8381e1256aaca3964a5228d3
+[PASS] archivist review stage 2: 5 of 5 findings revealed; 80% found I,D — 29.3 s from convening
+[PASS] archivist tier 103: 5 of 7 offering arbitrators drawn from block 141, case disclosed only to them — 25.0 s after escalating
+[PASS] archivist tier 103: 5 of 5 verdicts revealed; roster and answers committed on chain (OP_RETURN) — c11601984882700eb3dabad35bc5947a5dab2cf62b93f851b374e80605218cea
+[PASS] archivist review stage 3: 5 of 5 findings revealed; 80% found I,D — 29.3 s from convening
+[PASS] archivist case 5c97207e: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist case 5c97207e: 2 arbitrator(s) voted for the overturned verdict, each unit held since the draw
+[PASS] archivist tier 1 arbitrator d4b43d6d: its whole unit (2000000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 90f915aa05fb0efe (pool members [3, 1, 2])
+[PASS] archivist tier 1 arbitrator fd179bcc: its whole unit (2000000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 6971725431493a1f (pool members [1, 4, 3])
+[PASS] archivist review seizure distributed (§12) by the pool and the archivist: 3040000 sats to a responder, 60000 sats to a vindicated dissenter, 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium) — 1e400012d3480fd6
+      1 [PASS] arb1 case 5c97207e: review draw at block 133 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb1 case 5c97207e: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
+      1 [PASS] arb1 the pool refuses to release a 2000000-sat unit of a case drawn for review — only 0 members committed
+      1 [PASS] arb4 case 5c97207e: review draw at block 133 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb4 case 5c97207e: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+      1 [PASS] arb8 case 5c97207e: review draw at block 133 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb8 case 5c97207e: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+
+2) CAPTURE=1 REVIEW_PCT=100 ARBS=20: appeal corrects tier 1, drawn, cleared at stage 1
+[caller] 11 passed, 0 failed
+[r1-liar] 14 passed, 0 failed
+[r3] 20 passed, 0 failed
+[PASS] archivist case b51f0a2b: drawn for review at block 140 (100% for a unanimous final panel); convening the staged review
+[PASS] archivist tier 101: 5 of 10 offering arbitrators drawn from block 148, case disclosed only to them — 25.0 s after escalating
+[PASS] archivist tier 101: 5 of 5 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 16d1343b70776727dc836bc7766020ed8ed5d1c3e2894cff85d94f094f1c9272
+[PASS] archivist review stage 1: 5 of 5 findings revealed; 80% found I,D — 29.3 s from convening
+[PASS] archivist case b51f0a2b: the staged review cleared the verdict at stage 1
+      1 [PASS] arb1 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb1 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb1 the pool refuses to release a 2000000-sat unit of a case drawn for review — no session completed
+      1 [PASS] arb1 tier 1 unit of 2000000 sats released under the bond's script by the pool's co-signature — a514604a1d65e83c (pool members [1, 3, 2])
+      1 [PASS] arb10 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb10 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb10 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — a9b03589a4967fb9 (pool members [1, 3, 4])
+      1 [PASS] arb11 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb11 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb11 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 9d47e27f64c99752 (pool members [1, 3, 4])
+      1 [PASS] arb16 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb16 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb16 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 70ce9e1b028956bc (pool members [1, 3, 4])
+      1 [PASS] arb18 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb18 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb18 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 23416c37048df77b (pool members [1, 3, 4])
+      1 [PASS] arb20 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb20 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb20 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — aed42c42418a2c0a (pool members [1, 3, 4])
+      1 [PASS] arb3 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb3 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb3 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — b1dd99a092a9dcd6 (pool members [1, 3, 4])
+      1 [PASS] arb4 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb4 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb8 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb8 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb9 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
+      1 [PASS] arb9 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb9 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 991e4da46f1ab1c4 (pool members [1, 3, 4])

@@ -45,12 +45,15 @@ start)
   export BITAID_RPC=http://bitaid:regtest@127.0.0.1:18443 BITAID_SELF_ONION=$ONION
   X="--exit-after 3600"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
+  # REVIEW=1: the staged review (§10.3) — a captured tier 1 that no one appeals or challenges, drawn for
+  # review (the phone's caller sets REVIEW_PCT=100), three independent panels of 5 from 20 arbitrators
+  if [ "$REVIEW" = 1 ]; then CHALLENGE=0; STALL=0; CAPTURE=1; ARBS=${ARBS:-20}; fi
   BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
   sleep 1
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait 3600 $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait 3600 $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
-  BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pc --listen 127.0.0.1:7480 --public-url http://$ONION:7480 $P $X >/dev/null 2>"$L/archivist.log" </dev/null &
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pc --listen 127.0.0.1:7480 --public-url http://$ONION:7480 $P $X >"$L/archivist.out" 2>"$L/archivist.log" </dev/null &
+  for i in $(seq 1 ${ARBS:-10}); do
     extra=""; for c in ${CORRUPT:-4 8}; do [ $i = $c ] && extra="--corrupt"; done
     # CAPTURE=1 (default; CAPTURE=0 for a random draw): a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
     # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
@@ -66,7 +69,7 @@ start)
     BITAID_WALLET=w nohup target/release/bitaid-node --role arbitrator --name arb$i-pc $P $extra --offer-window 40 $X >"$L/arb$i.out" 2>"$L/arb$i.log" </dev/null &
   done
   sleep 2
-  R3APPEAL="--appeal --greedy"; [ "${CHALLENGE:-1}" = 1 ] && R3APPEAL=""
+  R3APPEAL="--appeal --greedy"; [ "${CHALLENGE:-1}" = 1 ] && R3APPEAL=""; [ "$REVIEW" = 1 ] && R3APPEAL=""
   BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D $R3APPEAL --offer-window 40 --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
   BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
@@ -74,7 +77,7 @@ start)
   echo "PC_READY  onion: $ONION"
   ;;
 report)
-  cat "$L"/r*.out "$L"/arb1.out; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
+  cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
   ;;
 stop)
   pkill -x bitaid-node; $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped

@@ -590,8 +590,23 @@ pub fn cosign(
     digest: &[u8; 32],
     first: u32,
 ) -> Result<([u8; 64], u32, Vec<u16>), String> {
+    cosign_tries(n, view, case, tx_hex, input, digest, first, 4)
+}
+
+/// `cosign` with at most `tries` sessions (one, to test a refusal at a given moment).
+#[allow(clippy::too_many_arguments)]
+pub fn cosign_tries(
+    n: &mut Node,
+    view: &PoolView,
+    case: &str,
+    tx_hex: &str,
+    input: u32,
+    digest: &[u8; 32],
+    first: u32,
+    tries: u32,
+) -> Result<([u8; 64], u32, Vec<u16>), String> {
     let mut excluded: BTreeSet<u16> = BTreeSet::new();
-    for session in first..first + 4 {
+    for session in first..first + tries {
         n.send_case(
             case,
             &view.identities(),

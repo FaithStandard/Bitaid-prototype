@@ -634,6 +634,12 @@ impl Replay {
             }
             let mut t = read_tier(&mine, &case, k, conv, false, rp.base_fee, rpc);
             t.review = true;
+            // each panel independent: drawn only from arbitrators who sat on neither the case nor an
+            // earlier stage of its review
+            let excluded = rp.review_excluded();
+            if t.listed.iter().any(|x| excluded.contains(x)) {
+                break;
+            }
             rp.reviews.insert(k, t);
         }
         rp.review = rp.review_state(a, rpc);
@@ -1047,6 +1053,16 @@ impl Replay {
             .map(|p| txbuild::txout(p.amount, spk.clone()))
             .collect();
         (tx, prev)
+    }
+
+    /// Who may not sit on the next review stage: every seat of the case's tiers (replaced ones too)
+    /// and of its earlier review stages.
+    pub fn review_excluded(&self) -> std::collections::HashSet<String> {
+        self.tiers
+            .values()
+            .chain(self.reviews.values())
+            .flat_map(|t| t.seats.iter().chain(t.forfeited.iter()).cloned())
+            .collect()
     }
 
     /// Who voted, on any arbitration tier, for the verdict a confirmed review overturned (§12).

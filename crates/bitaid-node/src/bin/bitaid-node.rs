@@ -451,7 +451,7 @@ fn pool_member(mut n: Node) -> i32 {
                                 match rel.iter().find(|x| x.3.compute_txid() == id && *input == 0) {
                                     Some((k, w, b, _, d)) => {
                                         n.log(&format!(
-                                        "co-signing the release of {}'s tier-{k} unit ({} sats) for {}: the review draw passed the case over",
+                                        "co-signing the release of {}'s tier-{k} unit ({} sats) for {}: the case is closed and its review let it go",
                                         &w[..8],
                                         b.value,
                                         &case_id[..8]
@@ -1650,6 +1650,23 @@ fn escalate_tier(
             )),
         }
     }
+    if review {
+        // independent panels: no one who sat on the case or an earlier stage (§10.3)
+        let rk = n
+            .history
+            .iter()
+            .rev()
+            .find_map(|e| match &e.msg {
+                Msg::Roster { case_id, .. } if *case_id == c && e.sender == a.caller => {
+                    case::Rostered::from_msg(&e.msg)
+                }
+                _ => None,
+            })
+            .and_then(|r| arb::Replay::build_core(&n.history, a, &r, &n.rpc))
+            .map(|rp| rp.review_excluded())
+            .unwrap_or_default();
+        offers.retain(|o| !rk.contains(&o.0));
+    }
     if offers.len() < size {
         n.check(
             &format!("tier {tier}: at least {size} eligible arbitrators offered seats"),
@@ -2399,7 +2416,7 @@ fn release_units(
                 .next()
             {
                 let me_n = u16::from_str_radix(&me[..4], 16).unwrap_or(0) as u32;
-                let res = pool::cosign(
+                let res = pool::cosign_tries(
                     n,
                     view,
                     &c,
@@ -2407,6 +2424,7 @@ fn release_units(
                     0,
                     &d,
                     100_000 + me_n * 256 + 200,
+                    1,
                 );
                 n.check(
                     &format!(
@@ -2915,7 +2933,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     // and no unit is committed (reviewers rule on a closed case, §10.3)
                     if seated
                         .iter()
-                        .any(|((c, t), v)| *c == case_id && !arb::is_review(*t) && v.contains(&me))
+                        .any(|((c, _), v)| *c == case_id && v.contains(&me))
                     {
                         continue;
                     }
