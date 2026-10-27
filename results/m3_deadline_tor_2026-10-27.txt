@@ -1,0 +1,13 @@
+Bitaid M3 — a missed commit deadline over the Internet, on Tor — 2026-10-27
+Same three connections. net_pc.sh defaults CAPTURE=1 CHALLENGE=1 STALL=1: as m3_dissent_tor, plus arb9 and arb10,
+which serve tier 2 and take their seats and fees but never vote. Commit deadline 60 s (a week in production).
+Phone 13/13, tablet 15/15, PC r3 9/9, r4 2/2, arb1 18/18 — 57 of 57 checks.
+Case dede5991: tier 1 captured 2-1; no party appeals; arb1 buys the re-roll to tier 2 (9 offers, 7 seats).
+A staller was seated: no commitment by the deadline; the pool, by its own record (paid, no commitment, deadline
+passed), co-signed its pre-signed seat forfeiture, refunding the 25,000-sat fee to arb1; a replacement was drawn
+from the 2 offers left by a block mined after — the other staller, which also missed the deadline and was forfeited
+in turn; the last replacement, drawn from the 1 offer left, voted. Tier 2 ruled 5-2 for the footage (222.9 s from
+escalation, two 75 s waits included). Penalties as before: 225,000 sats from the corrupt pair's stakes to arb1.
+A first attempt the same day failed 5 checks: phone and tablet pool members rebuilt the case over Tor for each request
+(three fee transactions and two replacement draws to check) and answered after the co-signing window; confirmed
+transactions and block hashes are now memoised by the RPC client (dry run with 1.5 s per RPC call: 57/57).

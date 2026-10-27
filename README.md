@@ -166,7 +166,7 @@ Runs:
   archivist distribute the seizure output: half to the vindicated dissenter, half refunding the appellant's re-roll fees;
   both refuse what the log does not call for. 51/51 (`results/m3_penalties_tor_2026-10-26.txt`).
 * **The dissenter's re-roll** (local: `CAPTURE=1 CHALLENGE=1` and `CHALLENGE=bad sh scripts/m3_arb_local.sh`; devices: the defaults of `net_pc.sh`): no party appeals the captured tier 1; arb1, the honest dissenter, buys the re-roll and opens tier 2, which agrees with it; the wrong majority's stakes pay arb1 its vindication and its fees back. In the `bad` run a corrupt dissenter re-rolls an honest verdict and loses its fees and its stake's penalty. Over Tor on the three devices: 53/53 (`results/m3_dissent_tor_2026-10-27.txt`).
-* **Missed commit deadline** (`STALL=1`, default in `net_pc.sh`; local `CAPTURE=1 CHALLENGE=1 STALL=1 sh scripts/m3_arb_local.sh`): arb9 and arb10 serve tier 2 but never vote; each one seated misses the deadline, its seat forfeiture refunds the fee to the payer and a replacement is drawn from the offers left.
+* **Missed commit deadline** (`STALL=1`, default in `net_pc.sh`; local `CAPTURE=1 CHALLENGE=1 STALL=1 sh scripts/m3_arb_local.sh`): arb9 and arb10 serve tier 2 but never vote; each one seated misses the deadline, its seat forfeiture refunds the fee to the payer and a replacement is drawn from the offers left. Over Tor: 57/57 (`results/m3_deadline_tor_2026-10-27.txt`).
 
 ## Licence
 
