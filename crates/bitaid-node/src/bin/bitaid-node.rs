@@ -1459,7 +1459,7 @@ fn collect_reveals(n: &mut Node, a: &Alerted, r: &Rostered) -> Vec<Ballot> {
 /// Evidence as announced: recorder, blobs (hash, size), archivists.
 type EvidenceItem = (String, Vec<(String, u64)>, Vec<String>);
 
-const ARB_BOND_FLOOR: u64 = 10_000_000; // 0.1 BTC (§10.2)
+const ARB_BOND_FLOOR: u64 = 10_000_000; // the entry bond, 0.1 BTC provisional (§2.2, §10.2)
 
 /// Waits for the pre-signed forfeitures of `who` and keeps those that verify: per seat, its stake and its
 /// seat forfeiture's pre-signature.
@@ -1475,6 +1475,7 @@ fn wait_forfeits(
     seizure: Option<&bitcoin::ScriptBuf>,
     refund: &bitcoin::ScriptBuf,
     height: u32,
+    case_value: u64,
 ) -> HashMap<String, (arb::Bond, String)> {
     let mut out = HashMap::new();
     // each seat's momentum when seated decides how many steps it must have pre-signed (§10.4)
@@ -1505,7 +1506,9 @@ fn wait_forfeits(
         };
         let max = arb::max_step(arb::momentum(&logs, &w, height));
         if let Some(st) =
-            arb::verify_forfeits(&b, &stake, value, &sigs, oxo, fee, spk, refund, max, &n.rpc)
+            arb::verify_forfeits(
+                &b, &stake, value, &sigs, oxo, fee, spk, refund, max, case_value, &n.rpc,
+            )
         {
             out.insert(w, (st, sigs.last().cloned().unwrap_or_default()));
         }
@@ -1557,19 +1560,20 @@ fn escalate_tier(
         if offers.iter().any(|o| o.0 == who) {
             continue;
         }
-        // stake above exposure: a bond of at least twice what the verdict can move (§10.2)
+        // an entry bond at the floor; what the case risks is the seat's case unit, checked with its
+        // forfeitures (§10.2)
         let ok = (|| {
             let b = arb::Bond::from_offer(&offer)?;
             let u = n.rpc.utxo(&b.op)?;
             (u.script_pubkey == b.tree(&oxo).script_pubkey()
                 && u.value.to_sat() == b.value
-                && b.value >= ARB_BOND_FLOOR.max(2 * value))
+                && b.value >= ARB_BOND_FLOOR)
             .then_some(b)
         })();
         match ok {
             Some(b) => offers.push((who, b.payout.clone(), b)),
             _ => n.log(&format!(
-                "seat offer from {} refused: bond missing or below twice the case value",
+                "seat offer from {} refused: entry bond missing or below the floor",
                 &who[..8]
             )),
         }
@@ -1647,9 +1651,10 @@ fn escalate_tier(
         seizure.as_ref(),
         &refund_spk,
         h,
+        value,
     );
     n.check(
-        &format!("tier {tier}: every seat set aside a stake of 4× the {fee}-sat fee under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture"),
+        &format!("tier {tier}: every seat committed a case unit of at least twice the case value ({} sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture", 2 * value),
         got.len() == seats.len(),
         &format!("{} of {}", got.len(), seats.len()),
     );
@@ -1800,6 +1805,7 @@ fn escalate_tier(
                 seizure.as_ref(),
                 &refund_spk,
                 h,
+                value,
             );
             stakes.extend(got);
             let spk = offers.iter().find(|o| o.0 == new).unwrap().1.clone();
@@ -2098,7 +2104,8 @@ struct SeatKeys {
     okey: String,
 }
 
-/// On taking a seat: set aside the seat's stake (4× its fee) under the bond's script and pre-sign its
+/// On taking a seat: commit the seat's case unit (twice the case value, or its largest penalty if more)
+/// under the bond's script and pre-sign its
 /// forfeitures — one per penalty step into the case's seizure output (§10.4, §12) and the seat
 /// forfeiture refunding the fee if this seat misses its commit deadline.
 #[allow(clippy::too_many_arguments)]
@@ -2111,9 +2118,9 @@ fn take_seat(
     tier: u32,
     refund: &bitcoin::ScriptBuf,
     height: u32,
-) {
+) -> Option<u64> {
     let (Some(a), Some(r)) = (a, r) else {
-        return;
+        return None;
     };
     let oxo = wire::xonly(&k.okey).unwrap();
     let me_bond = arb::Bond {
@@ -2126,7 +2133,7 @@ fn take_seat(
     };
     let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo) else {
         n.log("case names no archivists; no seizure output to forfeit to");
-        return;
+        return None;
     };
     let fee = arb::seat_fee(a.template.arb_fee, tier);
     // the seat's stake: its own output, so forfeitures pre-signed for seats held at once never spend
@@ -2134,16 +2141,17 @@ fn take_seat(
     // its momentum when seated (§10.4) sets the largest step it could owe, and so its stake
     let d = arb::momentum(&arb::ledger(&n.history, &n.rpc, &k.okey), &n.me(), height);
     let max = arb::max_step(d);
-    let value = max * fee / 10;
+    let case_value: u64 = a.template.pots.iter().sum();
+    let value = arb::unit_value(case_value, max, fee);
     n.log(&format!(
-        "momentum {d:.2} on taking the seat: penalties up to {:.1}× the fee, stake {value} sats",
+        "momentum {d:.2} on taking the seat: penalties up to {:.1}× the fee, case unit {value} sats",
         max as f64 / 10.0
     ));
     let sop = match n.rpc.fund(&me_bond.tree(&oxo).script_pubkey(), value) {
         Ok(op) => op,
         Err(e) => {
-            n.log(&format!("seat stake not posted: {e}"));
-            return;
+            n.log(&format!("case unit not posted: {e}"));
+            return None;
         }
     };
     n.rpc.mine(1).ok();
@@ -2167,6 +2175,7 @@ fn take_seat(
             false,
         );
     }
+    Some(value)
 }
 
 /// An arbitrator: posts a bond, offers seats blind, and when seated reviews the evidence and votes.
@@ -2217,6 +2226,12 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut mine: HashMap<(String, u32), (Ballot, [u8; 32])> = HashMap::new();
     let mut revealed: std::collections::HashSet<(String, u32)> = Default::default();
     let mut refunds: HashMap<(String, u32), bitcoin::ScriptBuf> = HashMap::new();
+    // case units committed per seat, out of --capital (§10.2); released once the case is final
+    // (the review draw that should hold them a little longer is not built yet)
+    let capital = num("--capital", 1_000_000_000u64);
+    let mut units: HashMap<(String, u32), u64> = HashMap::new();
+    let mut final_by: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    let pool_ids: std::collections::HashSet<String> = view.ids.values().cloned().collect();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
     let mut challenge_at: HashMap<(String, u32), Instant> = HashMap::new();
     let idle = num("--exit-after", 3600u64);
@@ -2338,8 +2353,14 @@ fn arbitrator(mut n: Node) -> i32 {
                     }
                 }
                 let value: u64 = a.template.pots.iter().sum();
-                if bond_value < 2 * value {
-                    n.log("not eligible: bond below twice the case value");
+                // a seat needs a case unit of twice the case value from free capital (§10.2)
+                let held: u64 = units.values().sum();
+                if held + 2 * value > capital {
+                    n.log(&format!(
+                        "not eligible: a unit of {} sats exceeds free capital ({} of {capital} sats committed)",
+                        2 * value,
+                        held
+                    ));
                     continue;
                 }
                 // blind: the offer is made knowing the fee, tier and value, not the parties or evidence
@@ -2395,7 +2416,7 @@ fn arbitrator(mut n: Node) -> i32 {
                             payout: payout.clone(),
                             okey: okey.clone(),
                         };
-                        take_seat(
+                        let u = take_seat(
                             &mut n,
                             &seat,
                             alerts.get(&case_id),
@@ -2405,6 +2426,9 @@ fn arbitrator(mut n: Node) -> i32 {
                             &refund,
                             height,
                         );
+                        if let Some(u) = u {
+                            units.insert((case_id.clone(), tier), u);
+                        }
                     }
                 }
                 seated.insert((case_id, tier), seats);
@@ -2448,7 +2472,7 @@ fn arbitrator(mut n: Node) -> i32 {
                             payout: payout.clone(),
                             okey: okey.clone(),
                         };
-                        take_seat(
+                        if let Some(u) = take_seat(
                             &mut n,
                             &sk,
                             alerts.get(&case_id),
@@ -2457,7 +2481,9 @@ fn arbitrator(mut n: Node) -> i32 {
                             tier,
                             &refund,
                             height,
-                        );
+                        ) {
+                            units.insert((case_id.clone(), tier), u);
+                        }
                     }
                 }
             }
@@ -2710,6 +2736,23 @@ fn arbitrator(mut n: Node) -> i32 {
                             ));
                         }
                         Err(e) => n.log(&format!("tier commitment failed: {e}")),
+                    }
+                }
+            }
+            // the pool attested the final outcome: the case's units return to free capital
+            Msg::AttestShare { case_id, .. } if pool_ids.contains(&s) => {
+                let who = final_by.entry(case_id.clone()).or_default();
+                who.insert(s.clone());
+                if who.len() == view.t {
+                    let freed: Vec<(String, u32)> =
+                        units.keys().filter(|k| k.0 == case_id).cloned().collect();
+                    let v: u64 = freed.iter().filter_map(|k| units.remove(k)).sum();
+                    if v > 0 {
+                        n.log(&format!(
+                            "case {} final: {} unit(s), {v} sats, back to free capital",
+                            &case_id[..8],
+                            freed.len()
+                        ));
                     }
                 }
             }

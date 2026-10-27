@@ -152,6 +152,7 @@ mod tests {
             arb_fee: 20_000,
             refund_delay: 100,
             refund_xpub: String::new(),
+            commit_deadline: 20,
         }
     }
     fn ballot(classes: &[Class], ok: bool) -> Ballot {

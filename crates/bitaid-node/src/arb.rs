@@ -144,6 +144,12 @@ pub fn multiplier(d: f64) -> f64 {
 }
 
 /// The largest step a seat taken at momentum `d` could owe: the 4× isolation penalty times 2^D.
+/// A seat's case unit (§10.2): at least twice what the verdict can move and at least the largest
+/// penalty the seat could owe; no floor of its own.
+pub fn unit_value(case_value: u64, max: u64, fee: u64) -> u64 {
+    (2 * case_value).max(max * fee / 10)
+}
+
 pub fn max_step(d: f64) -> u64 {
     step_of(4.0 * multiplier(d))
 }
@@ -325,8 +331,8 @@ pub struct Tier {
     pub listed: Vec<String>,
 }
 
-/// Checks a seat's pre-signed forfeitures: the stake is an output of at least the largest step under the
-/// seat-holder's bond script, and each signature is its scoped key's over that step's forfeiture, the
+/// Checks a seat's pre-signed forfeitures: the stake is the seat's case unit, an output of at least
+/// `unit_value` under the seat-holder's bond script, and each signature is its scoped key's over that step's forfeiture, the
 /// last over its seat forfeiture (the fee back to the payer's refund script).
 #[allow(clippy::too_many_arguments)]
 pub fn verify_forfeits(
@@ -339,11 +345,12 @@ pub fn verify_forfeits(
     seizure: &ScriptBuf,
     refund: &ScriptBuf,
     max: u64,
+    case_value: u64,
     rpc: &Rpc,
 ) -> Option<Bond> {
     let st = bond.stake(OutPoint::from_str(stake).ok()?, value);
     let ds = st.forfeit_digests(oracle, fee, seizure, refund, max);
-    (value >= max * fee / 10
+    (value >= unit_value(case_value, max, fee)
         && sigs.len() == ds.len()
         && ds
             .iter()
@@ -399,6 +406,7 @@ impl Replay {
         let logs = ledger(hist, rpc, &a.oracle_key);
         let seizure = rp.seizure_spk();
         let (oracle, base_fee) = (rp.oracle, rp.base_fee);
+        let case_value: u64 = a.template.pots.iter().sum();
         for (k, t) in rp.tiers.iter_mut() {
             let fee = seat_fee(base_fee, *k);
             let heights: Vec<(String, u32)> =
@@ -416,7 +424,7 @@ impl Replay {
                 }
                 let max = max_step(t.momentum.get(&s).copied().unwrap_or(0.0));
                 if let Some(st) = verify_forfeits(
-                    b, &stake, value, &sigs, &oracle, fee, spk, &refund, max, rpc,
+                    b, &stake, value, &sigs, &oracle, fee, spk, &refund, max, case_value, rpc,
                 ) {
                     t.forfeits.insert(s, (st, sigs));
                 }
@@ -1130,6 +1138,9 @@ mod tests {
         assert_eq!(step_of(4.0 * multiplier(1.0)), 80);
         assert_eq!(step_of(2.5 * multiplier(1.5)), 70);
         assert_eq!(max_step(9.0), 1280);
+        // a case unit: twice the case value, or the largest penalty if that is more (§10.2)
+        assert_eq!(unit_value(900_000, 40, 20_000), 1_800_000);
+        assert_eq!(unit_value(1_000, 1280, 20_000), 2_560_000);
         assert_eq!(steps_upto(40).len(), 5);
     }
 
