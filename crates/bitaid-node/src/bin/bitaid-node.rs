@@ -2731,8 +2731,14 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
                 .any(|t| t.offers.values().any(|b| b.payout == o.script_pubkey))
             {
                 "to a vindicated dissenter"
+            } else if r.archivists.iter().any(|x| {
+                wire::xonly(x)
+                    .map(|k| bitcoin::ScriptBuf::new_p2tr(&Secp256k1::verification_only(), k, None))
+                    == Some(o.script_pubkey.clone())
+            }) {
+                "to the archivist (retention of the case's evidence)"
             } else {
-                "to the caller or the archivists"
+                "to the caller"
             };
             format!("{} sats {who}", o.value.to_sat())
         })

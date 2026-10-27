@@ -1,29 +1,7 @@
-      1 [PASS] arb1 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb1 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
+      1 [PASS] arb1 case 27e5ec34: review draw at block 127 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb1 case 27e5ec34: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
       1 [PASS] arb1 the pool refuses to release a 2000000-sat unit of a case drawn for review — no session completed
-      1 [PASS] arb1 tier 1 unit of 2000000 sats released under the bond's script by the pool's co-signature — a514604a1d65e83c (pool members [1, 3, 2])
-      1 [PASS] arb10 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb10 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb10 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — a9b03589a4967fb9 (pool members [1, 3, 4])
-      1 [PASS] arb11 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb11 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb11 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 9d47e27f64c99752 (pool members [1, 3, 4])
-      1 [PASS] arb16 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb16 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb16 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 70ce9e1b028956bc (pool members [1, 3, 4])
-      1 [PASS] arb18 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb18 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb18 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 23416c37048df77b (pool members [1, 3, 4])
-      1 [PASS] arb20 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb20 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb20 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — aed42c42418a2c0a (pool members [1, 3, 4])
-      1 [PASS] arb3 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb3 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb3 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — b1dd99a092a9dcd6 (pool members [1, 3, 4])
-      1 [PASS] arb4 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb4 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb8 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb8 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb9 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
-      1 [PASS] arb9 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
-      1 [PASS] arb9 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 991e4da46f1ab1c4 (pool members [1, 3, 4])
+      1 [PASS] arb4 case 27e5ec34: review draw at block 127 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb4 case 27e5ec34: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+      1 [PASS] arb8 case 27e5ec34: review draw at block 127 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb8 case 27e5ec34: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure

@@ -20,6 +20,10 @@ pub const REVIEW_BASE: u32 = 100;
 /// Panels of the staged review: 30 in production, 5 at prototype scale.
 pub const REVIEW_PANEL: usize = 5;
 pub const REVIEW_STAGES: u32 = 3;
+/// What a seizure prepays for keeping its case's evidence (§12 item 5): up to 20 years beyond the
+/// standard five at the case's cold-storage rate. One fixed figure at prototype scale, standing in for
+/// the rate the base-slot holders quote.
+pub const RETENTION_SATS: u64 = 200_000;
 
 pub fn is_review(tier: u32) -> bool {
     tier > REVIEW_BASE
@@ -1144,7 +1148,7 @@ impl Replay {
     /// the difference between what the overturned verdict paid it and what the confirmed one would
     /// have — then the dissenters who voted for the confirmed verdict, their earlier penalty refunded
     /// with the fee it cost them; then the review premium, 3× the base fee to each reviewer whose
-    /// finding was confirmed; the excess to the harmed parties.
+    /// finding was confirmed; retention of the case's evidence; the excess to the harmed parties.
     pub fn review_distribution(
         &self,
         a: &Alerted,
@@ -1203,6 +1207,25 @@ impl Replay {
                 let x = (3 * self.base_fee).min(left);
                 outs.push((x, b.payout.clone()));
                 left -= x;
+            }
+        }
+        // retention of the case's evidence (§12 item 5): a case overturned on review is precedent and
+        // review material, and its seizure pays for keeping it, to the base-slot archivists
+        let keep = RETENTION_SATS.min(left);
+        if keep > 0 {
+            let secp = Secp256k1::verification_only();
+            let ks: Vec<ScriptBuf> = self
+                .archivists
+                .iter()
+                .filter_map(|x| wire::xonly(x))
+                .map(|k| ScriptBuf::new_p2tr(&secp, k, None))
+                .collect();
+            if !ks.is_empty() {
+                let each = keep / ks.len() as u64;
+                for k in ks {
+                    outs.push((each, k));
+                    left -= each;
+                }
             }
         }
         if left > 0 {
