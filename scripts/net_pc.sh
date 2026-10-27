@@ -46,8 +46,8 @@ start)
   X="--exit-after 3600"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
   # REVIEW=1: the staged review (§10.3) — a captured tier 1 that no one appeals or challenges, drawn for
-  # review (the phone's caller sets REVIEW_PCT=100), three independent panels of 5 from 20 arbitrators
-  if [ "$REVIEW" = 1 ]; then CHALLENGE=0; STALL=0; CAPTURE=1; ARBS=${ARBS:-20}; fi
+  # review (the phone's caller sets REVIEW_PCT=100), three independent panels of 5 drawn from 26 arbitrators
+  if [ "$REVIEW" = 1 ]; then CHALLENGE=0; STALL=0; CAPTURE=1; ARBS=${ARBS:-26}; fi
   BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
   sleep 1
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait 3600 $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
@@ -66,6 +66,11 @@ start)
     # forfeiture refunds the fee and a replacement is drawn (§10.4); arb10 otherwise sits idle
     [ $i = 10 ] && extra="--tiers 2"
     [ "${STALL:-1}" = 1 ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-vote"
+    # review duty (§10.3): replacement seats taken only at 25,000 sats or more; arb21-24 pay their way out
+    # of any review seat they are drawn for, arb25-26 stay silent
+    extra="$extra --review-price 25000"
+    { [ $i -ge 21 ] && [ $i -le 24 ]; } && extra="$extra --review-leave"
+    { [ $i = 25 ] || [ $i = 26 ]; } && extra="$extra --review-silent"
     BITAID_WALLET=w nohup target/release/bitaid-node --role arbitrator --name arb$i-pc $P $extra --offer-window 40 $X >"$L/arb$i.out" 2>"$L/arb$i.log" </dev/null &
   done
   sleep 2

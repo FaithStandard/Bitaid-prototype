@@ -35,6 +35,11 @@ for i in $(seq 1 ${ARBS:-10}); do
   # forfeiture refunds the fee and a replacement is drawn (§10.4); arb10 otherwise sits idle
   [ $i = 10 ] && extra="--tiers 2"
   [ $i = 1 ] && extra="$extra --greedy-release"
+  # review duty (§10.3): every arbitrator takes a replacement seat only at 25,000 sats or more; with
+  # ARBS=26, arb21-24 pay their way out of any review seat they are drawn for and arb25-26 stay silent
+  extra="$extra --review-price 25000"
+  { [ $i -ge 21 ] && [ $i -le 24 ]; } && extra="$extra --review-leave"
+  { [ $i = 25 ] || [ $i = 26 ]; } && extra="$extra --review-silent"
   [ -n "$STALL" ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-vote"
   BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 600 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done

@@ -1899,6 +1899,7 @@ fn escalate_tier(
                             c.as_bytes(),
                             &key,
                         )),
+                        from: vec![],
                     },
                     false,
                 );
@@ -1989,6 +1990,7 @@ fn escalate_tier(
                         c.as_bytes(),
                         &key,
                     )),
+                    from: vec![],
                 },
                 false,
             );
@@ -2591,7 +2593,7 @@ fn convene_review(n: &mut Node, view: &PoolView, a: &Alerted, r: &Rostered) -> b
                     "",
                 );
             }
-            escalate_tier(n, a, view, k, &format!("staged review, stage {st}"));
+            review_stage(n, a, r, view, k);
             false
         }
         arb::ReviewState::Cleared(st) => {
@@ -2619,6 +2621,374 @@ fn convene_review(n: &mut Node, view: &PoolView, a: &Alerted, r: &Rostered) -> b
             true
         }
     }
+}
+
+/// One stage of the staged review, as its convener runs it (§10.3): the panel drawn by block hash from
+/// the whole pool (everyone registered who sat on neither the case nor an earlier stage); each drawn
+/// reviewer accepts, and gets the case key, or posts a replacement fee, and the seat goes to one drawn
+/// blind from those who offer for it once the leaver has paid; a reviewer silent past the window is
+/// counted as declining and its seat drawn again. Then the findings, by commit-reveal, at 80%.
+fn review_stage(
+    n: &mut Node,
+    a: &Alerted,
+    r: &Rostered,
+    view: &PoolView,
+    k: u32,
+) -> Option<Ballot> {
+    let c = a.case_hex.clone();
+    let st = k - arb::REVIEW_BASE;
+    let size = arb::panel_size(k);
+    let oxo = wire::xonly(&view.key_hex()).unwrap();
+    let t0 = Instant::now();
+    n.send_case(
+        &c,
+        &[],
+        Msg::Escalate {
+            case_id: c.clone(),
+            tier: k,
+            reason: format!("staged review, stage {st}"),
+        },
+        false,
+    );
+    let excluded = arb::Replay::build_core(&n.history, a, r, &n.rpc)?.review_excluded();
+    let reg = arb::registry(&n.history);
+    let mut eligible: Vec<String> = reg
+        .iter()
+        .filter(|(w, b)| {
+            !excluded.contains(*w)
+                && b.value >= ARB_BOND_FLOOR
+                && n.rpc
+                    .utxo(&b.op)
+                    .map(|u| u.script_pubkey == b.tree(&oxo).script_pubkey())
+                    .unwrap_or(false)
+        })
+        .map(|(w, _)| w.clone())
+        .collect();
+    eligible.sort();
+    if eligible.len() < size {
+        n.check(
+            &format!("review stage {st}: at least {size} eligible arbitrators in the pool"),
+            false,
+            &format!("{} eligible", eligible.len()),
+        );
+        return None;
+    }
+    n.rpc.mine(1).ok();
+    let h = n.rpc.height();
+    let bh = n.rpc.block_hash(h).unwrap_or_default();
+    let mut seats = arb::draw(&bh, &c, k, &eligible, size);
+    n.send_case(
+        &c,
+        &seats,
+        Msg::Seated {
+            case_id: c.clone(),
+            tier: k,
+            height: h,
+            block_hash: bh,
+            offers: eligible.clone(),
+            seats: seats.clone(),
+            sealed_keys: vec![],
+            refund_spk: String::new(),
+        },
+        false,
+    );
+    n.check(
+        &format!(
+            "review stage {st}: {size} of the {} eligible arbitrators in the pool drawn from block {h}; each must accept or pay its replacement",
+            eligible.len()
+        ),
+        true,
+        "",
+    );
+    let key = n.case_keys[&c];
+    let seal = |n: &Node, who: &str| {
+        hex::encode(wire::seal(
+            &n.keys,
+            &wire::xonly(who).unwrap(),
+            c.as_bytes(),
+            &key,
+        ))
+    };
+    // per seat: Drawn(since), Leaving(fee), AwaitPay(leaver, fee), Keyed
+    #[derive(Clone)]
+    enum S {
+        Drawn(Instant),
+        Leaving(u64),
+        AwaitPay(String, u64),
+        Keyed,
+    }
+    let mut state: HashMap<String, S> = seats
+        .iter()
+        .map(|x| (x.clone(), S::Drawn(Instant::now())))
+        .collect();
+    let mut gone: Vec<String> = vec![];
+    let mut offers: Vec<String> = vec![];
+    let window = secs(num("--review-window", 30u64));
+    let end = Instant::now() + secs(600);
+    while state.values().any(|x| !matches!(x, S::Keyed)) && Instant::now() < end {
+        let cc = c.clone();
+        let got = n.wait(secs(1), |env, _| match &env.msg {
+            Msg::ReviewAnswer { case_id, tier, .. }
+            | Msg::SeatOffer { case_id, tier, .. }
+            | Msg::FeePaid { case_id, tier, .. }
+                if *case_id == cc && *tier == k =>
+            {
+                Some(env.clone())
+            }
+            _ => None,
+        });
+        if let Some(env) = got {
+            let w = env.sender.clone();
+            match &env.msg {
+                Msg::ReviewAnswer { accept, fee, .. } => match state.get(&w).cloned() {
+                    Some(S::Drawn(_)) | Some(S::Leaving(_)) if *accept => {
+                        let sk = seal(n, &w);
+                        n.send_case(
+                            &c,
+                            std::slice::from_ref(&w),
+                            Msg::ReviewKey {
+                                case_id: c.clone(),
+                                tier: k,
+                                seat: w.clone(),
+                                sealed_key: sk,
+                            },
+                            false,
+                        );
+                        n.send_case(
+                            &c,
+                            std::slice::from_ref(&w),
+                            Msg::FeePaid {
+                                case_id: c.clone(),
+                                tier: k,
+                                txid: String::new(),
+                            },
+                            false,
+                        );
+                        state.insert(w.clone(), S::Keyed);
+                    }
+                    Some(S::Drawn(_)) => {
+                        n.check(&format!("review stage {st}: {} would rather not serve and posted a replacement fee from {fee} sats", &w[..8]), true, "");
+                        state.insert(w.clone(), S::Leaving(*fee));
+                    }
+                    Some(S::Leaving(_)) => {
+                        state.insert(w.clone(), S::Leaving(*fee));
+                    }
+                    _ => {}
+                },
+                Msg::SeatOffer { .. } => {
+                    if eligible.contains(&w)
+                        && !seats.contains(&w)
+                        && !gone.contains(&w)
+                        && !offers.contains(&w)
+                    {
+                        offers.push(w.clone());
+                    }
+                }
+                Msg::FeePaid { txid, .. } => {
+                    // a leaver paid its replacement: the replacement gets the case
+                    let paid = state.iter().find_map(|(x, v)| match v {
+                        S::AwaitPay(l, fee) if *l == w => Some((x.clone(), *fee)),
+                        _ => None,
+                    });
+                    if let Some((new, fee)) = paid {
+                        if n.rpc.paid_to(txid, &reg[&new].payout) >= fee {
+                            let sk = seal(n, &new);
+                            n.send_case(
+                                &c,
+                                std::slice::from_ref(&new),
+                                Msg::ReviewKey {
+                                    case_id: c.clone(),
+                                    tier: k,
+                                    seat: new.clone(),
+                                    sealed_key: sk,
+                                },
+                                false,
+                            );
+                            n.send_case(
+                                &c,
+                                std::slice::from_ref(&new),
+                                Msg::FeePaid {
+                                    case_id: c.clone(),
+                                    tier: k,
+                                    txid: String::new(),
+                                },
+                                false,
+                            );
+                            n.check(&format!("review stage {st}: the leaver paid its replacement {} the {fee} sats on chain; the case disclosed to the replacement", &new[..8]), true, &txid[..16.min(txid.len())]);
+                            state.insert(new, S::Keyed);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // silent past the window: one declined assignment; the seat is drawn again from the pool
+        let silent: Vec<String> = state
+            .iter()
+            .filter(|(_, v)| matches!(v, S::Drawn(t) if t.elapsed() > window))
+            .map(|(x, _)| x.clone())
+            .collect();
+        for m in silent {
+            n.rpc.mine(1).ok();
+            let h = n.rpc.height();
+            let bh = n.rpc.block_hash(h).unwrap_or_default();
+            let left: Vec<String> = eligible
+                .iter()
+                .filter(|o| !seats.contains(o) && !gone.contains(o))
+                .cloned()
+                .collect();
+            let Some(new) = arb::draw(&bh, &c, k, &left, 1).pop() else {
+                n.check(
+                    &format!(
+                        "review stage {st}: someone left to draw in place of a silent reviewer"
+                    ),
+                    false,
+                    "none",
+                );
+                return None;
+            };
+            let pos = seats.iter().position(|x| *x == m).unwrap();
+            seats[pos] = new.clone();
+            gone.push(m.clone());
+            state.remove(&m);
+            state.insert(new.clone(), S::Drawn(Instant::now()));
+            offers.retain(|x| *x != new);
+            n.send_case(
+                &c,
+                std::slice::from_ref(&new),
+                Msg::Reseated {
+                    case_id: c.clone(),
+                    tier: k,
+                    height: h,
+                    block_hash: bh,
+                    replaced: m.clone(),
+                    seat: new.clone(),
+                    sealed_key: String::new(),
+                    from: vec![],
+                },
+                false,
+            );
+            n.check(&format!("review stage {st}: {} silent past the window — one declined assignment toward the inactivity rule, no momentum; {} drawn in its place", &m[..8], &new[..8]), true, "");
+        }
+        // a leaver with offers for its seat: one replacement drawn blind from them
+        let leavers: Vec<(String, u64)> = state
+            .iter()
+            .filter_map(|(x, v)| match v {
+                S::Leaving(f) => Some((x.clone(), *f)),
+                _ => None,
+            })
+            .collect();
+        for (m, fee) in leavers {
+            if offers.is_empty() {
+                break;
+            }
+            n.rpc.mine(1).ok();
+            let h = n.rpc.height();
+            let bh = n.rpc.block_hash(h).unwrap_or_default();
+            let from = offers.clone();
+            let new = arb::draw(&bh, &c, k, &from, 1).pop().unwrap();
+            let pos = seats.iter().position(|x| *x == m).unwrap();
+            seats[pos] = new.clone();
+            gone.push(m.clone());
+            offers.retain(|x| *x != new);
+            state.remove(&m);
+            state.insert(new.clone(), S::AwaitPay(m.clone(), fee));
+            n.send_case(
+                &c,
+                &[],
+                Msg::Reseated {
+                    case_id: c.clone(),
+                    tier: k,
+                    height: h,
+                    block_hash: bh,
+                    replaced: m.clone(),
+                    seat: new.clone(),
+                    sealed_key: String::new(),
+                    from: from.clone(),
+                },
+                false,
+            );
+            n.check(&format!("review stage {st}: {} replaced at {fee} sats by {}, drawn blind from {} offer(s) — not chosen by the leaver", &m[..8], &new[..8], from.len()), true, "");
+        }
+    }
+    if state.values().any(|x| !matches!(x, S::Keyed)) {
+        n.check(
+            &format!("review stage {st}: every seat accepted or replaced"),
+            false,
+            "timed out",
+        );
+        return None;
+    }
+    // the findings, by commit-reveal, and the stage's commitment
+    let (cc, ss) = (c.clone(), seats.clone());
+    let mut seen = std::collections::HashSet::new();
+    let reveals: Vec<(String, Ballot)> = n.collect(
+        secs(a.template.commit_deadline as u64 * 3 + 60),
+        |env, _| match &env.msg {
+            Msg::VerdictReveal {
+                case_id,
+                tier: t,
+                verdict,
+                ..
+            } if *case_id == cc
+                && *t == k
+                && ss.contains(&env.sender)
+                && seen.insert(env.sender.clone()) =>
+            {
+                Some((env.sender.clone(), verdict.clone()))
+            }
+            _ => None,
+        },
+        |v| v.len() >= size,
+    );
+    let cc = c.clone();
+    let mut committed = n.wait(
+        secs(if reveals.len() < size { 20 } else { 180 }),
+        |env, _| match &env.msg {
+            Msg::TierCommitted {
+                case_id,
+                tier: t,
+                txid,
+            } if *case_id == cc && *t == k => Some(txid.clone()),
+            _ => None,
+        },
+    );
+    let commitment = arb::tier_commitment(&c, k, &seats, &reveals);
+    if committed.is_none() {
+        if let Ok(txid) = n.rpc.op_return(&commitment) {
+            n.rpc.mine(1).ok();
+            n.send_case(
+                &c,
+                &[],
+                Msg::TierCommitted {
+                    case_id: c.clone(),
+                    tier: k,
+                    txid: txid.to_string(),
+                },
+                false,
+            );
+            committed = Some(txid.to_string());
+        }
+    }
+    let on_chain = committed
+        .as_ref()
+        .map(|t| n.rpc.has_op_return(t, &commitment))
+        .unwrap_or(false);
+    let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
+    let v = arb::supermajority_of(size, &votes, 4, 5);
+    n.check(
+        &format!(
+            "review stage {st}: {} of {size} findings revealed and committed on chain; {}",
+            votes.len(),
+            match &v {
+                Some(v) => format!("80% found {}", verdict_classes(v)),
+                None => "no 80% finding".into(),
+            }
+        ),
+        on_chain,
+        &format!("{:.1} s from convening", t0.elapsed().as_secs_f64()),
+    );
+    v
 }
 
 /// After a confirmed review, as its convener: take the whole unit of everyone who voted for the
@@ -2719,11 +3089,11 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
         .map(|o| {
             let who = if r.payout_spks.contains(&o.script_pubkey) {
                 "to a responder"
-            } else if rp
-                .reviews
-                .values()
-                .any(|t| t.offers.values().any(|b| b.payout == o.script_pubkey))
-            {
+            } else if rp.reviews.values().any(|t| {
+                t.seats
+                    .iter()
+                    .any(|w| t.offers.get(w).is_some_and(|b| b.payout == o.script_pubkey))
+            }) {
                 "to a reviewer (premium)"
             } else if rp
                 .tiers
@@ -2758,6 +3128,59 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
     );
 }
 
+/// A drawn reviewer's answer (§10.3): --review-silent says nothing, --review-leave posts a replacement
+/// fee starting at the base fee (raised as it waits), otherwise it accepts.
+fn answer_review(
+    n: &mut Node,
+    c: &str,
+    tier: u32,
+    fee0: u64,
+    leaving: &mut HashMap<(String, u32), (Instant, u64)>,
+) {
+    let st = tier - arb::REVIEW_BASE;
+    if flag("--review-silent") {
+        n.log(&format!(
+            "(test) drawn for review stage {st} of {}; stays silent",
+            &c[..8]
+        ));
+        return;
+    }
+    let leave = flag("--review-leave");
+    n.send_case(
+        c,
+        &[],
+        Msg::ReviewAnswer {
+            case_id: c.to_string(),
+            tier,
+            accept: !leave,
+            fee: if leave { fee0 } else { 0 },
+        },
+        false,
+    );
+    if leave {
+        leaving.insert((c.to_string(), tier), (Instant::now(), fee0));
+        n.log(&format!(
+            "drawn for review stage {st} of {}; would rather not serve: posting a replacement fee from {fee0} sats",
+            &c[..8]
+        ));
+    } else {
+        n.log(&format!(
+            "drawn for review stage {st} of {}; accepted",
+            &c[..8]
+        ));
+    }
+}
+
+/// An arbitrator's payout script as its seat offers record it (the prototype's registry of the pool).
+fn registry_payout(hist: &[wire::Envelope], who: &str) -> Option<bitcoin::ScriptBuf> {
+    hist.iter().find_map(|e| match &e.msg {
+        Msg::SeatOffer { payout_spk, .. } if e.sender == who => {
+            bitcoin::ScriptBuf::from_hex(payout_spk).ok()
+        }
+        _ => None,
+    })
+}
+
 /// An arbitrator: posts a bond, offers seats blind, and when seated reviews the evidence and votes.
 fn arbitrator(mut n: Node) -> i32 {
     let secp = Secp256k1::new();
@@ -2786,6 +3209,24 @@ fn arbitrator(mut n: Node) -> i32 {
     let payout = n.rpc.new_spk().expect("payout address");
     let corrupt = flag("--corrupt");
     n.subscribe("cases", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
+    // joining the pool: the bond registered where every replay can find it, so review panels can be
+    // drawn from everyone (§10.3)
+    let reg = arb::registry_case();
+    n.send_case(
+        &reg,
+        &[],
+        Msg::SeatOffer {
+            case_id: reg.clone(),
+            tier: 0,
+            bond: bond.to_string(),
+            bond_scoped: hex::encode(xo(&bs).serialize()),
+            bond_cold: hex::encode(xo(&bc).serialize()),
+            bond_fallback: bf,
+            bond_value,
+            payout_spk: payout.to_hex_string(),
+        },
+        false,
+    );
     n.log(&format!(
         "arbitrator bond {} posted{}",
         &bond.to_string()[..12],
@@ -2815,6 +3256,9 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut pending: HashMap<String, Instant> = HashMap::new();
     let mut release_session = 0u32;
     let mut announced: std::collections::HashSet<String> = Default::default();
+    // review seats this arbitrator is leaving: when the fee was last raised, and the fee (§10.3)
+    let mut leaving: HashMap<(String, u32), (Instant, u64)> = HashMap::new();
+    let mut review_offered: std::collections::HashSet<(String, u32)> = Default::default();
     let pool_ids: std::collections::HashSet<String> = view.ids.values().cloned().collect();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
     let mut challenge_at: HashMap<(String, u32), Instant> = HashMap::new();
@@ -2895,6 +3339,30 @@ fn arbitrator(mut n: Node) -> i32 {
             collect_seizure(&mut n, &a, &r, &view);
             n.summary();
         }
+        // a replacement fee rises with the fee market's time trigger until someone takes the seat
+        // (×1.0625 every 18 blocks; every few seconds at prototype scale)
+        let due: Vec<(String, u32)> = leaving
+            .iter()
+            .filter(|(_, v)| v.0.elapsed() > secs(num("--fee-step", 3u64)))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in due {
+            let v = leaving.get_mut(&k).unwrap();
+            v.0 = Instant::now();
+            v.1 = v.1 * 17 / 16;
+            let fee = v.1;
+            n.send_case(
+                &k.0,
+                &[],
+                Msg::ReviewAnswer {
+                    case_id: k.0.clone(),
+                    tier: k.1,
+                    accept: false,
+                    fee,
+                },
+                false,
+            );
+        }
         let ready: Vec<String> = pending
             .iter()
             .filter(|(_, t)| t.elapsed() > secs(3))
@@ -2968,34 +3436,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 }
                 escalator.insert((case_id.clone(), tier), s);
                 if arb::is_review(tier) {
-                    // a review panel is independent of the case: no one who sat on it reviews it,
-                    // and no unit is committed (reviewers rule on a closed case, §10.3)
-                    if seated
-                        .iter()
-                        .any(|((c, _), v)| *c == case_id && v.contains(&me))
-                    {
-                        continue;
-                    }
-                    n.send_case(
-                        &case_id,
-                        &[],
-                        Msg::SeatOffer {
-                            case_id: case_id.clone(),
-                            tier,
-                            bond: bond.to_string(),
-                            bond_scoped: hex::encode(xo(&bs).serialize()),
-                            bond_cold: hex::encode(xo(&bc).serialize()),
-                            bond_fallback: bf,
-                            bond_value,
-                            payout_spk: payout.to_hex_string(),
-                        },
-                        false,
-                    );
-                    n.log(&format!(
-                        "offered a seat on review stage {} of {}",
-                        tier - arb::REVIEW_BASE,
-                        &case_id[..8]
-                    ));
+                    // review panels are drawn from the whole pool, not offered for (§10.3)
                     continue;
                 }
                 // --tiers 1,2: the tiers this arbitrator serves (an operator's choice of workload)
@@ -3050,10 +3491,26 @@ fn arbitrator(mut n: Node) -> i32 {
                 }
                 let refund = bitcoin::ScriptBuf::from_hex(&refund_spk).unwrap_or_default();
                 refunds.insert((case_id.clone(), tier), refund.clone());
+                if arb::is_review(tier) {
+                    // drawn for a review stage (§10.3): accept, or post a replacement fee
+                    if seats.contains(&me) {
+                        let fee0 = alerts
+                            .get(&case_id)
+                            .map(|a| a.template.arb_fee)
+                            .unwrap_or(0);
+                        answer_review(&mut n, &case_id, tier, fee0, &mut leaving);
+                    }
+                    seated.insert((case_id, tier), seats);
+                    continue;
+                }
                 if let Some(pos) = seats.iter().position(|x| *x == me) {
-                    if let Some(k) = hex::decode(&sealed_keys[pos]).ok().and_then(|k| {
-                        wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
-                    }) {
+                    if let Some(k) = sealed_keys
+                        .get(pos)
+                        .and_then(|k| hex::decode(k).ok())
+                        .and_then(|k| {
+                            wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
+                        })
+                    {
                         n.add_case_key(&case_id, k.try_into().unwrap());
                         n.log(&format!(
                             "seated on tier {tier} of {} (seat {pos}); case disclosed",
@@ -3097,6 +3554,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 seat,
                 sealed_key,
                 height,
+                from,
                 ..
             } => {
                 let key = (case_id.clone(), tier);
@@ -3107,6 +3565,49 @@ fn arbitrator(mut n: Node) -> i32 {
                     if let Some(p) = list.iter().position(|x| *x == replaced) {
                         list[p] = seat.clone();
                     }
+                }
+                if arb::is_review(tier) {
+                    // this arbitrator left its review seat: pay the replacement drawn blind (§10.3)
+                    if replaced == me && !from.is_empty() {
+                        if let Some((_, fee)) = leaving.remove(&key) {
+                            let spk = registry_payout(&n.history, &seat);
+                            let res = spk
+                                .ok_or("replacement's payout unknown".to_string())
+                                .and_then(|spk| n.rpc.pay_many(&[(spk, fee)]));
+                            if let Ok(txid) = &res {
+                                n.rpc.mine(1).ok();
+                                n.send_case(
+                                    &case_id,
+                                    &[],
+                                    Msg::FeePaid {
+                                        case_id: case_id.clone(),
+                                        tier,
+                                        txid: txid.to_string(),
+                                    },
+                                    false,
+                                );
+                            }
+                            n.check(
+                                &format!(
+                                    "review stage {}: replaced by {}, drawn blind from {} offer(s); paid it {fee} sats",
+                                    tier - arb::REVIEW_BASE,
+                                    &seat[..8],
+                                    from.len()
+                                ),
+                                res.is_ok(),
+                                &res.map(|t| t.to_string()[..16].to_string()).unwrap_or_else(|e| e),
+                            );
+                        }
+                    }
+                    // drawn in place of a silent reviewer: answer as any drawn reviewer
+                    if seat == me && from.is_empty() {
+                        let fee0 = alerts
+                            .get(&case_id)
+                            .map(|a| a.template.arb_fee)
+                            .unwrap_or(0);
+                        answer_review(&mut n, &case_id, tier, fee0, &mut leaving);
+                    }
+                    continue;
                 }
                 if seat == me {
                     if let Some(k) = hex::decode(&sealed_key).ok().and_then(|k| {
@@ -3154,6 +3655,11 @@ fn arbitrator(mut n: Node) -> i32 {
                     continue;
                 };
                 if !seats.contains(&me) || mine.contains_key(&key) {
+                    continue;
+                }
+                if arb::is_review(tier)
+                    && (escalator.get(&key) != Some(&s) || !n.case_keys.contains_key(&case_id))
+                {
                     continue;
                 }
                 let (Some(a), Some(r)) = (
@@ -3395,6 +3901,68 @@ fn arbitrator(mut n: Node) -> i32 {
                         Err(e) => n.log(&format!("tier commitment failed: {e}")),
                     }
                 }
+            }
+            // the case key for a review seat this arbitrator accepted or took by replacement
+            Msg::ReviewKey {
+                case_id,
+                tier,
+                seat,
+                sealed_key,
+            } => {
+                if seat != me || escalator.get(&(case_id.clone(), tier)) != Some(&s) {
+                    continue;
+                }
+                if let Some(k) = hex::decode(&sealed_key).ok().and_then(|k| {
+                    wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
+                }) {
+                    n.add_case_key(&case_id, k.try_into().unwrap());
+                    n.log(&format!(
+                        "review stage {} of {}: case disclosed",
+                        tier - arb::REVIEW_BASE,
+                        &case_id[..8]
+                    ));
+                }
+            }
+            // a drawn reviewer posting a replacement fee: offer for the seat if the fee is worth it to
+            // this arbitrator and it is eligible (sat on neither the case nor this review)
+            Msg::ReviewAnswer {
+                case_id,
+                tier,
+                accept: false,
+                fee,
+            } => {
+                let key = (case_id.clone(), tier);
+                if s == me
+                    || fee < num("--review-price", 0u64)
+                    || flag("--review-leave")
+                    || flag("--review-silent")
+                    || review_offered.contains(&key)
+                    || seated
+                        .iter()
+                        .any(|((c, _), v)| *c == case_id && v.contains(&me))
+                {
+                    continue;
+                }
+                review_offered.insert(key);
+                n.send_case(
+                    &case_id,
+                    &[],
+                    Msg::SeatOffer {
+                        case_id: case_id.clone(),
+                        tier,
+                        bond: bond.to_string(),
+                        bond_scoped: hex::encode(xo(&bs).serialize()),
+                        bond_cold: hex::encode(xo(&bc).serialize()),
+                        bond_fallback: bf,
+                        bond_value,
+                        payout_spk: payout.to_hex_string(),
+                    },
+                    false,
+                );
+                n.log(&format!(
+                    "offered to take a review seat on {} for {fee} sats",
+                    &case_id[..8]
+                ));
             }
             // the pool attested the final outcome: the case's units wait for its review draw
             Msg::AttestShare { case_id, .. } if pool_ids.contains(&s) => {

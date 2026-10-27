@@ -315,6 +315,25 @@ pub enum Msg {
         replaced: Hex32,
         seat: Hex32,
         sealed_key: String,
+        /// a review seat's self-replacement (§10.3): the offers the replacement was drawn from;
+        /// empty for a seat redrawn from the panel's own list
+        #[serde(default)]
+        from: Vec<Hex32>,
+    },
+    /// Drawn reviewer (§10.3): accepts the review seat, or posts the fee it pays a replacement (re-posted
+    /// as it rises until someone offers).
+    ReviewAnswer {
+        case_id: Hex32,
+        tier: u32,
+        accept: bool,
+        fee: u64,
+    },
+    /// Review convener: the case key, sealed to a reviewer that accepted or took a seat by replacement.
+    ReviewKey {
+        case_id: Hex32,
+        tier: u32,
+        seat: Hex32,
+        sealed_key: String,
     },
     /// The escalating party paid each seated arbitrator its fee directly.
     FeePaid {
@@ -410,6 +429,8 @@ impl Msg {
             Msg::SeatOffer { .. } => "seat-offer",
             Msg::Seated { .. } => "seated",
             Msg::Reseated { .. } => "reseated",
+            Msg::ReviewAnswer { .. } => "review-answer",
+            Msg::ReviewKey { .. } => "review-key",
             Msg::FeePaid { .. } => "fee-paid",
             Msg::VerdictCommit { .. } => "verdict-commit",
             Msg::VerdictReveal { .. } => "verdict-reveal",
@@ -457,6 +478,8 @@ impl Msg {
             | Msg::TierCommitted { case_id, .. }
             | Msg::Forfeits { case_id, .. }
             | Msg::Deadlock { case_id, .. }
+            | Msg::ReviewAnswer { case_id, .. }
+            | Msg::ReviewKey { case_id, .. }
             | Msg::SeizureRequest { case_id, .. }
             | Msg::SeizureSig { case_id, .. } => Some(case_id),
         }

@@ -618,7 +618,16 @@ impl Replay {
             let Some((escalator, challenger)) = opener else {
                 break;
             };
-            let t = read_tier(&mine, &case, k, &escalator, challenger, rp.base_fee, rpc);
+            let t = read_tier(
+                &mine,
+                &case,
+                k,
+                &escalator,
+                challenger,
+                rp.base_fee,
+                rpc,
+                None,
+            );
             rp.tiers.insert(k, t);
         }
         // the staged review (§10.3): convened only on a case the draw selected, each stage only after
@@ -636,7 +645,8 @@ impl Replay {
             if !opened {
                 break;
             }
-            let mut t = read_tier(&mine, &case, k, conv, false, rp.base_fee, rpc);
+            let reg = registry(hist);
+            let mut t = read_tier(&mine, &case, k, conv, false, rp.base_fee, rpc, Some(&reg));
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
             // earlier stage of its review
@@ -1340,6 +1350,7 @@ impl Replay {
 
 /// One tier (or review stage) `k` of `case` as the log records it: offers, the draw, replacements,
 /// fees, reveals, the on-chain commitment and the seats' pre-signed forfeitures (verified later).
+#[allow(clippy::too_many_arguments)]
 fn read_tier(
     mine: &[&Envelope],
     case: &str,
@@ -1348,12 +1359,17 @@ fn read_tier(
     challenger: bool,
     base_fee: u64,
     rpc: &Rpc,
+    registry: Option<&HashMap<String, Bond>>,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
         challenger,
         ..Default::default()
     };
+    // a review stage is drawn from the whole pool, not from offers for it (§10.3)
+    if let Some(reg) = registry {
+        t.offers = reg.clone();
+    }
     let mut vcommits: HashMap<String, String> = HashMap::new();
     for e in mine {
         let s = &e.sender;
@@ -1407,6 +1423,7 @@ fn read_tier(
             block_hash,
             replaced,
             seat,
+            from,
             ..
         } = &e.msg
         {
@@ -1416,12 +1433,32 @@ fn read_tier(
             let Some(pos) = t.seats.iter().position(|x| x == replaced) else {
                 continue;
             };
-            let left: Vec<String> = t
-                .listed
-                .iter()
-                .filter(|o| !t.seats.contains(o) && !t.forfeited.contains(o))
-                .cloned()
-                .collect();
+            let left: Vec<String> = if from.is_empty() {
+                t.listed
+                    .iter()
+                    .filter(|o| !t.seats.contains(o) && !t.forfeited.contains(o))
+                    .cloned()
+                    .collect()
+            } else {
+                // a reviewer that posted a replacement fee, replaced by a draw from those who then
+                // offered for the seat, none already on the panel
+                let left_it = mine.iter().any(|x| {
+                    &x.sender == replaced
+                        && matches!(&x.msg, Msg::ReviewAnswer { tier, accept: false, .. } if *tier == k)
+                });
+                let offered = from.iter().all(|w| {
+                    !t.seats.contains(w)
+                        && !t.forfeited.contains(w)
+                        && mine.iter().any(|x| {
+                            &x.sender == w
+                                && matches!(&x.msg, Msg::SeatOffer { tier, .. } if *tier == k)
+                        })
+                });
+                if !(left_it && offered) {
+                    continue;
+                }
+                from.clone()
+            };
             if !vcommits.contains_key(replaced)
                 && draw(block_hash, case, k, &left, 1) == vec![seat.clone()]
                 && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
@@ -1500,6 +1537,26 @@ fn read_tier(
         }
     }
     t
+}
+
+/// The case id under which arbitrators register their bonds (the prototype's stand-in for the pool's
+/// registry of bonds on chain).
+pub fn registry_case() -> String {
+    hex::encode(tagged("Bitaid/arbitrator-registry", b""))
+}
+
+/// Every arbitrator the log knows, by its first seat offer (registration or any case): the pool review
+/// panels are drawn from.
+pub fn registry(hist: &[Envelope]) -> HashMap<String, Bond> {
+    let mut m: HashMap<String, Bond> = HashMap::new();
+    for e in hist {
+        if let Msg::SeatOffer { .. } = &e.msg {
+            if let Some(b) = Bond::from_offer(&e.msg) {
+                m.entry(e.sender.clone()).or_insert(b);
+            }
+        }
+    }
+    m
 }
 
 /// One committed tier of some case, as the ledger of momentum reads it.

@@ -65,3 +65,30 @@ Staged review, local regtest, 2026-10-27
       1 [PASS] arb9 case b51f0a2b: review draw at block 140 (100% for a unanimous final panel): drawn for review; units held
       1 [PASS] arb9 case b51f0a2b: the staged review cleared the verdict at stage 1; units released
       1 [PASS] arb9 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 991e4da46f1ab1c4 (pool members [1, 3, 4])
+
+3) Review duty (CAPTURE=1 NOAPPEAL=1 REVIEW_PCT=100 ARBS=26; arb21-24 leave, arb25-26 silent, replacements taken at >= 25,000 sats)
+[caller] 11 passed, 0 failed
+[r1-liar] 17 passed, 0 failed
+[r3] 8 passed, 0 failed
+[PASS] archivist case a32ec1f9: drawn for review at block 130 (100% for a split final panel); convening the staged review
+[PASS] archivist review stage 1: 5 of the 23 eligible arbitrators in the pool drawn from block 131; each must accept or pay its replacement
+[PASS] archivist review stage 1: b64d7693 silent past the window — one declined assignment toward the inactivity rule, no momentum; fc7a4fdb drawn in its place
+[PASS] archivist review stage 1: fc7a4fdb would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 1: fc7a4fdb replaced at 25488 sats by 3c294687, drawn blind from 1 offer(s) — not chosen by the leaver
+[PASS] archivist review stage 1: the leaver paid its replacement 3c294687 the 25488 sats on chain; the case disclosed to the replacement — a0925572cbb855b5
+[PASS] archivist review stage 1: 5 of 5 findings revealed and committed on chain; 80% found I,D — 51.1 s from convening
+[PASS] archivist review stage 2: 5 of the 16 eligible arbitrators in the pool drawn from block 139; each must accept or pay its replacement
+[PASS] archivist review stage 2: 5f2fb01e silent past the window — one declined assignment toward the inactivity rule, no momentum; d196cde5 drawn in its place
+[PASS] archivist review stage 2: d196cde5 would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 2: d196cde5 replaced at 25488 sats by 0c0194c8, drawn blind from 1 offer(s) — not chosen by the leaver
+[PASS] archivist review stage 2: the leaver paid its replacement 0c0194c8 the 25488 sats on chain; the case disclosed to the replacement — 5be306bfb2304849
+[PASS] archivist review stage 2: 5 of 5 findings revealed and committed on chain; 80% found I,D — 51.0 s from convening
+[PASS] archivist review stage 3: 5 of the 9 eligible arbitrators in the pool drawn from block 144; each must accept or pay its replacement
+[PASS] archivist review stage 3: 5 of 5 findings revealed and committed on chain; 80% found I,D — 7.9 s from convening
+[PASS] archivist case a32ec1f9: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist case a32ec1f9: 2 arbitrator(s) voted for the overturned verdict, each unit held since the draw
+[PASS] archivist tier 1 arbitrator aae03ea4: its whole unit (2000000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — e0882c63c63743e7 (pool members [4, 2, 3])
+[PASS] archivist tier 1 arbitrator f4f3214d: its whole unit (2000000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 96d24e62c9cfbef5 (pool members [1, 4, 3])
+[PASS] archivist review seizure distributed (§12) by the pool and the archivist: 2840000 sats to a responder, 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 200000 sats to the archivist (retention of the case's evidence) — 77a09d0e549b1687
+[PASS] arb21 review stage 1: replaced by 3c294687, drawn blind from 1 offer(s); paid it 25488 sats — a0925572cbb855b5
+[PASS] arb22 review stage 2: replaced by 0c0194c8, drawn blind from 1 offer(s); paid it 25488 sats — 5be306bfb2304849
