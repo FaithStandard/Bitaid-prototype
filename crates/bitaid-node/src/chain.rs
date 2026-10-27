@@ -96,6 +96,28 @@ impl Rpc {
         Some(v)
     }
 
+    /// An output as its transaction created it, spent or not (for replaying cases already settled).
+    pub fn output(&self, op: &OutPoint) -> Option<(u64, ScriptBuf)> {
+        let v = self.tx_json(&op.txid.to_string())?;
+        let o = v["vout"].as_array()?.get(op.vout as usize)?.clone();
+        let value = (o["value"].as_f64()? * 1e8).round() as u64;
+        let spk = ScriptBuf::from_hex(o["scriptPubKey"]["hex"].as_str()?).ok()?;
+        Some((value, spk))
+    }
+
+    /// The height of the block that confirmed `txid` (memoised), if confirmed.
+    pub fn tx_height(&self, txid: &str) -> Option<u32> {
+        let v = self.tx_json(txid)?;
+        let bh = v["blockhash"].as_str()?.to_string();
+        let k = format!("bhh:{bh}");
+        if let Some(h) = self.memo.lock().unwrap().get(&k) {
+            return h.as_u64().map(|x| x as u32);
+        }
+        let h = self.call("getblockheader", json!([bh])).ok()?["height"].as_u64()? as u32;
+        self.memo.lock().unwrap().insert(k, json!(h));
+        Some(h)
+    }
+
     pub fn height(&self) -> u32 {
         self.call("getblockcount", json!([]))
             .ok()

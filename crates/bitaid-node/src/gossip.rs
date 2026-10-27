@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long a Core keeps messages to replay to peers that connect later.
-pub const KEEP_SECS: u64 = 3600;
+pub const KEEP_SECS: u64 = 86_400;
 
 #[derive(Default)]
 struct Shared {

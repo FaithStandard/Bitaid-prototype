@@ -182,6 +182,10 @@ fn serve(
                 }
                 _ => tiny_http::Response::from_string("not supported").with_status_code(405),
             };
+            // one request per connection: no client ever waits behind a kept-alive connection
+            let resp = resp.with_header(
+                tiny_http::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap(),
+            );
             let _ = req.respond(resp);
         }
     }
@@ -238,6 +242,9 @@ pub fn fetch(server: &str, hash: &str) -> Result<Vec<u8>, String> {
     let server = &crate::local_url(server);
     let resp = crate::http_for(server)
         .get(&format!("{server}/{hash}"))
+        .timeout(std::time::Duration::from_secs(
+            if server.contains(".onion") { 90 } else { 20 },
+        ))
         .call()
         .map_err(|e| e.to_string())?;
     let mut b = Vec::new();

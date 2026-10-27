@@ -47,3 +47,39 @@ fn archivist_stores_only_live_case_evidence_from_parties() {
         blossom::slice_root(&blobs[1])
     );
 }
+
+#[test]
+fn concurrent_fetches_never_stall() {
+    let dir = std::env::temp_dir().join(format!("bitaid-blossom-{}", rand::random::<u32>()));
+    let policy = Policy::default();
+    let srv = blossom::spawn("127.0.0.1:0", dir, policy.clone()).unwrap();
+    let party = kp();
+    let case = hex::encode([9u8; 32]);
+    policy.allow(&case, &hex::encode(party.x_only_public_key().0.serialize()));
+    let mut hashes = vec![];
+    for i in 0..6u8 {
+        let b: Vec<u8> = (0..262_144u32).map(|j| (j as u8) ^ i).collect();
+        hashes.push(blossom::upload(&srv.url, &party, &case, &b).unwrap());
+    }
+    let t0 = std::time::Instant::now();
+    let hs: Vec<_> = (0..8)
+        .map(|_| {
+            let (u, h) = (srv.url.clone(), hashes.clone());
+            std::thread::spawn(move || {
+                for _ in 0..5 {
+                    for x in &h {
+                        blossom::fetch(&u, x).unwrap();
+                    }
+                }
+            })
+        })
+        .collect();
+    for h in hs {
+        h.join().unwrap();
+    }
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        t0.elapsed()
+    );
+}

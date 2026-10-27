@@ -108,13 +108,44 @@ pub fn tier_commitment(
 
 // =================================================================== penalties and the seizure output
 
-/// Penalty steps in tenths of the seat fee. The isolation factor of §10.4 is rounded down to half a
-/// fee, so each seat pre-signs five forfeitures when it takes the seat, not one per possible split.
-pub const STEPS: [u64; 5] = [20, 25, 30, 35, 40];
+/// Penalty steps in tenths of the seat fee: half-fee steps from 2× to 4×, then the same ratios doubled
+/// up to 4× × 32 (momentum, §10.4). A penalty is rounded down to a step, so each seat pre-signs one
+/// forfeiture per step it could owe, not one per possible amount.
+pub const STEP_SET: [u64; 25] = [
+    20, 25, 30, 35, 40, 50, 60, 70, 80, 100, 120, 140, 160, 200, 240, 280, 320, 400, 480, 560, 640,
+    800, 960, 1120, 1280,
+];
 
-/// The step (tenths) for a factor: rounded down to the half, between 2× and 4×.
+/// The step (tenths) for a factor, rounded down; at least 2×.
 pub fn step_of(factor: f64) -> u64 {
-    (((factor * 2.0).floor() / 2.0 * 10.0).round() as u64).clamp(20, 40)
+    let t = (factor * 10.0 + 1e-9) as u64;
+    STEP_SET
+        .iter()
+        .rev()
+        .find(|s| **s <= t)
+        .copied()
+        .unwrap_or(20)
+}
+
+/// The steps up to `max` (tenths), in order.
+pub fn steps_upto(max: u64) -> Vec<u64> {
+    STEP_SET.iter().filter(|s| **s <= max).copied().collect()
+}
+
+/// Momentum (§10.4): decay per vote served, the margin over the pool's normal error weight, and the cap
+/// on doublings (2^5 = 32×). Provisional, as in the Specification.
+pub const LAMBDA: f64 = 0.99;
+pub const MARGIN: f64 = 1.5;
+pub const MAX_DOUBLINGS: f64 = 5.0;
+
+/// The penalty multiplier at momentum `d`: 2^D, capped at 32×.
+pub fn multiplier(d: f64) -> f64 {
+    2f64.powf(d.clamp(0.0, MAX_DOUBLINGS))
+}
+
+/// The largest step a seat taken at momentum `d` could owe: the 4× isolation penalty times 2^D.
+pub fn max_step(d: f64) -> u64 {
+    step_of(4.0 * multiplier(d))
 }
 
 /// Relative timelock of the seizure output's fallback leaf: one year of blocks (§12, B.1).
@@ -215,15 +246,17 @@ impl Bond {
             ..self.clone()
         }
     }
-    /// The five pre-signed forfeitures' digests at a seat fee, in step order.
+    /// The pre-signed forfeitures' digests at a seat fee: one per step up to `max`, then the seat
+    /// forfeiture refunding the fee.
     pub fn forfeit_digests(
         &self,
         oracle: &XOnlyPublicKey,
         fee: u64,
         seizure: &ScriptBuf,
         refund: &ScriptBuf,
+        max: u64,
     ) -> Vec<[u8; 32]> {
-        let mut v: Vec<[u8; 32]> = STEPS
+        let mut v: Vec<[u8; 32]> = steps_upto(max)
             .iter()
             .map(|st| self.penalty_tx(oracle, st * fee / 10, seizure).1)
             .collect();
@@ -269,20 +302,30 @@ pub struct Tier {
     pub fee_paid: bool,
     pub reveals: Vec<(String, Ballot)>,
     pub committed: bool,
-    /// per seat, its stake and the five verified pre-signed forfeitures of it
+    /// per seat, its stake and the verified pre-signed forfeitures of it
     pub forfeits: HashMap<String, (Bond, Vec<String>)>,
+    /// per seat, the height it was seated at (the Seated or Reseated block)
+    pub seat_height: HashMap<String, u32>,
+    /// per seat, its momentum when seated (§10.4), from every tier committed on chain before that height
+    pub momentum: HashMap<String, f64>,
+    /// seats that committed a vote (a commitment without a reveal is charged as incoherent)
+    pub committers: Vec<String>,
+    /// the transaction carrying the tier commitment
+    pub commit_txid: Option<String>,
+    /// Forfeits messages, verified once momentum is known: (sender, stake, value, sigs)
+    pub raw_forfeits: Vec<(String, String, u64, Vec<String>)>,
     /// opened by a dissenting arbitrator of the tier below, who bought the re-roll itself (§10.4)
     pub challenger: bool,
     /// where a forfeited seat's fee goes back to (the payer's refund script, from the Seated message)
     pub refund: Option<ScriptBuf>,
     /// seats that missed their commit deadline and were replaced
     pub forfeited: Vec<String>,
+    /// the offers the draw was made from, as the Seated message lists them (replacements are drawn
+    /// from what is left of these, not from offers that arrived later)
+    pub listed: Vec<String>,
 }
 
-/// A seat's stake, in tenths of the seat fee: the largest penalty step, 4× (more with momentum).
-pub const SEAT_STAKE_STEPS: u64 = 40;
-
-/// Checks a seat's pre-signed forfeitures: the stake is an output of at least 4× the fee under the
+/// Checks a seat's pre-signed forfeitures: the stake is an output of at least the largest step under the
 /// seat-holder's bond script, and each signature is its scoped key's over that step's forfeiture, the
 /// last over its seat forfeiture (the fee back to the payer's refund script).
 #[allow(clippy::too_many_arguments)]
@@ -295,11 +338,12 @@ pub fn verify_forfeits(
     fee: u64,
     seizure: &ScriptBuf,
     refund: &ScriptBuf,
+    max: u64,
     rpc: &Rpc,
 ) -> Option<Bond> {
     let st = bond.stake(OutPoint::from_str(stake).ok()?, value);
-    let ds = st.forfeit_digests(oracle, fee, seizure, refund);
-    (value >= SEAT_STAKE_STEPS * fee / 10
+    let ds = st.forfeit_digests(oracle, fee, seizure, refund, max);
+    (value >= max * fee / 10
         && sigs.len() == ds.len()
         && ds
             .iter()
@@ -310,8 +354,10 @@ pub fn verify_forfeits(
 }
 
 impl Tier {
+    /// The tier's two-thirds verdict once committed on chain; a seat that never revealed counts as no
+    /// vote toward the two thirds (the reveal deadline, §10.4).
     pub fn verdict(&self) -> Option<Ballot> {
-        if !self.committed || self.reveals.len() < self.seats.len() {
+        if !self.committed {
             return None;
         }
         let v: Vec<Ballot> = self.reveals.iter().map(|x| x.1.clone()).collect();
@@ -346,7 +392,42 @@ pub struct Replay {
 }
 
 impl Replay {
+    /// The case replayed, each seat's momentum taken from every case in the log (§10.4) and its
+    /// forfeitures verified against the steps that momentum calls for.
     pub fn build(hist: &[Envelope], a: &Alerted, r: &Rostered, rpc: &Rpc) -> Option<Replay> {
+        let mut rp = Replay::build_core(hist, a, r, rpc)?;
+        let logs = ledger(hist, rpc, &a.oracle_key);
+        let seizure = rp.seizure_spk();
+        let (oracle, base_fee) = (rp.oracle, rp.base_fee);
+        for (k, t) in rp.tiers.iter_mut() {
+            let fee = seat_fee(base_fee, *k);
+            let heights: Vec<(String, u32)> =
+                t.seat_height.iter().map(|(s, h)| (s.clone(), *h)).collect();
+            for (s, h) in heights {
+                t.momentum.insert(s.clone(), momentum(&logs, &s, h));
+            }
+            let (Some(spk), Some(refund)) = (seizure.as_ref(), t.refund.clone()) else {
+                continue;
+            };
+            for (s, stake, value, sigs) in t.raw_forfeits.clone() {
+                let Some(b) = t.offers.get(&s) else { continue };
+                if t.forfeits.contains_key(&s) {
+                    continue;
+                }
+                let max = max_step(t.momentum.get(&s).copied().unwrap_or(0.0));
+                if let Some(st) = verify_forfeits(
+                    b, &stake, value, &sigs, &oracle, fee, spk, &refund, max, rpc,
+                ) {
+                    t.forfeits.insert(s, (st, sigs));
+                }
+            }
+        }
+        Some(rp)
+    }
+
+    /// The case replayed from the log without momentum: who opened each tier, the draw, fees, reveals,
+    /// the commitment on chain.
+    pub fn build_core(hist: &[Envelope], a: &Alerted, r: &Rostered, rpc: &Rpc) -> Option<Replay> {
         let oracle = wire::xonly(&a.oracle_key)?;
         let case = a.case_hex.clone();
         let mut parties = vec![(a.caller.clone(), None)];
@@ -361,7 +442,6 @@ impl Replay {
             parties,
             tiers: BTreeMap::new(),
         };
-        let seizure = rp.seizure_spk();
         let mine: Vec<&Envelope> = hist
             .iter()
             .filter(|e| e.msg.case_id() == Some(case.as_str()))
@@ -449,6 +529,10 @@ impl Replay {
                         && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
                     {
                         t.seats = seats.clone();
+                        t.listed = offers.clone();
+                        for x in seats {
+                            t.seat_height.insert(x.clone(), *height);
+                        }
                         if let Msg::Seated { refund_spk, .. } = &e.msg {
                             t.refund = ScriptBuf::from_hex(refund_spk).ok();
                         }
@@ -473,8 +557,8 @@ impl Replay {
                         continue;
                     };
                     let left: Vec<String> = t
-                        .offers
-                        .keys()
+                        .listed
+                        .iter()
                         .filter(|o| !t.seats.contains(o) && !t.forfeited.contains(o))
                         .cloned()
                         .collect();
@@ -484,6 +568,7 @@ impl Replay {
                     {
                         t.forfeited.push(replaced.clone());
                         t.seats[pos] = seat.clone();
+                        t.seat_height.insert(seat.clone(), *height);
                     }
                 }
             }
@@ -530,36 +615,30 @@ impl Replay {
                     let cm = tier_commitment(&case, k, &t.seats, &t.reveals);
                     if *tier == k && t.fee_paid && !t.committed && rpc.has_op_return(txid, &cm) {
                         t.committed = true;
+                        t.commit_txid = Some(txid.clone());
                     }
                 }
             }
-            if let Some(spk) = &seizure {
-                for e in &mine {
-                    if let Msg::Forfeits {
-                        tier,
-                        stake,
-                        value,
-                        sigs,
-                        ..
-                    } = &e.msg
-                    {
-                        let s = &e.sender;
-                        let Some(b) = t.offers.get(s).filter(|_| {
-                            *tier == k && (t.seats.contains(s) || t.forfeited.contains(s))
-                        }) else {
-                            continue;
-                        };
-                        if t.forfeits.contains_key(s) {
-                            continue;
-                        }
-                        let Some(refund) = t.refund.clone() else {
-                            continue;
-                        };
-                        if let Some(st) =
-                            verify_forfeits(b, stake, *value, sigs, &oracle, fee, spk, &refund, rpc)
-                        {
-                            t.forfeits.insert(s.clone(), (st, sigs.clone()));
-                        }
+            t.committers = t
+                .seats
+                .iter()
+                .chain(t.forfeited.iter())
+                .filter(|x| vcommits.contains_key(*x))
+                .cloned()
+                .collect();
+            for e in &mine {
+                if let Msg::Forfeits {
+                    tier,
+                    stake,
+                    value,
+                    sigs,
+                    ..
+                } = &e.msg
+                {
+                    let s = &e.sender;
+                    if *tier == k && (t.seats.contains(s) || t.forfeited.contains(s)) {
+                        t.raw_forfeits
+                            .push((s.clone(), stake.clone(), *value, sigs.clone()));
                     }
                 }
             }
@@ -582,7 +661,7 @@ impl Replay {
             seat_fee(self.base_fee, tier),
             t.refund.as_ref()?,
         );
-        Some((tx, d, sigs.get(STEPS.len())?.clone(), stake.clone()))
+        Some((tx, d, sigs.last()?.clone(), stake.clone()))
     }
 
     pub fn seizure_spk(&self) -> Option<ScriptBuf> {
@@ -611,6 +690,8 @@ impl Replay {
             if !t.committed {
                 continue;
             }
+            // each incoherent vote, and each commitment never revealed (charged at the isolation penalty)
+            let mut owed: Vec<(String, f64)> = vec![];
             for (arb, v) in &t.reveals {
                 let vk = verdict_key(v);
                 if vk == fk {
@@ -621,12 +702,23 @@ impl Replay {
                     .iter()
                     .filter(|x| verdict_key(&x.1) == vk)
                     .count();
-                let step = step_of(penalty_factor(n_f, agree.max(1)));
+                owed.push((arb.clone(), penalty_factor(n_f, agree.max(1))));
+            }
+            for c in &t.committers {
+                if t.seats.contains(c) && !t.reveals.iter().any(|x| &x.0 == c) {
+                    owed.push((c.clone(), penalty_factor(n_f, 1)));
+                }
+            }
+            for (arb, factor) in owed {
+                let d = t.momentum.get(&arb).copied().unwrap_or(0.0);
+                let step = step_of(factor * multiplier(d));
                 let fee = seat_fee(self.base_fee, *k);
-                let Some((bond, pre)) = t.forfeits.get(arb) else {
+                let Some((bond, pre)) = t.forfeits.get(&arb) else {
                     continue;
                 };
-                let i = STEPS.iter().position(|x| *x == step).unwrap();
+                let Some(i) = steps_upto(max_step(d)).iter().position(|x| *x == step) else {
+                    continue;
+                };
                 let amount = step * fee / 10;
                 let (tx, digest) = bond.penalty_tx(&self.oracle, amount, &spk);
                 out.push(Penalty {
@@ -641,6 +733,9 @@ impl Replay {
                 });
             }
         }
+        // one order for everyone (reveals arrive in different orders at different nodes): the
+        // distribution spends these outputs in this order, so its txid depends on it
+        out.sort_by(|x, y| (x.tier, &x.arbitrator).cmp(&(y.tier, &y.arbitrator)));
         out
     }
 
@@ -666,6 +761,8 @@ impl Replay {
                 }
             }
         }
+        out.sort();
+        out.dedup();
         out
     }
 
@@ -877,6 +974,110 @@ impl Replay {
     }
 }
 
+// =================================================================== momentum across cases
+
+/// One committed tier of some case, as the ledger of momentum reads it.
+#[derive(Clone, Debug)]
+pub struct TierLog {
+    pub case: String,
+    pub tier: u32,
+    /// height of the block carrying the tier commitment
+    pub height: u32,
+    pub seats: Vec<String>,
+    pub committers: Vec<String>,
+    pub reveals: Vec<(String, Ballot)>,
+}
+
+/// Every committed tier of every case in the log, ordered by the height of its commitment. Old cases
+/// are replayed from the log and the chain, their funding outputs read as created (spent or not).
+pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
+    let mut out = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for e in hist {
+        let Msg::Alert { case_id, .. } = &e.msg else {
+            continue;
+        };
+        if !seen.insert(case_id.clone()) {
+            continue;
+        }
+        let Ok(a) = Alerted::check(&e.sender, &e.msg, |op| rpc.output(op), oracle_key) else {
+            continue;
+        };
+        let Some(r) = hist.iter().rev().find_map(|x| match &x.msg {
+            Msg::Roster { case_id: c, .. } if *c == a.case_hex && x.sender == a.caller => {
+                Rostered::from_msg(&x.msg)
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+        let Some(rp) = Replay::build_core(hist, &a, &r, rpc) else {
+            continue;
+        };
+        for (k, t) in rp.tiers {
+            let Some(h) = t.commit_txid.as_ref().and_then(|x| rpc.tx_height(x)) else {
+                continue;
+            };
+            out.push(TierLog {
+                case: a.case_hex.clone(),
+                tier: k,
+                height: h,
+                seats: t.seats,
+                committers: t.committers,
+                reveals: t.reveals,
+            });
+        }
+    }
+    out.sort_by(|x, y| (x.height, &x.case, x.tier).cmp(&(y.height, &y.case, y.tier)));
+    out
+}
+
+/// An arbitrator's momentum D at `height` (§10.4): over every tier committed before that height, in
+/// order, each vote it served decays D by λ and adds its error weight (0 if it matched the verdict its
+/// case stands on at that height; factor/4 for an incoherent vote, so 1 for a lone dissenter on a large
+/// panel; 1 for a commitment never revealed), less the margin times the pool's mean error weight per
+/// vote so far; never below zero. A case's standing verdict is its last committed tier with two thirds.
+pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
+    let before: Vec<&TierLog> = logs.iter().filter(|l| l.height < height).collect();
+    let mut standing: HashMap<&str, (&TierLog, Ballot)> = HashMap::new();
+    for l in &before {
+        let v: Vec<Ballot> = l.reveals.iter().map(|x| x.1.clone()).collect();
+        if let Some(b) = supermajority(l.seats.len(), &v) {
+            standing.insert(l.case.as_str(), (l, b));
+        }
+    }
+    let (mut d, mut sum, mut votes) = (0.0f64, 0.0f64, 0usize);
+    for l in &before {
+        let Some((fin, fv)) = standing.get(l.case.as_str()) else {
+            continue;
+        };
+        let fk = verdict_key(fv);
+        for seat in &l.seats {
+            let e = match l.reveals.iter().find(|x| &x.0 == seat) {
+                Some((_, v)) if verdict_key(v) == fk => 0.0,
+                Some((_, v)) => {
+                    let vk = verdict_key(v);
+                    let agree = fin
+                        .reveals
+                        .iter()
+                        .filter(|x| verdict_key(&x.1) == vk)
+                        .count();
+                    penalty_factor(fin.seats.len(), agree.max(1)) / 4.0
+                }
+                None if l.committers.contains(seat) => 1.0,
+                None => continue,
+            };
+            let mean = if votes > 0 { sum / votes as f64 } else { 0.0 };
+            if seat == arbitrator {
+                d = (LAMBDA * d + e - MARGIN * mean).max(0.0);
+            }
+            sum += e;
+            votes += 1;
+        }
+    }
+    d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -926,6 +1127,10 @@ mod tests {
         assert_eq!(step_of(4.0), 40);
         assert_eq!(step_of(penalty_factor(7, 1)), 40);
         assert_eq!(step_of(penalty_factor(7, 2)), 25);
+        assert_eq!(step_of(4.0 * multiplier(1.0)), 80);
+        assert_eq!(step_of(2.5 * multiplier(1.5)), 70);
+        assert_eq!(max_step(9.0), 1280);
+        assert_eq!(steps_upto(40).len(), 5);
     }
 
     #[test]

@@ -54,6 +54,8 @@ pub struct Node {
     backlog: VecDeque<(Envelope, Event)>,
     /// every verified message this node has read, in arrival order: replayed by `arb::Replay`
     pub history: Vec<Envelope>,
+    /// subscriptions whose messages only go to the history (read by replays), never to the mailbox
+    history_only: std::collections::HashSet<String>,
     /// encrypted case messages whose key has not arrived yet
     locked: Vec<Event>,
     pub t0: Instant,
@@ -148,6 +150,7 @@ impl Node {
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
             history: vec![],
+            history_only: Default::default(),
             locked: vec![],
             t0: Instant::now(),
             last_sent: Instant::now() - Duration::from_secs(10),
@@ -259,6 +262,14 @@ impl Node {
         self.client.subscribe(id, filters);
     }
 
+    /// Reads every message matching `filters` into the history only (for replays across cases, such as
+    /// arbitrators' momentum), not into the mailbox. Add it after the subscriptions whose messages the
+    /// node acts on: a message goes to the first subscription it matches.
+    pub fn subscribe_history(&mut self, id: &str, filters: Vec<Filter>) {
+        self.history_only.insert(id.to_string());
+        self.client.subscribe(id, filters);
+    }
+
     fn decode(&mut self, e: &Event) -> Option<Envelope> {
         let raw = unb64(&e.content)?;
         let bytes = if e.tag("enc") == Some("1") {
@@ -296,9 +307,11 @@ impl Node {
 
     fn pull(&mut self, timeout: Duration) -> bool {
         match self.client.next_event(timeout) {
-            Some((_, e)) => {
+            Some((sub, e)) => {
                 if let Some(env) = self.decode(&e) {
-                    self.backlog.push_back((env, e));
+                    if !self.history_only.contains(&sub) {
+                        self.backlog.push_back((env, e));
+                    }
                 }
                 true
             }

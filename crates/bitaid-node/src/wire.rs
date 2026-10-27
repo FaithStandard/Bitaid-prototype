@@ -356,6 +356,11 @@ pub enum Msg {
         tier: u32,
         txid: String,
     },
+    /// Pool member: the case's last tier hung with no verdict below it and no party re-rolled it within
+    /// the window, so the deadlock stands and the incident output closes by its refund locktime (§10.5).
+    Deadlock {
+        case_id: Hex32,
+    },
     /// Pool member, once per pot after replaying the case: its public attestation share for the outcome
     /// it reads from the log. Any t valid shares for one outcome combine to the scalar that completes it.
     AttestShare {
@@ -402,6 +407,7 @@ impl Msg {
             Msg::VerdictReveal { .. } => "verdict-reveal",
             Msg::TierCommitted { .. } => "tier-committed",
             Msg::Forfeits { .. } => "forfeits",
+            Msg::Deadlock { .. } => "deadlock",
             Msg::SeizureRequest { .. } => "seizure-request",
             Msg::SeizureSig { .. } => "seizure-sig",
         }
@@ -442,6 +448,7 @@ impl Msg {
             | Msg::VerdictReveal { case_id, .. }
             | Msg::TierCommitted { case_id, .. }
             | Msg::Forfeits { case_id, .. }
+            | Msg::Deadlock { case_id, .. }
             | Msg::SeizureRequest { case_id, .. }
             | Msg::SeizureSig { case_id, .. } => Some(case_id),
         }

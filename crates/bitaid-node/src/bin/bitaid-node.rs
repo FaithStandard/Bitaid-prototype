@@ -182,6 +182,8 @@ fn pool_member(mut n: Node) -> i32 {
     let mut panels: HashMap<(String, u32), Vec<String>> = HashMap::new();
     let mut fees_ok: std::collections::HashSet<(String, u32)> = Default::default();
     let mut fee_at: HashMap<(String, u32, String), Instant> = HashMap::new();
+    let mut all_committed_at: HashMap<(String, u32), Instant> = HashMap::new();
+    let mut deadlock_at: HashMap<String, Instant> = HashMap::new();
     let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
     let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut verdicts: HashMap<String, Ballot> = HashMap::new();
@@ -192,6 +194,19 @@ fn pool_member(mut n: Node) -> i32 {
     loop {
         if last.elapsed() > secs(idle) {
             return 0;
+        }
+        let dead: Vec<String> = deadlock_at
+            .iter()
+            .filter(|(_, t)| Instant::now() >= **t)
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in dead {
+            deadlock_at.remove(&c);
+            n.log(&format!(
+                "case {}: no party re-rolled the hung tier; the deadlock stands (refund path)",
+                &c[..8]
+            ));
+            n.send_case(&c, &[], Msg::Deadlock { case_id: c.clone() }, false);
         }
         let lapsed: Vec<String> = lapse
             .iter()
@@ -506,6 +521,7 @@ fn pool_member(mut n: Node) -> i32 {
                 );
                 esc.insert(case_id.clone(), (*tier, s.clone(), n.rpc.height()));
                 ready_at.remove(case_id);
+                deadlock_at.remove(case_id);
                 n.log(&format!(
                     "case {} escalated to tier {tier} by {}",
                     &case_id[..8],
@@ -659,10 +675,12 @@ fn pool_member(mut n: Node) -> i32 {
             } => {
                 let key = (case_id.clone(), *tier);
                 if panels.get(&key).map(|p| p.contains(&s)).unwrap_or(false) {
-                    vcommits
-                        .entry(key)
-                        .or_default()
-                        .insert(s.clone(), commitment.clone());
+                    let m = vcommits.entry(key.clone()).or_default();
+                    m.insert(s.clone(), commitment.clone());
+                    // every seat committed: the reveal deadline runs from here (§10.4)
+                    if m.len() >= panels[&key].len() {
+                        all_committed_at.entry(key).or_insert(Instant::now());
+                    }
                 }
             }
             Msg::VerdictReveal {
@@ -695,7 +713,11 @@ fn pool_member(mut n: Node) -> i32 {
                 else {
                     continue;
                 };
-                if rv.len() < seats.len()
+                let deadline_passed = all_committed_at
+                    .get(&key)
+                    .map(|t| t.elapsed() >= secs(alerts[case_id].template.commit_deadline as u64))
+                    .unwrap_or(false);
+                if (rv.len() < seats.len() && !deadline_passed)
                     || !fees_ok.contains(&key)
                     || esc.get(case_id).map(|x| x.0) != Some(*tier)
                 {
@@ -738,7 +760,11 @@ fn pool_member(mut n: Node) -> i32 {
                             n.log(&format!("tier {tier}: no two-thirds verdict; the tier {} verdict {} stands, final in {w} s unless re-rolled", tier - 1, verdict_classes(prev)));
                             ready_at.insert(case_id.clone(), Instant::now() + secs(w));
                         }
-                        None => n.log(&format!("tier {tier}: no two-thirds verdict; the deadlock stands until a party re-rolls it, else the refund path")),
+                        None => {
+                            n.log(&format!("tier {tier}: no two-thirds verdict; the deadlock stands until a party re-rolls it, else the refund path"));
+                            let w = alerts[case_id].template.dispute_window as u64;
+                            deadlock_at.insert(case_id.clone(), Instant::now() + secs(w + 10));
+                        }
                     },
                 }
             }
@@ -1096,7 +1122,7 @@ fn settle(
     set: &bitaid_core::presign::IncidentSet,
     view: &PoolView,
     broadcast: bool,
-) -> Vec<(Pot, String)> {
+) -> Option<Vec<(Pot, String)>> {
     let pots: Vec<u8> = Pot::ALL
         .into_iter()
         .filter(|p| a.template.pots[p.index()] > 0)
@@ -1126,6 +1152,14 @@ fn settle(
     );
     for note in &notes {
         n.log(note);
+    }
+    if notes.iter().any(|x| x.starts_with("deadlock")) {
+        n.check(
+            "no tier reached a verdict and no party re-rolled the last: the deadlock stands, and the incident output closes by its refund locktime (§10.5)",
+            true,
+            "",
+        );
+        return None;
     }
     let liars: Vec<&String> = notes
         .iter()
@@ -1220,7 +1254,7 @@ fn settle(
             ),
         }
     }
-    out
+    Some(out)
 }
 
 fn class_of(s: &str) -> Class {
@@ -1440,8 +1474,11 @@ fn wait_forfeits(
     fee: u64,
     seizure: Option<&bitcoin::ScriptBuf>,
     refund: &bitcoin::ScriptBuf,
+    height: u32,
 ) -> HashMap<String, (arb::Bond, String)> {
     let mut out = HashMap::new();
+    // each seat's momentum when seated decides how many steps it must have pre-signed (§10.4)
+    let logs = arb::ledger(&n.history, &n.rpc, &hex::encode(oxo.serialize()));
     let Some(spk) = seizure else {
         return out;
     };
@@ -1466,8 +1503,9 @@ fn wait_forfeits(
         let Some(b) = offers.iter().find(|o| o.0 == w).map(|o| o.2.clone()) else {
             continue;
         };
+        let max = arb::max_step(arb::momentum(&logs, &w, height));
         if let Some(st) =
-            arb::verify_forfeits(&b, &stake, value, &sigs, oxo, fee, spk, refund, &n.rpc)
+            arb::verify_forfeits(&b, &stake, value, &sigs, oxo, fee, spk, refund, max, &n.rpc)
         {
             out.insert(w, (st, sigs.last().cloned().unwrap_or_default()));
         }
@@ -1608,6 +1646,7 @@ fn escalate_tier(
         fee,
         seizure.as_ref(),
         &refund_spk,
+        h,
     );
     n.check(
         &format!("tier {tier}: every seat set aside a stake of 4× the {fee}-sat fee under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture"),
@@ -1760,6 +1799,7 @@ fn escalate_tier(
                 fee,
                 seizure.as_ref(),
                 &refund_spk,
+                h,
             );
             stakes.extend(got);
             let spk = offers.iter().find(|o| o.0 == new).unwrap().1.clone();
@@ -1789,11 +1829,12 @@ fn escalate_tier(
             }
         }
     }
-    // the revealed verdicts and the tier commitment
+    // the revealed verdicts, due by the reveal deadline once every seat has committed (§10.4), and
+    // the tier commitment
     let (cc, ss) = (c.clone(), seats.clone());
     let mut seen = std::collections::HashSet::new();
     let reveals: Vec<(String, Ballot)> = n.collect(
-        secs(num("--verdict-wait", 600u64)),
+        secs(a.template.commit_deadline as u64 + 15),
         |env, _| match &env.msg {
             Msg::VerdictReveal {
                 case_id,
@@ -1812,7 +1853,8 @@ fn escalate_tier(
         |v| v.len() >= size,
     );
     let cc = c.clone();
-    let committed = n.wait(secs(180), |env, _| match &env.msg {
+    let wait = if reveals.len() < size { 20 } else { 180 };
+    let mut committed = n.wait(secs(wait), |env, _| match &env.msg {
         Msg::TierCommitted {
             case_id,
             tier: t,
@@ -1821,6 +1863,29 @@ fn escalate_tier(
         _ => None,
     });
     let commitment = bitaid_node::arb::tier_commitment(&c, tier, &seats, &reveals);
+    if committed.is_none() && reveals.len() < size {
+        // a seat never revealed: the first seat does not post the commitment, so the escalator does,
+        // with the reveals it has; the missing one is charged as an incoherent vote (§10.4)
+        n.check(
+            &format!("tier {tier}: {} of {size} seats revealed by the reveal deadline; the missing reveal is charged as an incoherent vote", reveals.len()),
+            true,
+            "",
+        );
+        if let Ok(txid) = n.rpc.op_return(&commitment) {
+            n.rpc.mine(1).ok();
+            n.send_case(
+                &c,
+                &[],
+                Msg::TierCommitted {
+                    case_id: c.clone(),
+                    tier,
+                    txid: txid.to_string(),
+                },
+                false,
+            );
+            committed = Some(txid.to_string());
+        }
+    }
     let on_chain = committed
         .as_ref()
         .map(|t| n.rpc.has_op_return(t, &commitment))
@@ -1885,9 +1950,13 @@ fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, start: Duration) -> Option<O
     })?;
     let (cc, mut ss) = (c.clone(), seats.clone());
     let mut seen = std::collections::HashSet::new();
-    let votes: Vec<Ballot> = n.collect(
+    // a tier committed with a reveal missing (the reveal deadline passed) ends the wait
+    let got: Vec<Option<Ballot>> = n.collect(
         secs(num("--verdict-wait", 600u64)),
         |env, _| match &env.msg {
+            Msg::TierCommitted {
+                case_id, tier: t, ..
+            } if *case_id == cc && *t == tier => Some(None),
             // a seat forfeit for missing its commit deadline, and its replacement (§10.4)
             Msg::Reseated {
                 case_id,
@@ -1911,12 +1980,13 @@ fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, start: Duration) -> Option<O
                 && ss.contains(&env.sender)
                 && seen.insert(env.sender.clone()) =>
             {
-                Some(verdict.clone())
+                Some(Some(verdict.clone()))
             }
             _ => None,
         },
-        |v| v.len() >= seats.len(),
+        |v| v.iter().flatten().count() >= seats.len() || v.iter().any(|x| x.is_none()),
     );
+    let votes: Vec<Ballot> = got.into_iter().flatten().collect();
     Some(bitaid_node::arb::supermajority(seats.len(), &votes))
 }
 
@@ -2039,6 +2109,7 @@ fn take_seat(
     case_id: &str,
     tier: u32,
     refund: &bitcoin::ScriptBuf,
+    height: u32,
 ) {
     let (Some(a), Some(r)) = (a, r) else {
         return;
@@ -2059,7 +2130,14 @@ fn take_seat(
     let fee = arb::seat_fee(a.template.arb_fee, tier);
     // the seat's stake: its own output, so forfeitures pre-signed for seats held at once never spend
     // the same coin
-    let value = arb::SEAT_STAKE_STEPS * fee / 10;
+    // its momentum when seated (§10.4) sets the largest step it could owe, and so its stake
+    let d = arb::momentum(&arb::ledger(&n.history, &n.rpc, &k.okey), &n.me(), height);
+    let max = arb::max_step(d);
+    let value = max * fee / 10;
+    n.log(&format!(
+        "momentum {d:.2} on taking the seat: penalties up to {:.1}× the fee, stake {value} sats",
+        max as f64 / 10.0
+    ));
     let sop = match n.rpc.fund(&me_bond.tree(&oxo).script_pubkey(), value) {
         Ok(op) => op,
         Err(e) => {
@@ -2070,7 +2148,7 @@ fn take_seat(
     n.rpc.mine(1).ok();
     let stake = me_bond.stake(sop, value);
     let sigs: Vec<String> = stake
-        .forfeit_digests(&oxo, fee, &st.script_pubkey(), refund)
+        .forfeit_digests(&oxo, fee, &st.script_pubkey(), refund, max)
         .iter()
         .map(|d| hex::encode(sign_bip340(&k.bs, d)))
         .collect();
@@ -2290,6 +2368,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 seats,
                 sealed_keys,
                 refund_spk,
+                height,
                 ..
             } => {
                 if escalator.get(&(case_id.clone(), tier)) != Some(&s) {
@@ -2323,6 +2402,7 @@ fn arbitrator(mut n: Node) -> i32 {
                             &case_id,
                             tier,
                             &refund,
+                            height,
                         );
                     }
                 }
@@ -2335,6 +2415,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 replaced,
                 seat,
                 sealed_key,
+                height,
                 ..
             } => {
                 let key = (case_id.clone(), tier);
@@ -2374,6 +2455,7 @@ fn arbitrator(mut n: Node) -> i32 {
                             &case_id,
                             tier,
                             &refund,
+                            height,
                         );
                     }
                 }
@@ -2435,7 +2517,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     let got: Option<Vec<Vec<u8>>> = blobs
                         .iter()
                         .map(|(h, _)| {
-                            // one retry: an archive that times out once is asked again before the
+                            // two retries: an archive that times out is asked again before the
                             // footage counts as missing
                             blossom::fetch(url, h)
                                 .or_else(|e| {
@@ -2445,6 +2527,7 @@ fn arbitrator(mut n: Node) -> i32 {
                                     ));
                                     blossom::fetch(url, h)
                                 })
+                                .or_else(|_| blossom::fetch(url, h))
                                 .map_err(|e| {
                                     n.log(&format!(
                                         "fetch of {} from {url} failed again: {e}",
@@ -2477,6 +2560,11 @@ fn arbitrator(mut n: Node) -> i32 {
                         }
                     }
                 }
+                // --error-rate p (tests): an honest arbitrator who misreads the footage now and then
+                let slip = rand::random::<f64>() < num("--error-rate", 0.0f64);
+                if slip {
+                    n.log("(test) misreads this case");
+                }
                 let acts = r
                     .seats
                     .iter()
@@ -2484,7 +2572,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     .map(|(i, sid)| {
                         let shown = shows.get(sid).cloned().unwrap_or_default();
                         let mut c = class_of(&shown);
-                        if corrupt {
+                        if corrupt || slip {
                             c = match c {
                                 Class::Intervention => Class::Documentation,
                                 Class::Documentation => Class::Intervention,
@@ -2522,7 +2610,8 @@ fn arbitrator(mut n: Node) -> i32 {
                         tier,
                         commitment: hex::encode(verdict.commitment(&salt)),
                     },
-                    true,
+                    // in clear: verdicts are the record every arbitrator's momentum is computed from
+                    false,
                 );
                 mine.insert(key, (verdict, salt));
             }
@@ -2537,6 +2626,10 @@ fn arbitrator(mut n: Node) -> i32 {
                 if all && !revealed.contains(&key) {
                     if let Some((v, salt)) = mine.get(&key).cloned() {
                         revealed.insert(key.clone());
+                        if flag("--no-reveal") {
+                            n.log("(test) committed a vote and never reveals it");
+                            continue;
+                        }
                         n.send_case(
                             &case_id,
                             &[],
@@ -2546,7 +2639,7 @@ fn arbitrator(mut n: Node) -> i32 {
                                 verdict: v,
                                 salt: hex::encode(salt),
                             },
-                            true,
+                            false,
                         );
                     }
                 }
@@ -3013,7 +3106,9 @@ fn caller(mut n: Node) -> i32 {
         &archivists,
         num("--footage-kib", 512usize) * 1024,
     );
-    let paid = settle(&mut n, &a, &set, &view, true);
+    let Some(paid) = settle(&mut n, &a, &set, &view, true) else {
+        return n.summary();
+    };
     if flag("--mine") {
         n.rpc.mine(1).ok();
     }
@@ -3111,6 +3206,8 @@ fn responder(mut n: Node) -> i32 {
         match Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &okey) {
             Ok(a) if a.template.pots[2] >= min_bounty => break a,
             Ok(_) => n.log("alert below my price; ignored"),
+            // an earlier case, replayed from the log: its funding is already spent
+            Err(e) if e.contains("missing or spent") => {}
             Err(e) => n.check("alert checked", false, &e),
         }
     };
@@ -3128,6 +3225,8 @@ fn responder(mut n: Node) -> i32 {
         "case",
         vec![Filter::kinds(&[kind::CASE]).tag('c', std::slice::from_ref(&c))],
     );
+    // every case, into the history only: arbitrators' momentum is read from all of them (§10.4)
+    n.subscribe_history("ledger", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
     std::thread::sleep(Duration::from_millis(300 + delay));
     let sk = random_scalar();
     let payout = n.rpc.new_spk().expect("payout address");
@@ -3323,7 +3422,9 @@ fn responder(mut n: Node) -> i32 {
             }
         }
     }
-    let paid = settle(&mut n, &a, &set, &view, flag("--broadcast"));
+    let Some(paid) = settle(&mut n, &a, &set, &view, flag("--broadcast")) else {
+        return n.summary();
+    };
     if flag("--mine") {
         n.rpc.mine(1).ok();
     }

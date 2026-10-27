@@ -739,7 +739,20 @@ pub fn attestations(
             continue;
         }
         let (c, v) = (case.to_string(), view.clone());
-        let Some((pot, sh)) = n.wait(left, |env, _| match &env.msg {
+        // t members saying the deadlock stands end the wait: no attestation will come
+        let dead: BTreeSet<u16> = n
+            .history
+            .iter()
+            .filter(|e| matches!(&e.msg, Msg::Deadlock { case_id } if *case_id == c))
+            .filter_map(|e| v.member_of(&e.sender))
+            .collect();
+        if dead.len() >= v.t {
+            notes.push(
+                "deadlock: no verdict at any tier; the case closes by its refund locktime".into(),
+            );
+            break;
+        }
+        let Some((pot, sh)) = n.wait(left.min(Duration::from_secs(2)), |env, _| match &env.msg {
             Msg::AttestShare {
                 case_id,
                 pot,
