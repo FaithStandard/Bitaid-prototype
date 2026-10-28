@@ -49,16 +49,24 @@ R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
 # NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
 [ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
+# CASES=2: the same network takes a second case (with CAPTURE, the same pair captures it again: a
+# second confirmed overturn costs them their entry bonds, §12)
+for c in $(seq 1 ${CASES:-1}); do
+[ $c -gt 1 ] && for f in caller r1 r3; do mv $L/$f.out $L/$f.$((c-1)).out; done
+[ $c -gt 1 ] && { for w in caller r1 r3; do for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done; done; $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null; }
 BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
 BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
-BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-window 8 --alert-delay 4 --commit-deadline 20 ${REVIEW_PCT:+--review-pct $REVIEW_PCT} > $L/caller.out 2>$L/caller.log
+BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-window 8 --alert-delay 4 --commit-deadline 20 ${REVIEW_PCT:+--review-pct $REVIEW_PCT} ${ARB_FEE:+--arb-fee $ARB_FEE} > $L/caller.out 2>$L/caller.log
 for p in $RP; do wait $p; done
 # §10.2-10.3: every seated arbitrator waits for the case's review draw and, if passed over, releases its
 # units with the pool's co-signature; give them time before stopping the network
 for i in $(seq 1 ${RELEASE_WAIT:-90}); do
   n=0; for f in $(grep -l "case unit" $L/arb*.log 2>/dev/null); do grep -q "passed over\|staged review cleared\|staged review confirmed" ${f%.log}.out || n=$((n+1)); done
   [ $n = 0 ] && break; sleep 2
+done
+# with a review, wait for it to settle before the next case
+[ -n "$REVIEW_PCT" ] && for i in $(seq 1 300); do [ $(grep -c "cleared the verdict\|seizure distributed\|passed it over" $L/archivist.out 2>/dev/null) -ge $c ] && break; sleep 2; done
 done
 sleep 20
 grep -h "review\|FAIL" $L/archivist.out

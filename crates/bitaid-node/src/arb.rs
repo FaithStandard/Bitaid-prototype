@@ -571,6 +571,8 @@ pub struct Replay {
     pub review: ReviewState,
     /// each registered arbitrator's entry bond and its verified pre-signed seizure
     pub entries: HashMap<String, (Bond, String)>,
+    /// per arbitrator, the other cases in which it voted for a verdict a staged review overturned
+    pub prior_overturns: HashMap<String, usize>,
 }
 
 impl Replay {
@@ -605,6 +607,10 @@ impl Replay {
             }
         }
         let logs = ledger(hist, rpc, &a.oracle_key);
+        for (w, cases) in overturned_votes(&logs) {
+            let n = cases.iter().filter(|c| **c != rp.case).count();
+            rp.prior_overturns.insert(w, n);
+        }
         let seizure = rp.seizure_spk();
         let (oracle, base_fee) = (rp.oracle, rp.base_fee);
         let case_value: u64 = a.template.pots.iter().sum();
@@ -654,6 +660,7 @@ impl Replay {
             convener: r.archivists.first().cloned(),
             review: ReviewState::NotDrawn,
             entries: HashMap::new(),
+            prior_overturns: HashMap::new(),
         };
         let mine: Vec<&Envelope> = hist
             .iter()
@@ -1230,7 +1237,14 @@ impl Replay {
         let Some(spk) = self.seizure_spk() else {
             return vec![];
         };
-        let mut who: Vec<String> = self.overturned_voters().into_iter().map(|x| x.1).collect();
+        // a first confirmed overturn costs the case units; the entry bond and expulsion come with the
+        // second (§12)
+        let mut who: Vec<String> = self
+            .overturned_voters()
+            .into_iter()
+            .map(|x| x.1)
+            .filter(|w| self.prior_overturns.get(w).copied().unwrap_or(0) >= 1)
+            .collect();
         who.sort();
         who.dedup();
         who.into_iter()
@@ -1310,6 +1324,11 @@ impl Replay {
         let mut outs: Vec<(u64, ScriptBuf)> = vec![];
         let before = Self::paid_under(a, r, &fv);
         let after = Self::paid_under(a, r, cv);
+        // the excess goes only to a harmed party that had exhausted the appeals worth making: one for
+        // which the next re-roll would have cost more than the amount in dispute (§12); a party that
+        // could still have appealed is made whole, and the excess keeps the case's evidence instead
+        let (ft, _) = self.final_ruling()?;
+        let next_cost = seat_fee(self.base_fee, ft + 1) * panel_size(ft + 1) as u64;
         let mut harmed: Vec<ScriptBuf> = vec![];
         for (x, s) in &after {
             let had = before.iter().find(|y| y.1 == *s).map(|y| y.0).unwrap_or(0);
@@ -1317,7 +1336,9 @@ impl Replay {
                 let owed = (*x - had).min(left);
                 outs.push((owed, s.clone()));
                 left -= owed;
-                harmed.push(s.clone());
+                if next_cost > *x - had {
+                    harmed.push(s.clone());
+                }
             }
         }
         // the dissenters vindicated by the review: their penalty back, and the fee it cost them
@@ -1709,6 +1730,36 @@ fn read_tier(
         }
     }
     t
+}
+
+/// Per arbitrator, the cases in which it voted for a verdict a confirmed staged review overturned.
+pub fn overturned_votes(logs: &[TierLog]) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for o in logs.iter().filter(|l| l.overturn.is_some()) {
+        // the verdict the case stood on before the review: its last two-thirds tier
+        let tiers: Vec<&TierLog> = logs
+            .iter()
+            .filter(|l| l.case == o.case && !l.review && l.height <= o.height)
+            .collect();
+        let Some(old) = tiers.iter().rev().find_map(|l| {
+            let v: Vec<Ballot> = l.reveals.iter().map(|x| x.1.clone()).collect();
+            supermajority(l.seats.len(), &v)
+        }) else {
+            continue;
+        };
+        let ok = verdict_key(&old);
+        for l in &tiers {
+            for (w, v) in &l.reveals {
+                if verdict_key(v) == ok {
+                    let e = out.entry(w.clone()).or_default();
+                    if !e.contains(&o.case) {
+                        e.push(o.case.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The case id under which arbitrators register their bonds (the prototype's stand-in for the pool's
