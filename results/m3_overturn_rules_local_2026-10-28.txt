@@ -1,0 +1,22 @@
+Proportional first offense and the exhausted-appeals rule, local regtest, 2026-10-28
+
+1) CASES=2 CAPTURE=1 NOAPPEAL=1 REVIEW_PCT=100 ARBS=26: the same pair captures two cases nobody appeals
+[caller] 11 passed, 0 failed
+[r1-liar] 17 passed, 0 failed
+[r3] 8 passed, 0 failed
+[PASS] archivist case 4cd4a6f2: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist case 4cd4a6f2: 2 arbitrator(s) voted for the overturned verdict, each unit held since the draw
+[PASS] archivist review seizure distributed (§12) by the pool and the archivist: 360000 sats to a responder, 60000 sats to a vindicated dissenter, 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 2680000 sats to the archivist (retention of the case's evidence) — 52301ab5ad5ce760
+[PASS] archivist case c60a42ba: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist case c60a42ba: 2 arbitrator(s) voted for the overturned verdict, each unit held since the draw
+[PASS] archivist arbitrator 9e9c0b13: its whole entry bond (10000000 sats) seized by the forfeiture it pre-signed when it joined, and moved into the case's seizure output, both co-signed by the pool — 412fe3c4596558d0 (pool members [4, 3, 1])
+[PASS] archivist arbitrator dc65f63b: its whole entry bond (10000000 sats) seized by the forfeiture it pre-signed when it joined, and moved into the case's seizure output, both co-signed by the pool — c6a9910d6c0319ff (pool members [2, 4, 1])
+[PASS] archivist review seizure distributed (§12) by the pool and the archivist: 360000 sats to a responder, 60000 sats to a vindicated dissenter, 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 22680000 sats to the archivist (retention of the case's evidence) — a2ecee49289dec83
+
+2) ARB_FEE=60000 (a 7-seat re-roll, 525,000 sats, costs more than the 360,000 in dispute): the victim had exhausted the appeals worth making
+[caller] 11 passed, 0 failed
+[r1-liar] 17 passed, 0 failed
+[r3] 8 passed, 0 failed
+[PASS] archivist case 399c35e0: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist case 399c35e0: 2 arbitrator(s) voted for the overturned verdict, each unit held since the draw
+[PASS] archivist review seizure distributed (§12) by the pool and the archivist: 920000 sats to a responder, 180000 sats to a vindicated dissenter, 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 180000 sats to a reviewer (premium), 200000 sats to the archivist (retention of the case's evidence) — bfb1e21917d38c38
