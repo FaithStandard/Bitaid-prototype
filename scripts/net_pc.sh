@@ -71,6 +71,8 @@ start)
     extra="$extra --review-price 25000"
     { [ $i -ge 21 ] && [ $i -le 24 ]; } && extra="$extra --review-leave"
     { [ $i = 25 ] || [ $i = 26 ]; } && extra="$extra --review-silent"
+    # ... and arb20 accepts any review seat and never gives its finding (charged as a missed reveal)
+    [ "$REVIEW" = 1 ] && [ $i = 20 ] && extra="$extra --no-vote"
     BITAID_WALLET=w nohup target/release/bitaid-node --role arbitrator --name arb$i-pc $P $extra --offer-window 40 $X >"$L/arb$i.out" 2>"$L/arb$i.log" </dev/null &
   done
   sleep 2
