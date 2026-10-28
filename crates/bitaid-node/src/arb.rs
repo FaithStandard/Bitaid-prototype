@@ -583,6 +583,8 @@ pub struct Replay {
     pub flagger: Option<String>,
     /// units already released under their bonds' scripts: (tier, arbitrator)
     pub released: Vec<(u32, String)>,
+    /// registered arbitrators who sat on none of the case's tiers: those a review could be drawn from
+    pub review_pool: usize,
 }
 
 impl Replay {
@@ -682,6 +684,7 @@ impl Replay {
             prior_overturns: HashMap::new(),
             flagger: None,
             released: vec![],
+            review_pool: usize::MAX,
         };
         let mine: Vec<&Envelope> = hist
             .iter()
@@ -753,6 +756,8 @@ impl Replay {
                 _ => None,
             });
         }
+        let seated = rp.review_excluded();
+        rp.review_pool = reg_all.keys().filter(|w| !seated.contains(*w)).count();
         let conv = rp.convener.clone();
         for st in 1..=REVIEW_STAGES {
             let k = REVIEW_BASE + st;
@@ -868,6 +873,11 @@ impl Replay {
         let mut prev: Option<Vec<u8>> = None;
         for st in 1..=REVIEW_STAGES {
             let Some(t) = self.reviews.get(&(REVIEW_BASE + st)) else {
+                // a pool too small to draw a first panel from those who did not sit on the case: no
+                // review can be held, and the verdict stands (a prototype-scale case)
+                if st == 1 && self.review_pool < REVIEW_PANEL {
+                    return ReviewState::Cleared(0);
+                }
                 return ReviewState::Pending(st);
             };
             if !t.committed || (self.flagger.is_some() && !t.fee_paid) {

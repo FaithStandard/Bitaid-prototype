@@ -140,7 +140,7 @@ impl Rpc {
     }
 
     /// Regtest only: mines `k` blocks to the wallet.
-/// The chain this node is on ("regtest", "signet", "test", "main"), read once.
+    /// The chain this node is on ("regtest", "signet", "test", "main"), read once.
     pub fn chain(&self) -> String {
         if let Some(c) = self.memo.lock().unwrap().get("chain") {
             return c.as_str().unwrap_or("").to_string();
@@ -158,6 +158,21 @@ impl Rpc {
 
     pub fn is_regtest(&self) -> bool {
         self.chain() == "regtest"
+    }
+
+    /// Until every one of `txids` is in a block: one mined on demand on regtest, waited for elsewhere.
+    /// A child spending a zero-fee TRUC parent must wait for it: the parent's anchor already has its
+    /// one allowed unconfirmed child.
+    pub fn confirm(&self, txids: &[bitcoin::Txid]) {
+        if self.is_regtest() {
+            self.mine(1).ok();
+        }
+        let t0 = std::time::Instant::now();
+        while txids.iter().any(|t| self.confirmations(t) == 0)
+            && t0.elapsed() < std::time::Duration::from_secs(900)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+        }
     }
 
     /// `k` more blocks: mined on demand on regtest; on any other chain, waited for — nobody mines on

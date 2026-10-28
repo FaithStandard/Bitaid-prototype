@@ -2515,7 +2515,7 @@ fn release_units(
         }
         arb::ReviewState::Cleared(st) => n.check(
             &format!(
-                "case {}: the staged review cleared the verdict at stage {st}; units released",
+                "case {}: the staged review cleared the verdict at stage {st} (0: too few to draw a panel, the verdict stands); units released",
                 &c[..8]
             ),
             true,
@@ -2657,8 +2657,13 @@ fn convene_review(
         arb::ReviewState::Cleared(st) => {
             n.check(
                 &format!(
-                    "case {}: the staged review cleared the verdict at stage {st}",
-                    &c[..8]
+                    "case {}: {}",
+                    &c[..8],
+                    if st == 0 {
+                        "too few arbitrators who sat on neither the case to draw a review panel; the verdict stands".to_string()
+                    } else {
+                        format!("the staged review cleared the verdict at stage {st}")
+                    }
                 ),
                 true,
                 "",
@@ -3204,8 +3209,8 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
                 b.witness(&oxo, &mut tx, &hex::decode(&pre).unwrap_or_default(), &osig);
                 n.rpc.package(&tx)
             })
-            .and_then(|_| {
-                n.rpc.mine(1).ok();
+            .and_then(|t| {
+                n.rpc.confirm(&[t]);
                 pool::cosign(n, view, &c, &serialize_hex(&mv), 0, &d2, session + 5)
             })
             .and_then(|(osig, _, signers)| {
@@ -3238,8 +3243,9 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
             return;
         }
     }
-    n.rpc.mine(1).ok();
     let pens = rp.review_inputs(a, r);
+    let ids: Vec<bitcoin::Txid> = pens.iter().map(|p| p.tx.compute_txid()).collect();
+    n.rpc.confirm(&ids);
     let Some((mut dist, prev)) = rp.review_distribution(a, r, &pens) else {
         n.check(
             "review seizure distribution",
@@ -5132,7 +5138,9 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
     if !ok_all {
         return;
     }
-    n.rpc.mine(1).ok();
+    // the distribution spends the forfeitures' outputs: they must be in a block first
+    let ids: Vec<bitcoin::Txid> = pens.iter().map(|p| p.tx.compute_txid()).collect();
+    n.rpc.confirm(&ids);
     let Some((mut dist, prev)) = rp.distribution(&pens) else {
         return;
     };
