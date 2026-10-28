@@ -61,15 +61,15 @@ start)
   ONION=$(echo "$OUT" | sed -n 's/^ONION=//p')
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
   export BITAID_RPC=http://bitaid:regtest@127.0.0.1:18443 BITAID_SELF_ONION=$ONION
-  X="--exit-after 3600"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
+  X="--exit-after ${WAIT:-10800}"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
   # REVIEW=1: the staged review (§10.3) — a captured tier 1 that no one appeals or challenges, drawn for
   # review (the phone's caller sets REVIEW_PCT=100), three independent panels of 5 drawn from 26 arbitrators
   if [ "$REVIEW" = 1 ]; then CHALLENGE=0; STALL=0; CAPTURE=1; ARBS=${ARBS:-26}; fi
   BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
   sleep 1
-  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait 3600 $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
-  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait 3600 $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
+  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
+  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pc --listen 127.0.0.1:7480 --public-url http://$ONION:7480 $P $X >"$L/archivist.out" 2>"$L/archivist.log" </dev/null &
   for i in $(seq 1 ${ARBS:-10}); do
     extra=""; for c in ${CORRUPT:-4 8}; do [ $i = $c ] && extra="--corrupt"; done
