@@ -949,14 +949,22 @@ fn archivist(mut n: Node) -> i32 {
                     })
                     .map(|(c, _)| c.clone())
                     .collect();
-                for c in due {
+                // one case per idle second, so a slow replay never starves the archive's own work
+                if let Some(c) = due.into_iter().next() {
                     looked.insert(c.clone(), Instant::now());
-                    let (Some(a), Some(r)) = (alerts.get(&c).cloned(), rosters.get(&c).cloned())
-                    else {
-                        continue;
-                    };
-                    if convene_review(&mut n, v, &a, &r, &mut first_seen) {
-                        settled.insert(c);
+                    if let (Some(a), Some(r)) = (alerts.get(&c).cloned(), rosters.get(&c).cloned())
+                    {
+                        let t = Instant::now();
+                        if convene_review(&mut n, v, &a, &r, &mut first_seen) {
+                            settled.insert(c.clone());
+                        }
+                        if t.elapsed() > secs(5) {
+                            n.log(&format!(
+                                "review check of {} took {:.1} s",
+                                &c[..8],
+                                t.elapsed().as_secs_f64()
+                            ));
+                        }
                     }
                     last = Instant::now();
                 }
