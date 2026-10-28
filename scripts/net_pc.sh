@@ -7,8 +7,16 @@
 # Logs also go to LOGDIR (default: the Windows "Files for Claude\pc_logs" folder) so they can be read there.
 cd "$(dirname "$0")/.."
 . "$HOME/.cargo/env" 2>/dev/null
-V=31.1; B=${BITCOIN_BIN:-$HOME/bitcoin-$V/bin}; D=${REGTEST_DIR:-$HOME/bitaid-regtest}
-CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
+V=31.1; B=${BITCOIN_BIN:-$HOME/bitcoin-$V/bin}
+# CHAIN=signet: a custom signet (challenge OP_TRUE) instead of regtest: nobody mines on demand, a block
+# producer on this PC makes a block every BLOCK seconds (default 20), and every node waits for blocks as
+# on a real chain. Its data is kept between runs, so only the first start mines the first 110 blocks.
+if [ "$CHAIN" = signet ]; then
+  NET="-signet -signetchallenge=51"; D=${SIGNET_DIR:-$HOME/bitaid-signet}; P2P=38333
+else
+  NET="-regtest"; D=${REGTEST_DIR:-$HOME/bitaid-regtest}; P2P=18444
+fi
+CLI="$B/bitcoin-cli $NET -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
 WIN="/mnt/c/Users/alber/OneDrive/Documentos/Bitaid/10/v6/Files for Claude"
 L=${LOGDIR:-$WIN/pc_logs}; mkdir -p "$L"
 case "$1" in
@@ -28,17 +36,23 @@ start)
   fi
   $B/bitcoind -version | head -1 || { echo "BITCOIND_CANNOT_RUN"; ls -l $B; exit 1; }
   mkdir -p $D
-  $CLI getblockcount >/dev/null 2>&1 || $B/bitcoind -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
-      -rpcbind=127.0.0.1 -rpcallowip=127.0.0.1 -port=18444 -listen=0 -fallbackfee=0.0001 -txindex=1 -daemon
+  $CLI getblockcount >/dev/null 2>&1 || $B/bitcoind $NET -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
+      -rpcbind=127.0.0.1 -rpcallowip=127.0.0.1 -port=$P2P -listen=0 -fallbackfee=0.0001 -txindex=1 -daemon
   for i in $(seq 1 60); do $CLI getblockcount >/dev/null 2>&1 && break; sleep 2; done
   $CLI createwallet w >/dev/null 2>&1 || $CLI loadwallet w >/dev/null 2>&1
-  H=$($CLI getblockcount); [ "$H" -lt 110 ] && $CLI -rpcwallet=w generatetoaddress 110 $($CLI -rpcwallet=w getnewaddress) >/dev/null
+  # (on signet each block needs real proof of work, a few seconds each: hence the high maxtries)
+  H=$($CLI getblockcount); [ "$H" -lt 110 ] && { echo "mining the first $((110-H)) blocks (signet: several minutes, once)"; $CLI -rpcwallet=w generatetoaddress $((110-H)) $($CLI -rpcwallet=w getnewaddress) 1000000000 >/dev/null; }
+  if [ "$CHAIN" = signet ]; then
+    pkill -f block_producer.sh 2>/dev/null
+    CLI="$CLI" nohup sh scripts/block_producer.sh >/dev/null 2>&1 </dev/null &
+  fi
   for w in caller r1 r3 r4; do
     $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1
     for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done
   done
-  $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null
-  echo "chain: regtest height $($CLI getblockcount)"
+  if [ "$CHAIN" = signet ]; then h=$($CLI getblockcount); while [ $($CLI getblockcount) -le $h ]; do sleep 2; done
+  else $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null; fi
+  echo "chain: $($CLI getblockchaininfo | sed -n 's/.*"chain": "\([a-z]*\)".*/\1/p') height $($CLI getblockcount)"
   OUT=$(sh scripts/tor_up.sh 7700 7480 18443) || { echo "$OUT"; exit 1; }
   ONION=$(echo "$OUT" | sed -n 's/^ONION=//p')
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
@@ -87,6 +101,6 @@ report)
   cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
   ;;
 stop)
-  pkill -x bitaid-node; $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped
+  pkill -x bitaid-node; pkill -f block_producer.sh 2>/dev/null; $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped
   ;;
 esac

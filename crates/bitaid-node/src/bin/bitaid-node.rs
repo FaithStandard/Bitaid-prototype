@@ -2427,8 +2427,11 @@ fn release_units(
 ) -> Option<bool> {
     let rp = arb::Replay::build(&n.history, a, r, &n.rpc)?;
     let Some(dr) = rp.review_draw(a, &n.rpc) else {
-        // regtest: nobody else mines, so the arbitrator mines toward the draw block itself
-        n.rpc.mine(1).ok();
+        // regtest: nobody else mines, so the arbitrator mines toward the draw block itself; on a
+        // real chain it just checks again later
+        if n.rpc.is_regtest() {
+            n.rpc.mine(1).ok();
+        }
         return None;
     };
     let c = rp.case.clone();

@@ -140,9 +140,42 @@ impl Rpc {
     }
 
     /// Regtest only: mines `k` blocks to the wallet.
+/// The chain this node is on ("regtest", "signet", "test", "main"), read once.
+    pub fn chain(&self) -> String {
+        if let Some(c) = self.memo.lock().unwrap().get("chain") {
+            return c.as_str().unwrap_or("").to_string();
+        }
+        let c = self
+            .call("getblockchaininfo", json!([]))
+            .ok()
+            .and_then(|v| v["chain"].as_str().map(String::from))
+            .unwrap_or_default();
+        if !c.is_empty() {
+            self.memo.lock().unwrap().insert("chain".into(), json!(c));
+        }
+        c
+    }
+
+    pub fn is_regtest(&self) -> bool {
+        self.chain() == "regtest"
+    }
+
+    /// `k` more blocks: mined on demand on regtest; on any other chain, waited for — nobody mines on
+    /// demand there, and a draw "from a block mined after the offers closed" is simply the next one.
     pub fn mine(&self, k: u32) -> Result<(), String> {
-        let a = self.wcall("getnewaddress", json!([]))?;
-        self.call("generatetoaddress", json!([k, a]))?;
+        if self.is_regtest() {
+            let a = self.wcall("getnewaddress", json!([]))?;
+            self.call("generatetoaddress", json!([k, a]))?;
+            return Ok(());
+        }
+        let start = self.height();
+        let t0 = std::time::Instant::now();
+        while self.height() < start + k {
+            if t0.elapsed() > std::time::Duration::from_secs(1800) {
+                return Err(format!("no new block in 30 min (at {start})"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
         Ok(())
     }
 

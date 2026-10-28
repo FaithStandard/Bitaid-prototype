@@ -6,12 +6,14 @@
 #   BITAID_CLI=... BITAID_RPC=... sh scripts/m3_arb_local.sh
 cd "$(dirname "$0")/.."
 BIN=target/release; CLI=${BITAID_CLI:?set BITAID_CLI}; L=arblogs; mkdir -p $L; rm -f $L/*
+# CHAIN=signet: a chain where nobody mines on demand (a block producer runs beside it); wait for blocks
+mine1() { if [ "$CHAIN" = signet ]; then h=$($CLI getblockcount); while [ $($CLI getblockcount) -le $h ]; do sleep 1; done; else $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null; fi; }
 H=$($CLI getblockcount); [ "$H" -lt 110 ] && $CLI -rpcwallet=w generatetoaddress 110 $($CLI -rpcwallet=w getnewaddress) >/dev/null
 for w in caller r1 r3; do
   $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1
   for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done
 done
-$CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null
+mine1
 P="--peer 127.0.0.1:7700 --pool arb"
 BITAID_WALLET=w $BIN/bitaid-node --role core --name core --listen-gossip 127.0.0.1:7700 2>$L/core.log & PIDS="$!"
 sleep 0.5
@@ -56,7 +58,7 @@ R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
 # second confirmed overturn costs them their entry bonds, §12)
 for c in $(seq 1 ${CASES:-1}); do
 [ $c -gt 1 ] && for f in caller r1 r3; do mv $L/$f.out $L/$f.$((c-1)).out; done
-[ $c -gt 1 ] && { for w in caller r1 r3; do for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done; done; $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null; }
+[ $c -gt 1 ] && { for w in caller r1 r3; do for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done; done; mine1; }
 BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
 BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
