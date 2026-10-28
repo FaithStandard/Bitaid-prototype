@@ -228,10 +228,36 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
             t: cfg.t,
         },
     );
-    let hellos = collect_pool(n, &name, cfg.n as usize, cfg.wait, |env| match &env.msg {
-        Msg::PoolHello { member, .. } => Some((*member, env.sender.clone())),
-        _ => None,
-    });
+    // the newest hello per member wins: a member that restarted (or a stale process left from an
+    // earlier run) said hello under another identity, and only the newest one is still listening.
+    // Once all are present, a short grace lets a newer hello replace an older one.
+    let mut seen: BTreeMap<u16, (u64, wire::Hex32)> = BTreeMap::new();
+    let end = Instant::now() + cfg.wait;
+    let mut grace: Option<Instant> = None;
+    loop {
+        let stop = grace.unwrap_or(end).min(end);
+        let left = stop.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let got = n.wait(left, |env, e| {
+            if e.tag("pool") != Some(name.as_str()) {
+                return None;
+            }
+            match &env.msg {
+                Msg::PoolHello { member, .. } => Some((*member, e.created_at, env.sender.clone())),
+                _ => None,
+            }
+        });
+        let Some((m, at, who)) = got else { break };
+        if seen.get(&m).map_or(true, |(t, _)| at >= *t) {
+            seen.insert(m, (at, who));
+        }
+        if grace.is_none() && seen.len() >= cfg.n as usize {
+            grace = Some(Instant::now() + Duration::from_secs(10));
+        }
+    }
+    let hellos: BTreeMap<u16, wire::Hex32> = seen.into_iter().map(|(m, (_, w))| (m, w)).collect();
     if hellos.len() < cfg.n as usize {
         return Err(format!(
             "only {} of {} members said hello",

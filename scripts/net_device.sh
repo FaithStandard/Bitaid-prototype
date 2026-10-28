@@ -18,6 +18,10 @@ responder|caller)
   export BITAID_RPC=http://bitaid:regtest@${CHAIN_ONION:-$PC}:18443
   P="--peer $PC:7700 --pool ${POOL:-tor1}"
   termux-wake-lock 2>/dev/null
+  # a pool member started with & ignores Ctrl+C, so one from an earlier run can still be alive and
+  # answer under an old identity: stop it first, and stop ours when this run is interrupted
+  pkill -f -- "--role pool-member" 2>/dev/null && { echo "stopped a pool member left from an earlier run"; sleep 2; }
+  trap 'kill $PM 2>/dev/null; exit 130' INT TERM
   if [ "$1" = responder ]; then
     BITAID_WALLET=w $BIN --role pool-member --name pool3 --id 3 --n 4 --t 3 --setup-wait 3600 $P --exit-after 3600 2>pool.log & PM=$!
     # r1 documented (what its footage shows) but claims in its ballot that it intervened; it escalates
