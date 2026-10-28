@@ -247,14 +247,20 @@ pub fn holding_move(
     seized: &Transaction,
     value: u64,
     seizure: &ScriptBuf,
+    keep: Option<(u64, ScriptBuf)>,
 ) -> (Transaction, [u8; 32]) {
     let t = holding_tree(oracle);
+    // what the case is owed to its seizure output; any remainder back under the bond's script
+    let outs = match keep {
+        Some((due, back)) if due < value => vec![(due, seizure.clone()), (value - due, back)],
+        _ => vec![(value, seizure.clone())],
+    };
     let tx = txbuild::payout(
         OutPoint {
             txid: seized.compute_txid(),
             vout: 0,
         },
-        &[(value, seizure.clone())],
+        &outs,
     );
     let d = txbuild::scriptspend_digest(
         &tx,
@@ -573,6 +579,10 @@ pub struct Replay {
     pub entries: HashMap<String, (Bond, String)>,
     /// per arbitrator, the other cases in which it voted for a verdict a staged review overturned
     pub prior_overturns: HashMap<String, usize>,
+    /// the bonded arbitrator that flagged the case, if the draw passed it over (§10.3)
+    pub flagger: Option<String>,
+    /// units already released under their bonds' scripts: (tier, arbitrator)
+    pub released: Vec<(u32, String)>,
 }
 
 impl Replay {
@@ -637,6 +647,15 @@ impl Replay {
                 }
             }
         }
+        // units already released: a finding after their release falls on the entry bond (§10.8)
+        for (k, w, b) in rp.units() {
+            if rpc
+                .tx_height(&b.release_tx(&oracle).0.compute_txid().to_string())
+                .is_some()
+            {
+                rp.released.push((k, w));
+            }
+        }
         Some(rp)
     }
 
@@ -661,6 +680,8 @@ impl Replay {
             review: ReviewState::NotDrawn,
             entries: HashMap::new(),
             prior_overturns: HashMap::new(),
+            flagger: None,
+            released: vec![],
         };
         let mine: Vec<&Envelope> = hist
             .iter()
@@ -718,11 +739,20 @@ impl Replay {
                 rp.base_fee,
                 rpc,
                 None,
+                None,
             );
             rp.tiers.insert(k, t);
         }
         // the staged review (§10.3): convened only on a case the draw selected, each stage only after
         // the one before found a different verdict at 80%
+        // a flag counts from a registered arbitrator, on a case the draw passed over
+        let reg_all = registry(hist);
+        if rp.review_draw(a, rpc).is_some_and(|d| !d.drawn) {
+            rp.flagger = mine.iter().find_map(|e| match &e.msg {
+                Msg::Flag { .. } if reg_all.contains_key(&e.sender) => Some(e.sender.clone()),
+                _ => None,
+            });
+        }
         let conv = rp.convener.clone();
         for st in 1..=REVIEW_STAGES {
             let k = REVIEW_BASE + st;
@@ -737,7 +767,18 @@ impl Replay {
                 break;
             }
             let reg = registry(hist);
-            let mut t = read_tier(&mine, &case, k, conv, false, rp.base_fee, rpc, Some(&reg));
+            let payer = rp.flagger.clone();
+            let mut t = read_tier(
+                &mine,
+                &case,
+                k,
+                conv,
+                false,
+                rp.base_fee,
+                rpc,
+                Some(&reg),
+                payer.as_deref(),
+            );
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
             // earlier stage of its review
@@ -815,7 +856,7 @@ impl Replay {
         let Some((_, fv)) = self.final_ruling() else {
             return ReviewState::NotDrawn;
         };
-        if !dr.drawn {
+        if !dr.drawn && self.flagger.is_none() {
             return ReviewState::NotDrawn;
         }
         let fk = verdict_key(&fv);
@@ -824,7 +865,7 @@ impl Replay {
             let Some(t) = self.reviews.get(&(REVIEW_BASE + st)) else {
                 return ReviewState::Pending(st);
             };
-            if !t.committed {
+            if !t.committed || (self.flagger.is_some() && !t.fee_paid) {
                 return ReviewState::Pending(st);
             }
             let Some(v) = t.verdict() else {
@@ -1198,6 +1239,9 @@ impl Replay {
         };
         let mut out = vec![];
         for (k, w) in self.overturned_voters() {
+            if self.released.iter().any(|x| x.0 == k && x.1 == w) {
+                continue;
+            }
             let Some((bond, pre)) = self.tiers[&k].forfeits.get(&w) else {
                 continue;
             };
@@ -1225,6 +1269,8 @@ impl Replay {
     #[allow(clippy::type_complexity)]
     pub fn entry_seizures(
         &self,
+        a: &Alerted,
+        r: &Rostered,
     ) -> Vec<(
         String,
         Bond,
@@ -1233,40 +1279,103 @@ impl Replay {
         [u8; 32],
         Transaction,
         [u8; 32],
+        u64,
     )> {
         let Some(spk) = self.seizure_spk() else {
             return vec![];
         };
-        // a first confirmed overturn costs the case units; the entry bond and expulsion come with the
-        // second (§12)
-        let mut who: Vec<String> = self
-            .overturned_voters()
-            .into_iter()
-            .map(|x| x.1)
-            .filter(|w| self.prior_overturns.get(w).copied().unwrap_or(0) >= 1)
-            .collect();
+        let voters = self.overturned_voters();
+        let n = voters.len().max(1) as u64;
+        let due = self.due_before_excess(a, r);
+        let mut who: Vec<(String, Option<u64>)> = vec![];
+        for (k, w) in &voters {
+            if self.prior_overturns.get(w).copied().unwrap_or(0) >= 1 {
+                // a second confirmed overturn: the whole entry bond, and the arbitrator is out (§12)
+                who.push((w.clone(), None));
+            } else if self.released.iter().any(|x| x.0 == *k && x.1 == *w) {
+                // a first offense found after the unit was released: the entry bond pays what the
+                // unit would have paid before the excess, its share of it, and keeps the rest
+                let unit = self.tiers[k]
+                    .forfeits
+                    .get(w)
+                    .map(|x| x.0.value)
+                    .unwrap_or(0);
+                who.push((w.clone(), Some(due.div_ceil(n).min(unit))));
+            }
+        }
         who.sort();
-        who.dedup();
+        who.dedup_by(|x, y| x.0 == y.0);
         who.into_iter()
-            .filter_map(|w| {
+            .filter_map(|(w, part)| {
                 let (b, pre) = self.entries.get(&w)?.clone();
                 let (tx, d) = b.entry_seizure(&self.oracle);
-                let (mv, d2) = holding_move(&self.oracle, &tx, b.value, &spk);
-                Some((w, b, pre, tx, d, mv, d2))
+                let keep = part.map(|p| (p, b.tree(&self.oracle).script_pubkey()));
+                let (mv, d2) = holding_move(&self.oracle, &tx, b.value, &spk, keep);
+                let paid = part.map(|p| p.min(b.value)).unwrap_or(b.value);
+                Some((w, b, pre, tx, d, mv, d2, paid))
             })
             .collect()
     }
 
-    /// What a confirmed review's distribution spends: the whole units, then the entry bonds moved into
-    /// the case's seizure output.
-    pub fn review_inputs(&self) -> Vec<Penalty> {
+    /// What a confirmed review's distribution owes before its excess (§12 items 1–5).
+    pub fn due_before_excess(&self, a: &Alerted, r: &Rostered) -> u64 {
+        let (ReviewState::Confirmed(cv), Some((_, fv))) = (&self.review, self.final_ruling())
+        else {
+            return 0;
+        };
+        let before = Self::paid_under(a, r, &fv);
+        let after = Self::paid_under(a, r, cv);
+        let mut due: u64 = after
+            .iter()
+            .map(|(x, s)| {
+                let had = before.iter().find(|y| y.1 == *s).map(|y| y.0).unwrap_or(0);
+                x.saturating_sub(had)
+            })
+            .sum();
+        let ck = verdict_key(cv);
+        let first = self.penalties();
+        for (k, t) in &self.tiers {
+            for (w, v) in &t.reveals {
+                if verdict_key(v) == ck {
+                    due += first
+                        .iter()
+                        .filter(|p| p.tier == *k && p.arbitrator == *w)
+                        .map(|p| p.amount)
+                        .sum::<u64>()
+                        + seat_fee(self.base_fee, *k);
+                }
+            }
+        }
+        for t in self.reviews.values() {
+            due += 3
+                * self.base_fee
+                * t.reveals.iter().filter(|x| verdict_key(&x.1) == ck).count() as u64;
+        }
+        due + self.flagger_due() + RETENTION_SATS
+    }
+
+    /// The flagger's stake back with the review premium, owed only when the review confirmed (§12).
+    pub fn flagger_due(&self) -> u64 {
+        if self.flagger.is_none() {
+            return 0;
+        }
+        let paid: u64 = self
+            .reviews
+            .values()
+            .filter(|t| t.fee_paid)
+            .map(|t| t.seats.len() as u64 * self.base_fee)
+            .sum();
+        paid + 3 * self.base_fee
+    }
+
+    pub fn review_inputs(&self, a: &Alerted, r: &Rostered) -> Vec<Penalty> {
         let mut v = self.review_penalties();
-        for (w, b, pre, _, _, mv, d2) in self.entry_seizures() {
+        for (w, b, pre, _, _, mv, d2, paid) in self.entry_seizures(a, r) {
             v.push(Penalty {
                 arbitrator: w,
                 tier: 0,
                 step: 0,
-                amount: b.value,
+                amount: paid,
                 bond: b,
                 pre,
                 tx: mv,
@@ -1373,6 +1482,14 @@ impl Replay {
                 left -= x;
             }
         }
+        // the flagger: its stake back with the premium (§12 item 3)
+        if let (Some(fl), true) = (self.flagger.as_ref(), left > 0) {
+            if let Some(b) = self.reviews.values().next().and_then(|t| t.offers.get(fl)) {
+                let x = self.flagger_due().min(left);
+                outs.push((x, b.payout.clone()));
+                left -= x;
+            }
+        }
         // retention of the case's evidence (§12 item 5): a case overturned on review is precedent and
         // review material, and its seizure pays for keeping it, to the base-slot archivists
         let keep = RETENTION_SATS.min(left);
@@ -1418,7 +1535,7 @@ impl Replay {
         a: &Alerted,
         r: &Rostered,
     ) -> Vec<(bitcoin::Txid, usize, [u8; 32], String)> {
-        let pens = self.review_inputs();
+        let pens = self.review_inputs(a, r);
         let mut out: Vec<(bitcoin::Txid, usize, [u8; 32], String)> = self
             .review_penalties()
             .iter()
@@ -1436,7 +1553,7 @@ impl Replay {
                 )
             })
             .collect();
-        for (w, b, _, tx, d, mv, d2) in self.entry_seizures() {
+        for (w, b, _, tx, d, mv, d2, _) in self.entry_seizures(a, r) {
             out.push((
                 tx.compute_txid(),
                 0,
@@ -1536,6 +1653,7 @@ fn read_tier(
     base_fee: u64,
     rpc: &Rpc,
     registry: Option<&HashMap<String, Bond>>,
+    payer: Option<&str>,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -1644,12 +1762,18 @@ fn read_tier(
             }
         }
     }
-    let fee = seat_fee(base_fee, k);
+    // a flagged review stage is paid by the flagger, the case fee to each seat (§10.3)
+    let fee = if payer.is_some() {
+        base_fee
+    } else {
+        seat_fee(base_fee, k)
+    };
+    let payer = payer.unwrap_or(escalator);
     // each seat paid its fee by the escalator, in one transaction or several
     let fee_txs: Vec<&String> = mine
         .iter()
         .filter_map(|e| match &e.msg {
-            Msg::FeePaid { tier, txid, .. } if *tier == k && e.sender == escalator => Some(txid),
+            Msg::FeePaid { tier, txid, .. } if *tier == k && e.sender == payer => Some(txid),
             _ => None,
         })
         .collect();

@@ -1,0 +1,37 @@
+Open flagging, local regtest, 2026-10-28: FLAG=40 CAPTURE=1 NOAPPEAL=1 REVIEW_PCT=0 ARBS=26
+[caller] 11 passed, 0 failed
+[r1-liar] 17 passed, 0 failed
+[r3] 8 passed, 0 failed
+[PASS] archivist case 569d26ec: passed over by the draw, flagged by 6c60d359; convening the staged review at the flagger's expense
+[PASS] archivist review stage 1: 5 of the 23 eligible arbitrators in the pool drawn from block 131; each must accept or pay its replacement
+[PASS] archivist review stage 1: d67b1251 would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 1: d67b1251 replaced at 25488 sats by b3f0a59a, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist review stage 1: the leaver paid its replacement b3f0a59a the 25488 sats on chain; the case disclosed to the replacement — 7cfc7965f36c7e00
+[PASS] archivist review stage 1: 1686cc8b silent past the window — one declined assignment toward the inactivity rule, no momentum; c7548c9d drawn in its place
+[PASS] archivist review stage 1: c7548c9d silent past the window — one declined assignment toward the inactivity rule, no momentum; c1e4ff1f drawn in its place
+[PASS] archivist review stage 1: the flagger paid the 5 seats 20000 sats each before the panel sat — 38e94b01c6df15acbf1200158939b848d2aed4bb61d528e4bd0d4ec659501939
+[PASS] archivist review stage 1: 5 of 5 findings revealed and committed on chain; 80% found I,D — 66.2 s from convening
+[PASS] archivist review stage 2: 5 of the 15 eligible arbitrators in the pool drawn from block 137; each must accept or pay its replacement
+[PASS] archivist review stage 2: 322c3f9d would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 2: e5f0f032 would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 2: 322c3f9d replaced at 25488 sats by 67e79762, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist review stage 2: the leaver paid its replacement 67e79762 the 25488 sats on chain; the case disclosed to the replacement — 5a5c9d383c5072e3
+[PASS] archivist review stage 2: e5f0f032 replaced at 25488 sats by 105dd22e, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist review stage 2: the leaver paid its replacement 105dd22e the 25488 sats on chain; the case disclosed to the replacement — 7e9f442a9e3dfb02
+[PASS] archivist review stage 2: the flagger paid the 5 seats 20000 sats each before the panel sat — 45642b359cfebf32bff11589b5c8d56a7cd508c59be69f08f6dbeefd101d50ff
+[PASS] archivist review stage 2: 5 of 5 findings revealed and committed on chain; 80% found I,D — 21.5 s from convening
+[PASS] archivist review stage 3: 5 of the 8 eligible arbitrators in the pool drawn from block 144; each must accept or pay its replacement
+[PASS] archivist review stage 3: f6363add would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 3: f6363add replaced at 25488 sats by faea0832, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist review stage 3: the leaver paid its replacement faea0832 the 25488 sats on chain; the case disclosed to the replacement — 46f35cb59cc0aa35
+[PASS] archivist review stage 3: the flagger paid the 5 seats 20000 sats each before the panel sat — 39ad01b4cd1f6ff2a8aad2464cf34f7fecd924e209285bf0472fb1dfe4d93ad9
+[PASS] archivist review stage 3: 5 of 5 findings revealed and committed on chain; 80% found I,D — 21.2 s from convening
+[PASS] archivist case 569d26ec: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist case 569d26ec: 2 arbitrator(s) voted for the overturned verdict; 0 unit(s) still held, 2 already released
+[PASS] archivist arbitrator b79bbf3c: its unit already released, a first offense: its entry bond seized by the forfeiture it pre-signed when it joined, 940000 sats of it moved into the case's seizure output and 9060000 returned under its bond's script, both co-signed by the pool — 5612577c1288e64a (pool members [3, 4, 1])
+[PASS] archivist arbitrator e98582cd: its unit already released, a first offense: its entry bond seized by the forfeiture it pre-signed when it joined, 940000 sats of it moved into the case's seizure output and 9060000 returned under its bond's script, both co-signed by the pool — b9fbc6a652f2d4aa (pool members [1, 2, 3])
+[PASS] archivist review seizure distributed (§12) by the pool and the archivist: 360000 sats to a responder, 420000 sats to a vindicated dissenter, 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 200000 sats to the archivist (retention of the case's evidence) — 6408b1f92169090f
+[PASS] arb1 flagged closed case 569d26ec for the staged review, paying each panel before it sits
+[PASS] arb1 review stage 1 of the flagged case: paid 5 seats 20000 sats each — 38e94b01c6df15ac
+[PASS] arb1 review stage 2 of the flagged case: paid 5 seats 20000 sats each — 45642b359cfebf32
+[PASS] arb1 review stage 3 of the flagged case: paid 5 seats 20000 sats each — 39ad01b4cd1f6ff2

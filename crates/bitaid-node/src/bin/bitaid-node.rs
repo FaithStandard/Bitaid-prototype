@@ -1048,7 +1048,7 @@ fn archivist(mut n: Node) -> i32 {
                 let mut called = rp.distribution(&pens);
                 // after a confirmed review, the distribution of what it seized (§12)
                 if called.as_ref().map(|d| d.0.compute_txid()) != Some(t.compute_txid()) {
-                    let rpens = rp.review_inputs();
+                    let rpens = rp.review_inputs(a, r);
                     if let Some(d) = rp.review_distribution(a, r, &rpens) {
                         if d.0.compute_txid() == t.compute_txid() {
                             pens = rpens;
@@ -2576,14 +2576,20 @@ fn convene_review(
         return false;
     };
     match rp.review_state(a, &n.rpc) {
+        // passed over: nothing to convene unless a bonded arbitrator flags it later
         arb::ReviewState::NotDrawn => {
-            n.log(&format!(
-                "case {}: review draw at block {} passed it over ({}%)",
-                &c[..8],
-                dr.height,
-                dr.rate_bp / 100
-            ));
-            true
+            if first_seen
+                .insert(format!("draw:{c}"), Instant::now())
+                .is_none()
+            {
+                n.log(&format!(
+                    "case {}: review draw at block {} passed it over ({}%)",
+                    &c[..8],
+                    dr.height,
+                    dr.rate_bp / 100
+                ));
+            }
+            false
         }
         arb::ReviewState::Pending(st) => {
             let k = arb::REVIEW_BASE + st;
@@ -2616,18 +2622,25 @@ fn convene_review(
                     ));
                 }
                 n.check(
-                    &format!(
-                        "case {}: drawn for review at block {} ({}% for a {} final panel); convening the staged review",
-                        &c[..8],
-                        dr.height,
-                        dr.rate_bp / 100,
-                        if dr.split { "split" } else { "unanimous" }
-                    ),
+                    &match &rp.flagger {
+                        Some(f) => format!(
+                            "case {}: passed over by the draw, flagged by {}; convening the staged review at the flagger's expense",
+                            &c[..8],
+                            &f[..8]
+                        ),
+                        None => format!(
+                            "case {}: drawn for review at block {} ({}% for a {} final panel); convening the staged review",
+                            &c[..8],
+                            dr.height,
+                            dr.rate_bp / 100,
+                            if dr.split { "split" } else { "unanimous" }
+                        ),
+                    },
                     true,
                     "",
                 );
             }
-            review_stage(n, a, r, view, k);
+            review_stage(n, a, r, view, k, rp.flagger.clone());
             false
         }
         arb::ReviewState::Cleared(st) => {
@@ -2668,6 +2681,7 @@ fn review_stage(
     r: &Rostered,
     view: &PoolView,
     k: u32,
+    flagger: Option<String>,
 ) -> Option<Ballot> {
     let c = a.case_hex.clone();
     let st = k - arb::REVIEW_BASE;
@@ -2805,16 +2819,18 @@ fn review_stage(
                             },
                             false,
                         );
-                        n.send_case(
-                            &c,
-                            std::slice::from_ref(&w),
-                            Msg::FeePaid {
-                                case_id: c.clone(),
-                                tier: k,
-                                txid: String::new(),
-                            },
-                            false,
-                        );
+                        if flagger.is_none() {
+                            n.send_case(
+                                &c,
+                                std::slice::from_ref(&w),
+                                Msg::FeePaid {
+                                    case_id: c.clone(),
+                                    tier: k,
+                                    txid: String::new(),
+                                },
+                                false,
+                            );
+                        }
                         state.insert(w.clone(), S::Keyed);
                     }
                     Some(S::Drawn(_)) => {
@@ -2847,16 +2863,18 @@ fn review_stage(
                                 },
                                 false,
                             );
-                            n.send_case(
-                                &c,
-                                std::slice::from_ref(&new),
-                                Msg::FeePaid {
-                                    case_id: c.clone(),
-                                    tier: k,
-                                    txid: String::new(),
-                                },
-                                false,
-                            );
+                            if flagger.is_none() {
+                                n.send_case(
+                                    &c,
+                                    std::slice::from_ref(&new),
+                                    Msg::FeePaid {
+                                        case_id: c.clone(),
+                                        tier: k,
+                                        txid: String::new(),
+                                    },
+                                    false,
+                                );
+                            }
                             n.check(&format!("review stage {st}: the leaver paid its replacement {} the {fee} sats on chain; the case disclosed to the replacement", &new[..8]), true, &txid[..16.min(txid.len())]);
                             state.insert(new, S::Keyed);
                         }
@@ -2972,6 +2990,56 @@ fn review_stage(
         );
         return None;
     }
+    // a flagged review: the flagger pays each seat the case fee before the panel sits (§10.3)
+    if let Some(fl) = &flagger {
+        n.send_case(
+            &c,
+            &[],
+            Msg::ReviewSeats {
+                case_id: c.clone(),
+                tier: k,
+                seats: seats.clone(),
+            },
+            false,
+        );
+        let (cc, f2) = (c.clone(), fl.clone());
+        let paid = n.wait(secs(180), |env, _| match &env.msg {
+            Msg::FeePaid {
+                case_id,
+                tier,
+                txid,
+            } if *case_id == cc && *tier == k && env.sender == f2 => Some(txid.clone()),
+            _ => None,
+        });
+        let ok = paid.as_ref().is_some_and(|t| {
+            seats
+                .iter()
+                .all(|w| n.rpc.paid_to(t, &reg[w].payout) >= a.template.arb_fee)
+        });
+        n.check(
+            &format!(
+                "review stage {st}: the flagger paid the {size} seats {} sats each before the panel sat",
+                a.template.arb_fee
+            ),
+            ok,
+            &paid.unwrap_or_default(),
+        );
+        if !ok {
+            return None;
+        }
+        for w in &seats {
+            n.send_case(
+                &c,
+                std::slice::from_ref(w),
+                Msg::FeePaid {
+                    case_id: c.clone(),
+                    tier: k,
+                    txid: String::new(),
+                },
+                false,
+            );
+        }
+    }
     // the findings, by commit-reveal, and the stage's commitment
     let (cc, ss) = (c.clone(), seats.clone());
     let mut seen = std::collections::HashSet::new();
@@ -3061,13 +3129,16 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
     let c = a.case_hex.clone();
     let oxo = wire::xonly(&view.key_hex()).unwrap();
     let pens = rp.review_penalties();
+    let voters = rp.overturned_voters();
     n.check(
         &format!(
-            "case {}: {} arbitrator(s) voted for the overturned verdict, each unit held since the draw",
+            "case {}: {} arbitrator(s) voted for the overturned verdict; {} unit(s) still held, {} already released",
             &c[..8],
-            pens.len()
+            voters.len(),
+            pens.len(),
+            rp.released.iter().filter(|x| voters.contains(x)).count()
         ),
-        !pens.is_empty(),
+        !voters.is_empty(),
         "",
     );
     let mut session = 300_000u32;
@@ -3105,7 +3176,7 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
     n.rpc.mine(1).ok();
     // the entry bonds of the same arbitrators, by the seizure each pre-signed when it joined: into the
     // holding output, then into this case's seizure output (§10.8, B.1)
-    for (w, b, pre, mut tx, d, mut mv, d2) in rp.entry_seizures() {
+    for (w, b, pre, mut tx, d, mut mv, d2, paid) in rp.entry_seizures(a, r) {
         let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, session)
             .and_then(|(osig, _, _)| {
                 b.witness(&oxo, &mut tx, &hex::decode(&pre).unwrap_or_default(), &osig);
@@ -3121,11 +3192,20 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
             });
         session += 10;
         n.check(
-            &format!(
-                "arbitrator {}: its whole entry bond ({} sats) seized by the forfeiture it pre-signed when it joined, and moved into the case's seizure output, both co-signed by the pool",
-                &w[..8],
-                b.value
-            ),
+            &if paid < b.value {
+                format!(
+                    "arbitrator {}: its unit already released, a first offense: its entry bond seized by the forfeiture it pre-signed when it joined, {} sats of it moved into the case's seizure output and {} returned under its bond's script, both co-signed by the pool",
+                    &w[..8],
+                    paid,
+                    b.value - paid
+                )
+            } else {
+                format!(
+                    "arbitrator {}: a second confirmed overturn: its whole entry bond ({} sats) seized by the forfeiture it pre-signed when it joined, and moved into the case's seizure output, both co-signed by the pool",
+                    &w[..8],
+                    b.value
+                )
+            },
             res.is_ok(),
             &match &res {
                 Ok((t, s)) => format!("{} (pool members {s:?})", &t.to_string()[..16]),
@@ -3137,7 +3217,7 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
         }
     }
     n.rpc.mine(1).ok();
-    let pens = rp.review_inputs();
+    let pens = rp.review_inputs(a, r);
     let Some((mut dist, prev)) = rp.review_distribution(a, r, &pens) else {
         n.check(
             "review seizure distribution",
@@ -3378,6 +3458,8 @@ fn arbitrator(mut n: Node) -> i32 {
     // review seats this arbitrator is leaving: when the fee was last raised, and the fee (§10.3)
     let mut leaving: HashMap<(String, u32), (Instant, u64)> = HashMap::new();
     let mut reveal_due: HashMap<(String, u32), Instant> = HashMap::new();
+    let mut flag_at: HashMap<String, Instant> = HashMap::new();
+    let mut flagged: std::collections::HashSet<String> = Default::default();
     let mut review_offered: std::collections::HashSet<(String, u32, String)> = Default::default();
     let pool_ids: std::collections::HashSet<String> = view.ids.values().cloned().collect();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
@@ -3458,6 +3540,24 @@ fn arbitrator(mut n: Node) -> i32 {
             );
             collect_seizure(&mut n, &a, &r, &view);
             n.summary();
+        }
+        let due_flags: Vec<String> = flag_at
+            .iter()
+            .filter(|(_, t)| Instant::now() >= **t)
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in due_flags {
+            flag_at.remove(&c);
+            flagged.insert(c.clone());
+            n.send_case(&c, &[], Msg::Flag { case_id: c.clone() }, false);
+            n.check(
+                &format!(
+                    "flagged closed case {} for the staged review, paying each panel before it sits",
+                    &c[..8]
+                ),
+                true,
+                "",
+            );
         }
         let late: Vec<(String, u32)> = reveal_due
             .iter()
@@ -4124,10 +4224,62 @@ fn arbitrator(mut n: Node) -> i32 {
                     &case_id[..8]
                 ));
             }
+            // a review stage of a case this arbitrator flagged is seated: pay each seat the case fee
+            Msg::ReviewSeats {
+                case_id,
+                tier,
+                seats,
+            } if flagged.contains(&case_id) => {
+                let fee = alerts
+                    .get(&case_id)
+                    .map(|a| a.template.arb_fee)
+                    .unwrap_or(0);
+                let pay: Vec<(bitcoin::ScriptBuf, u64)> = seats
+                    .iter()
+                    .filter_map(|w| registry_payout(&n.history, w).map(|p| (p, fee)))
+                    .collect();
+                let res = if pay.len() == seats.len() {
+                    n.rpc.pay_many(&pay)
+                } else {
+                    Err("a seat's payout unknown".into())
+                };
+                if let Ok(txid) = &res {
+                    n.rpc.mine(1).ok();
+                    n.send_case(
+                        &case_id,
+                        &[],
+                        Msg::FeePaid {
+                            case_id: case_id.clone(),
+                            tier,
+                            txid: txid.to_string(),
+                        },
+                        false,
+                    );
+                }
+                n.check(
+                    &format!(
+                        "review stage {} of the flagged case: paid {} seats {fee} sats each",
+                        tier - arb::REVIEW_BASE,
+                        seats.len()
+                    ),
+                    res.is_ok(),
+                    &res.map(|t| t.to_string()[..16].to_string())
+                        .unwrap_or_else(|e| e),
+                );
+            }
             // the pool attested the final outcome: the case's units wait for its review draw
             Msg::AttestShare { case_id, .. } if pool_ids.contains(&s) => {
                 let who = final_by.entry(case_id.clone()).or_default();
                 who.insert(s.clone());
+                // --flag-after S: flag the case S seconds after it is final (a hunter's flag counts only
+                // if the review draw passes the case over, §10.3)
+                if who.len() == view.t {
+                    if let Some(sec) = arg("--flag-after").and_then(|x| x.parse::<u64>().ok()) {
+                        flag_at
+                            .entry(case_id.clone())
+                            .or_insert(Instant::now() + secs(sec));
+                    }
+                }
                 if who.len() == view.t && units.keys().any(|k| k.0 == case_id) {
                     n.log(&format!(
                         "case {} final; its units wait for the review draw",

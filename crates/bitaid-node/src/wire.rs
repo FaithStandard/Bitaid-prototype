@@ -332,6 +332,17 @@ pub enum Msg {
         #[serde(default)]
         seat: Hex32,
     },
+    /// A bonded arbitrator flags a closed case the review draw passed over, sending it to the staged
+    /// review at its own expense (§10.3): it pays each panel before it sits.
+    Flag {
+        case_id: Hex32,
+    },
+    /// Review convener, on a flagged case: a stage's seats are final; the flagger pays them now.
+    ReviewSeats {
+        case_id: Hex32,
+        tier: u32,
+        seats: Vec<Hex32>,
+    },
     /// Review convener: the case key, sealed to a reviewer that accepted or took a seat by replacement.
     ReviewKey {
         case_id: Hex32,
@@ -435,6 +446,8 @@ impl Msg {
             Msg::Reseated { .. } => "reseated",
             Msg::ReviewAnswer { .. } => "review-answer",
             Msg::ReviewKey { .. } => "review-key",
+            Msg::Flag { .. } => "flag",
+            Msg::ReviewSeats { .. } => "review-seats",
             Msg::FeePaid { .. } => "fee-paid",
             Msg::VerdictCommit { .. } => "verdict-commit",
             Msg::VerdictReveal { .. } => "verdict-reveal",
@@ -484,6 +497,8 @@ impl Msg {
             | Msg::Deadlock { case_id, .. }
             | Msg::ReviewAnswer { case_id, .. }
             | Msg::ReviewKey { case_id, .. }
+            | Msg::Flag { case_id, .. }
+            | Msg::ReviewSeats { case_id, .. }
             | Msg::SeizureRequest { case_id, .. }
             | Msg::SeizureSig { case_id, .. } => Some(case_id),
         }

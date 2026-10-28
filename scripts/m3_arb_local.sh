@@ -35,6 +35,9 @@ for i in $(seq 1 ${ARBS:-10}); do
   # forfeiture refunds the fee and a replacement is drawn (§10.4); arb10 otherwise sits idle
   [ $i = 10 ] && extra="--tiers 2"
   [ $i = 1 ] && extra="$extra --greedy-release"
+  # FLAG=40: arb1 flags the closed case 40 s after it is final; with REVIEW_PCT=0 the draw passes it over,
+  # the units are released, and the flagged review must reach the entry bonds
+  [ -n "$FLAG" ] && [ $i = 1 ] && extra="$extra --flag-after $FLAG"
   # review duty (§10.3): every arbitrator takes a replacement seat only at 25,000 sats or more; with
   # ARBS=26, arb21-24 pay their way out of any review seat they are drawn for and arb25-26 stay silent
   extra="$extra --review-price 25000"
@@ -68,6 +71,7 @@ done
 # with a review, wait for it to settle before the next case
 [ -n "$REVIEW_PCT" ] && for i in $(seq 1 300); do [ $(grep -c "cleared the verdict\|seizure distributed\|passed it over" $L/archivist.out 2>/dev/null) -ge $c ] && break; sleep 2; done
 done
+[ -n "$FLAG" ] && for i in $(seq 1 400); do grep -q "seizure distributed\|cleared the verdict\|FAIL" $L/archivist.out 2>/dev/null && break; sleep 2; done
 sleep 20
 grep -h "review\|FAIL" $L/archivist.out
 grep -h "review\|unit of\|FAIL" $L/arb*.out | sort | uniq -c | tee arb_release.txt
