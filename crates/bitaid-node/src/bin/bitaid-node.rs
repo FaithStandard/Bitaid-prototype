@@ -927,6 +927,7 @@ fn archivist(mut n: Node) -> i32 {
     // review is settled, and when each case was last looked at
     let mut settled: std::collections::HashSet<String> = Default::default();
     let mut looked: HashMap<String, Instant> = HashMap::new();
+    let mut first_seen: HashMap<String, Instant> = HashMap::new();
     loop {
         if last.elapsed() > secs(idle) {
             n.log(&format!(
@@ -954,7 +955,7 @@ fn archivist(mut n: Node) -> i32 {
                     else {
                         continue;
                     };
-                    if convene_review(&mut n, v, &a, &r) {
+                    if convene_review(&mut n, v, &a, &r, &mut first_seen) {
                         settled.insert(c);
                     }
                     last = Instant::now();
@@ -1039,7 +1040,7 @@ fn archivist(mut n: Node) -> i32 {
                 let mut called = rp.distribution(&pens);
                 // after a confirmed review, the distribution of what it seized (§12)
                 if called.as_ref().map(|d| d.0.compute_txid()) != Some(t.compute_txid()) {
-                    let rpens = rp.review_penalties();
+                    let rpens = rp.review_inputs();
                     if let Some(d) = rp.review_distribution(a, r, &rpens) {
                         if d.0.compute_txid() == t.compute_txid() {
                             pens = rpens;
@@ -2539,7 +2540,13 @@ fn release_units(
 /// The staged review of a case, as its convener runs it (§10.3): once the pool has attested the case
 /// and its review draw is mined, convene the stage that is due, if any. True once nothing more is due:
 /// the draw passed the case over, or the review cleared or confirmed.
-fn convene_review(n: &mut Node, view: &PoolView, a: &Alerted, r: &Rostered) -> bool {
+fn convene_review(
+    n: &mut Node,
+    view: &PoolView,
+    a: &Alerted,
+    r: &Rostered,
+    first_seen: &mut HashMap<String, Instant>,
+) -> bool {
     let c = a.case_hex.clone();
     let attested: std::collections::HashSet<&String> = n
         .history
@@ -2581,14 +2588,24 @@ fn convene_review(n: &mut Node, view: &PoolView, a: &Alerted, r: &Rostered) -> b
                 return false;
             }
             if st == 1 {
-                // the review takes up a closed case: its penalties taken and distributed first
-                if let Some(full) = arb::Replay::build(&n.history, a, r, &n.rpc) {
-                    let pens = full.penalties();
-                    if let Some((d, _)) = full.distribution(&pens) {
-                        if n.rpc.confirmations(&d.compute_txid()) == 0 {
-                            return false;
+                // the review takes up a closed case: its penalties taken and distributed first, unless
+                // nobody collects them within --review-wait of the case's attestation
+                let since = *first_seen.entry(c.clone()).or_insert_with(Instant::now);
+                if since.elapsed() < secs(num("--review-wait", 600u64)) {
+                    if let Some(full) = arb::Replay::build(&n.history, a, r, &n.rpc) {
+                        let pens = full.penalties();
+                        if let Some((d, _)) = full.distribution(&pens) {
+                            if n.rpc.confirmations(&d.compute_txid()) == 0 {
+                                return false;
+                            }
                         }
                     }
+                } else {
+                    n.log(&format!(
+                        "case {}: its penalties not distributed after {} s; reviewing anyway",
+                        &c[..8],
+                        since.elapsed().as_secs()
+                    ));
                 }
                 n.check(
                     &format!(
@@ -3003,6 +3020,13 @@ fn review_stage(
         .map(|t| n.rpc.has_op_return(t, &commitment))
         .unwrap_or(false);
     let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
+    for w in seats.iter().filter(|w| !reveals.iter().any(|x| &x.0 == *w)) {
+        n.check(
+            &format!("review stage {st}: {} accepted and never revealed its finding — charged as a missed reveal in its momentum", &w[..8]),
+            true,
+            "",
+        );
+    }
     let v = arb::supermajority_of(size, &votes, 4, 5);
     n.check(
         &format!(
@@ -3071,6 +3095,41 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
         }
     }
     n.rpc.mine(1).ok();
+    // the entry bonds of the same arbitrators, by the seizure each pre-signed when it joined: into the
+    // holding output, then into this case's seizure output (§10.8, B.1)
+    for (w, b, pre, mut tx, d, mut mv, d2) in rp.entry_seizures() {
+        let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, session)
+            .and_then(|(osig, _, _)| {
+                b.witness(&oxo, &mut tx, &hex::decode(&pre).unwrap_or_default(), &osig);
+                n.rpc.package(&tx)
+            })
+            .and_then(|_| {
+                n.rpc.mine(1).ok();
+                pool::cosign(n, view, &c, &serialize_hex(&mv), 0, &d2, session + 5)
+            })
+            .and_then(|(osig, _, signers)| {
+                arb::holding_witness(&oxo, &mut mv, &osig);
+                n.rpc.package(&mv).map(|t| (t, signers))
+            });
+        session += 10;
+        n.check(
+            &format!(
+                "arbitrator {}: its whole entry bond ({} sats) seized by the forfeiture it pre-signed when it joined, and moved into the case's seizure output, both co-signed by the pool",
+                &w[..8],
+                b.value
+            ),
+            res.is_ok(),
+            &match &res {
+                Ok((t, s)) => format!("{} (pool members {s:?})", &t.to_string()[..16]),
+                Err(e) => e.clone(),
+            },
+        );
+        if res.is_err() {
+            return;
+        }
+    }
+    n.rpc.mine(1).ok();
+    let pens = rp.review_inputs();
     let Some((mut dist, prev)) = rp.review_distribution(a, r, &pens) else {
         n.check(
             "review seizure distribution",
@@ -3256,6 +3315,29 @@ fn arbitrator(mut n: Node) -> i32 {
         },
         false,
     );
+    // ... and its seizure, pre-signed now: the whole entry bond into the holding output, for a fraud
+    // a staged review confirms against this arbitrator, whenever it is found (§10.8, B.1)
+    let entry = arb::Bond {
+        op: bond,
+        value: bond_value,
+        scoped: xo(&bs),
+        cold: xo(&bc),
+        fallback: bf,
+        payout: payout.clone(),
+    };
+    let (_, ed) = entry.entry_seizure(&wire::xonly(&okey).unwrap());
+    n.send_case(
+        &reg,
+        &[],
+        Msg::Forfeits {
+            case_id: reg.clone(),
+            tier: 0,
+            stake: bond.to_string(),
+            value: bond_value,
+            sigs: vec![hex::encode(sign_bip340(&bs, &ed))],
+        },
+        false,
+    );
     n.log(&format!(
         "arbitrator bond {} posted{}",
         &bond.to_string()[..12],
@@ -3287,6 +3369,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut announced: std::collections::HashSet<String> = Default::default();
     // review seats this arbitrator is leaving: when the fee was last raised, and the fee (§10.3)
     let mut leaving: HashMap<(String, u32), (Instant, u64)> = HashMap::new();
+    let mut reveal_due: HashMap<(String, u32), Instant> = HashMap::new();
     let mut review_offered: std::collections::HashSet<(String, u32, String)> = Default::default();
     let pool_ids: std::collections::HashSet<String> = view.ids.values().cloned().collect();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
@@ -3367,6 +3450,37 @@ fn arbitrator(mut n: Node) -> i32 {
             );
             collect_seizure(&mut n, &a, &r, &view);
             n.summary();
+        }
+        let late: Vec<(String, u32)> = reveal_due
+            .iter()
+            .filter(|(k, t)| Instant::now() >= **t && !revealed.contains(*k))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in late {
+            reveal_due.remove(&key);
+            let Some((v, salt)) = mine.get(&key).cloned() else {
+                continue;
+            };
+            revealed.insert(key.clone());
+            if flag("--no-reveal") {
+                continue;
+            }
+            n.log(&format!(
+                "review stage {} of {}: commit deadline passed; revealing",
+                key.1 - arb::REVIEW_BASE,
+                &key.0[..8]
+            ));
+            n.send_case(
+                &key.0,
+                &[],
+                Msg::VerdictReveal {
+                    case_id: key.0.clone(),
+                    tier: key.1,
+                    verdict: v,
+                    salt: hex::encode(salt),
+                },
+                false,
+            );
         }
         // a replacement fee rises with the fee market's time trigger until someone takes the seat
         // (×1.0625 every 18 blocks; every few seconds at prototype scale)
@@ -3833,6 +3947,15 @@ fn arbitrator(mut n: Node) -> i32 {
                     // in clear: verdicts are the record every arbitrator's momentum is computed from
                     false,
                 );
+                // a review stage has no seat forfeiture to replace a seat that never commits: once the
+                // commit deadline has passed, the seats that committed reveal (§10.3)
+                if arb::is_review(tier) {
+                    let w = alerts
+                        .get(&case_id)
+                        .map(|a| a.template.commit_deadline as u64)
+                        .unwrap_or(60);
+                    reveal_due.insert(key.clone(), Instant::now() + secs(w + 5));
+                }
                 mine.insert(key, (verdict, salt));
             }
             Msg::VerdictCommit { case_id, tier, .. } => {

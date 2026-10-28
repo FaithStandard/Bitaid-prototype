@@ -1,10 +1,10 @@
-      1 [PASS] arb1 case 564cec02: review draw at block 129 (100% for a split final panel): drawn for review; units held
-      1 [PASS] arb1 case 564cec02: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
+      1 [PASS] arb1 case 442993f4: review draw at block 131 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb1 case 442993f4: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
       1 [PASS] arb1 the pool refuses to release a 2000000-sat unit of a case drawn for review — no session completed
-      1 [PASS] arb22 review stage 3: replaced by 98779fcc, drawn blind from 1 offer(s); paid it 25488 sats — d6d71d67af0f3e48
-      1 [PASS] arb23 review stage 3: replaced by cb810886, drawn blind from 1 offer(s); paid it 25488 sats — 56320d4339c240f2
-      1 [PASS] arb24 review stage 3: replaced by e948f1ac, drawn blind from 1 offer(s); paid it 25488 sats — 197ff34fcfff1bfd
-      1 [PASS] arb4 case 564cec02: review draw at block 129 (100% for a split final panel): drawn for review; units held
-      1 [PASS] arb4 case 564cec02: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
-      1 [PASS] arb8 case 564cec02: review draw at block 129 (100% for a split final panel): drawn for review; units held
-      1 [PASS] arb8 case 564cec02: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+      1 [PASS] arb21 review stage 1: replaced by d5ccd973, drawn blind from 1 offer(s); paid it 20000 sats — 06e7681301691138
+      1 [PASS] arb22 review stage 2: replaced by 23a4934b, drawn blind from 1 offer(s); paid it 20000 sats — 99b2acd016465423
+      1 [PASS] arb24 review stage 3: replaced by 3e261594, drawn blind from 1 offer(s); paid it 25488 sats — 8c99fd8aa69ced16
+      1 [PASS] arb4 case 442993f4: review draw at block 131 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb4 case 442993f4: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+      1 [PASS] arb8 case 442993f4: review draw at block 131 (100% for a split final panel): drawn for review; units held
+      1 [PASS] arb8 case 442993f4: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure

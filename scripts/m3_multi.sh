@@ -22,8 +22,10 @@ sleep 0.5
 for i in 1 2 3 4; do
   BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 --batch 300 $P $X 2>$L/pool$i.log & PIDS="$PIDS $!"
 done
-BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist $P --listen 127.0.0.1:7482 $X 2>$L/archivist.log & PIDS="$PIDS $!"
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
+BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist $P --listen 127.0.0.1:7482 $X >$L/archivist.out 2>$L/archivist.log & PIDS="$PIDS $!"
+# arb14-25: honest reviewers enough for the staged review of drawn cases (three panels of 5 from those
+# who sat on neither the case nor an earlier stage)
+for i in $(seq 1 ${ARBS:-25}); do
   extra="--error-rate 0.05"
   { [ $i = 9 ] || [ $i = 10 ]; } && extra="--error-rate 0.35"
   { [ $i = 11 ] || [ $i = 12 ]; } && extra="--corrupt"
@@ -50,6 +52,7 @@ echo "== case units (§10.2-10.3)" >> $L/cases.txt
 echo "review draws seen by seated arbitrators: $(grep -h 'review draw at block' $L/arb*.out | wc -l); of which drawn: $(grep -h 'drawn for review' $L/arb*.out | wc -l)" >> $L/cases.txt
 echo "cases drawn: $(grep -ho 'case [0-9a-f]*: review draw at block [0-9]* ([0-9]*% for a [a-z]* final panel): drawn' $L/arb*.out | sort -u | wc -l) of $N" >> $L/cases.txt
 echo "units released by the pool's co-signature: $(grep -h 'unit of .* released' $L/arb*.out | grep -c PASS); failed: $(grep -h 'unit of .* released' $L/arb*.out | grep -c FAIL)" >> $L/cases.txt
+echo "staged reviews: $(grep -c "convening the staged review" $L/archivist.out) convened, $(grep -c "cleared the verdict" $L/archivist.out) cleared, $(grep -c "verdict is overturned" $L/archivist.out) overturned; reviewers who paid their way out or stalled: $(grep -c "replaced at\|never revealed\|silent past" $L/archivist.out)" >> $L/cases.txt
 echo "arb1 (capital for 3 units): seat offers declined for capital $(grep -c 'exceeds free capital' $L/arb1.log), units taken $(grep -c 'case unit [0-9]' $L/arb1.log)" >> $L/cases.txt
 echo "== momentum when seated, by arbitrator (case order)" >> $L/cases.txt
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do

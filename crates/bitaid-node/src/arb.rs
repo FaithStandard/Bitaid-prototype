@@ -226,6 +226,54 @@ pub fn seizure_tree(
     ))
 }
 
+/// Where an entry bond's seizure goes first (B.1): an output only the oracle pool can spend, by one
+/// leaf `<oracle> CHECKSIG` (no key path), which it spends only into the seizure output of the case a
+/// confirmed review found against the arbitrator.
+pub fn holding_tree(oracle: &XOnlyPublicKey) -> ScriptTree {
+    let leaf = bitcoin::script::Builder::new()
+        .push_x_only_key(oracle)
+        .push_opcode(bitcoin::opcodes::all::OP_CHECKSIG)
+        .into_script();
+    ScriptTree::new(
+        &Secp256k1::verification_only(),
+        bitaid_core::scripts::nums(),
+        vec![leaf],
+    )
+}
+
+/// The move of a seized entry bond from the holding output into a case's seizure output.
+pub fn holding_move(
+    oracle: &XOnlyPublicKey,
+    seized: &Transaction,
+    value: u64,
+    seizure: &ScriptBuf,
+) -> (Transaction, [u8; 32]) {
+    let t = holding_tree(oracle);
+    let tx = txbuild::payout(
+        OutPoint {
+            txid: seized.compute_txid(),
+            vout: 0,
+        },
+        &[(value, seizure.clone())],
+    );
+    let d = txbuild::scriptspend_digest(
+        &tx,
+        0,
+        &[txbuild::txout(value, t.script_pubkey())],
+        &t.scripts[0],
+    );
+    (tx, d)
+}
+
+pub fn holding_witness(oracle: &XOnlyPublicKey, tx: &mut Transaction, osig: &[u8; 64]) {
+    let t = holding_tree(oracle);
+    tx.input[0].witness = Witness::from_slice(&[
+        osig.to_vec(),
+        t.scripts[0].to_bytes(),
+        t.control(0).serialize(),
+    ]);
+}
+
 /// A bond as its offer names it.
 #[derive(Clone, Debug)]
 pub struct Bond {
@@ -322,6 +370,11 @@ impl Bond {
         v.push(self.penalty_tx(oracle, fee, refund).1);
         v
     }
+    /// The entry bond's seizure, pre-signed when the arbitrator joins (§10.8, B.1): the whole bond
+    /// into the holding output.
+    pub fn entry_seizure(&self, oracle: &XOnlyPublicKey) -> (Transaction, [u8; 32]) {
+        self.penalty_tx(oracle, self.value, &holding_tree(oracle).script_pubkey())
+    }
     /// A unit's release (§10.2): the whole output back under the bond's script, signed by the cold
     /// key and co-signed by the oracle once the case is closed and the review draw passed it over.
     pub fn release_tx(&self, oracle: &XOnlyPublicKey) -> (Transaction, [u8; 32]) {
@@ -410,6 +463,8 @@ pub struct Tier {
     pub refund: Option<ScriptBuf>,
     /// seats that missed their commit deadline and were replaced
     pub forfeited: Vec<String>,
+    /// review stages: seats that accepted (or took the seat by replacement), so owe a finding (§10.3)
+    pub accepted: Vec<String>,
     /// the offers the draw was made from, as the Seated message lists them (replacements are drawn
     /// from what is left of these, not from offers that arrived later)
     pub listed: Vec<String>,
@@ -514,6 +569,8 @@ pub struct Replay {
     pub convener: Option<String>,
     /// where the staged review stands, as of the replay
     pub review: ReviewState,
+    /// each registered arbitrator's entry bond and its verified pre-signed seizure
+    pub entries: HashMap<String, (Bond, String)>,
 }
 
 impl Replay {
@@ -570,7 +627,33 @@ impl Replay {
             reviews: BTreeMap::new(),
             convener: r.archivists.first().cloned(),
             review: ReviewState::NotDrawn,
+            entries: HashMap::new(),
         };
+        // entry bonds and their seizures, pre-signed at joining under the registry case (B.1)
+        let reg = registry_case();
+        for e in hist
+            .iter()
+            .filter(|e| e.msg.case_id() == Some(reg.as_str()))
+        {
+            if let Msg::Forfeits { sigs, stake, .. } = &e.msg {
+                let Some(b) = hist.iter().find_map(|x| match &x.msg {
+                    Msg::SeatOffer { case_id, .. } if *case_id == reg && x.sender == e.sender => {
+                        Bond::from_offer(&x.msg)
+                    }
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let (_, d) = b.entry_seizure(&oracle);
+                if b.op.to_string() == *stake
+                    && sigs.first().is_some_and(|g| schnorr_ok(&b.scoped, &d, g))
+                {
+                    rp.entries
+                        .entry(e.sender.clone())
+                        .or_insert((b, sigs[0].clone()));
+                }
+            }
+        }
         let mine: Vec<&Envelope> = hist
             .iter()
             .filter(|e| e.msg.case_id() == Some(case.as_str()))
@@ -1129,6 +1212,55 @@ impl Replay {
         out
     }
 
+    /// After a confirmed review, the entry bonds of those who voted for the overturned verdict (§10.8,
+    /// B.1): (arbitrator, bond, pre-signature, seizure, its digest, move to the seizure output, its digest).
+    #[allow(clippy::type_complexity)]
+    pub fn entry_seizures(
+        &self,
+    ) -> Vec<(
+        String,
+        Bond,
+        String,
+        Transaction,
+        [u8; 32],
+        Transaction,
+        [u8; 32],
+    )> {
+        let Some(spk) = self.seizure_spk() else {
+            return vec![];
+        };
+        let mut who: Vec<String> = self.overturned_voters().into_iter().map(|x| x.1).collect();
+        who.sort();
+        who.dedup();
+        who.into_iter()
+            .filter_map(|w| {
+                let (b, pre) = self.entries.get(&w)?.clone();
+                let (tx, d) = b.entry_seizure(&self.oracle);
+                let (mv, d2) = holding_move(&self.oracle, &tx, b.value, &spk);
+                Some((w, b, pre, tx, d, mv, d2))
+            })
+            .collect()
+    }
+
+    /// What a confirmed review's distribution spends: the whole units, then the entry bonds moved into
+    /// the case's seizure output.
+    pub fn review_inputs(&self) -> Vec<Penalty> {
+        let mut v = self.review_penalties();
+        for (w, b, pre, _, _, mv, d2) in self.entry_seizures() {
+            v.push(Penalty {
+                arbitrator: w,
+                tier: 0,
+                step: 0,
+                amount: b.value,
+                bond: b,
+                pre,
+                tx: mv,
+                digest: d2,
+            });
+        }
+        v
+    }
+
     /// What each payout script receives under `v` (the attending-vote payout rules, §9).
     fn paid_under(a: &Alerted, r: &Rostered, v: &Ballot) -> Vec<(u64, ScriptBuf)> {
         let parties = crate::case::terms(a, r).parties;
@@ -1264,8 +1396,9 @@ impl Replay {
         a: &Alerted,
         r: &Rostered,
     ) -> Vec<(bitcoin::Txid, usize, [u8; 32], String)> {
-        let pens = self.review_penalties();
-        let mut out: Vec<(bitcoin::Txid, usize, [u8; 32], String)> = pens
+        let pens = self.review_inputs();
+        let mut out: Vec<(bitcoin::Txid, usize, [u8; 32], String)> = self
+            .review_penalties()
             .iter()
             .map(|p| {
                 (
@@ -1281,6 +1414,27 @@ impl Replay {
                 )
             })
             .collect();
+        for (w, b, _, tx, d, mv, d2) in self.entry_seizures() {
+            out.push((
+                tx.compute_txid(),
+                0,
+                d,
+                format!(
+                    "the seizure of {}'s whole entry bond ({} sats) pre-signed at joining (review confirmed)",
+                    &w[..8],
+                    b.value
+                ),
+            ));
+            out.push((
+                mv.compute_txid(),
+                0,
+                d2,
+                format!(
+                    "the move of {}'s seized entry bond into the case's seizure output",
+                    &w[..8]
+                ),
+            ));
+        }
         if let Some((dist, prev)) = self.review_distribution(a, r, &pens) {
             for i in 0..dist.input.len() {
                 if let Some(d) = self.distribution_digest(&dist, &prev, i) {
@@ -1519,6 +1673,24 @@ fn read_tier(
         .filter(|x| vcommits.contains_key(*x))
         .cloned()
         .collect();
+    if registry.is_some() {
+        // a review seat owes a finding once it accepted, or took the seat by replacement
+        t.accepted = t
+            .seats
+            .iter()
+            .filter(|w| {
+                mine.iter().any(|x| {
+                    (&x.sender == *w
+                        && matches!(&x.msg, Msg::ReviewAnswer { tier, accept: true, seat, .. }
+                            if *tier == k && seat.is_empty()))
+                        || (x.sender == escalator
+                            && matches!(&x.msg, Msg::Reseated { tier, seat, from, .. }
+                                if *tier == k && seat == *w && !from.is_empty()))
+                })
+            })
+            .cloned()
+            .collect();
+    }
     for e in mine {
         if let Msg::Forfeits {
             tier,
@@ -1568,6 +1740,10 @@ pub struct TierLog {
     pub seats: Vec<String>,
     pub committers: Vec<String>,
     pub reveals: Vec<(String, Ballot)>,
+    /// a review stage: only a seat that accepted and never revealed is charged (§10.3)
+    pub review: bool,
+    /// a confirmed review: from this height the case stands on this verdict
+    pub overturn: Option<Ballot>,
 }
 
 /// Every committed tier of every case in the log, ordered by the height of its commitment. Old cases
@@ -1607,6 +1783,37 @@ pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
                 seats: t.seats,
                 committers: t.committers,
                 reveals: t.reveals,
+                review: false,
+                overturn: None,
+            });
+        }
+        let mut last = 0;
+        for (k, t) in rp.reviews.iter() {
+            let Some(h) = t.commit_txid.as_ref().and_then(|x| rpc.tx_height(x)) else {
+                continue;
+            };
+            last = last.max(h);
+            out.push(TierLog {
+                case: a.case_hex.clone(),
+                tier: *k,
+                height: h,
+                seats: t.seats.clone(),
+                committers: t.accepted.clone(),
+                reveals: t.reveals.clone(),
+                review: true,
+                overturn: None,
+            });
+        }
+        if let ReviewState::Confirmed(v) = &rp.review {
+            out.push(TierLog {
+                case: a.case_hex.clone(),
+                tier: REVIEW_BASE + REVIEW_STAGES,
+                height: last,
+                seats: vec![],
+                committers: vec![],
+                reveals: vec![],
+                review: true,
+                overturn: Some(v.clone()),
             });
         }
     }
@@ -1623,6 +1830,15 @@ pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
     let before: Vec<&TierLog> = logs.iter().filter(|l| l.height < height).collect();
     let mut standing: HashMap<&str, (&TierLog, Ballot)> = HashMap::new();
     for l in &before {
+        // a confirmed review overturns the standing verdict from its last stage on (§10.3)
+        if let Some(b) = &l.overturn {
+            let fin = standing.get(l.case.as_str()).map(|x| x.0).unwrap_or(l);
+            standing.insert(l.case.as_str(), (fin, b.clone()));
+            continue;
+        }
+        if l.review {
+            continue;
+        }
         let v: Vec<Ballot> = l.reveals.iter().map(|x| x.1.clone()).collect();
         if let Some(b) = supermajority(l.seats.len(), &v) {
             standing.insert(l.case.as_str(), (l, b));
@@ -1635,6 +1851,19 @@ pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
         };
         let fk = verdict_key(fv);
         for seat in &l.seats {
+            if l.review {
+                // a review seat is charged only for a finding it owed and never revealed
+                if l.reveals.iter().any(|x| &x.0 == seat) || !l.committers.contains(seat) {
+                    continue;
+                }
+                let mean = if votes > 0 { sum / votes as f64 } else { 0.0 };
+                if seat == arbitrator {
+                    d = (LAMBDA * d + 1.0 - MARGIN * mean).max(0.0);
+                }
+                sum += 1.0;
+                votes += 1;
+                continue;
+            }
             let e = match l.reveals.iter().find(|x| &x.0 == seat) {
                 Some((_, v)) if verdict_key(v) == fk => 0.0,
                 Some((_, v)) => {
