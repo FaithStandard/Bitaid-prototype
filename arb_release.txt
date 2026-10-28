@@ -1,11 +1,18 @@
-      1 [PASS] arb1 case 943330b5: review draw at block 131 (100% for a split final panel): drawn for review; units held
-      1 [PASS] arb1 case 943330b5: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
-      1 [PASS] arb1 the pool refuses to release a 2000000-sat unit of a case drawn for review — no session completed
-      1 [PASS] arb21 review stage 2: replaced by a461593a, drawn blind from 1 offer(s); paid it 25488 sats — 729d2dd324b7f542
-      1 [PASS] arb22 review stage 1: replaced by 0bca3bd7, drawn blind from 1 offer(s); paid it 25488 sats — 8493fd3f039e852a
-      1 [PASS] arb23 review stage 1: replaced by 05f142d7, drawn blind from 1 offer(s); paid it 25488 sats — c11430d4f3d059cc
-      1 [PASS] arb24 review stage 2: replaced by 87f215a1, drawn blind from 1 offer(s); paid it 25488 sats — 530ba8f4be54e775
-      1 [PASS] arb4 case 943330b5: review draw at block 131 (100% for a split final panel): drawn for review; units held
-      1 [PASS] arb4 case 943330b5: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
-      1 [PASS] arb8 case 943330b5: review draw at block 131 (100% for a split final panel): drawn for review; units held
-      1 [PASS] arb8 case 943330b5: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+      1 [PASS] arb1 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb1 tier 1 unit of 2000000 sats released under the bond's script by the pool's co-signature — 6c1ea02668219733 (pool members [3, 4, 2])
+      1 [PASS] arb10 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb10 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 157d153642fa3827 (pool members [3, 4, 2])
+      1 [PASS] arb2 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb2 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 3a99e55a07acf3dc (pool members [3, 4, 1])
+      1 [PASS] arb3 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb3 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 20bdfc258a671b97 (pool members [3, 4, 2])
+      1 [PASS] arb4 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb5 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb5 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — dd681d9e2a0ce2eb (pool members [3, 4, 2])
+      1 [PASS] arb6 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb6 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — d00f6ce15e7e8000 (pool members [3, 4, 2])
+      1 [PASS] arb7 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb7 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 5218fca05fed5463 (pool members [3, 4, 2])
+      1 [PASS] arb8 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb9 case ffdbc145: review draw at block 122 (5% for a unanimous final panel): passed over
+      1 [PASS] arb9 tier 2 unit of 2000000 sats released under the bond's script by the pool's co-signature — 766afab371a3fcb2 (pool members [3, 4, 2])

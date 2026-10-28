@@ -1,0 +1,8 @@
+Arbitration on a custom signet (challenge OP_TRUE, real proof of work, a block every 10 s from a producer; nodes never mine), local, 2026-10-28: CAPTURE=1
+[caller] 11 passed, 0 failed
+[PASS] r1-liar tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 64.7 s from escalation
+[r1-liar] 14 passed, 0 failed
+[PASS] r3 tier 2: two-thirds verdict (7 of 7), unanimous — 50.8 s from escalation
+[r3] 20 passed, 0 failed
+[PASS] r1-liar tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 64.7 s from escalation
+[PASS] r3 tier 2: two-thirds verdict (7 of 7), unanimous — 50.8 s from escalation
