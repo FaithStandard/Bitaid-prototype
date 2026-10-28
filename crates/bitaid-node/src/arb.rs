@@ -786,6 +786,11 @@ impl Replay {
             if t.listed.iter().any(|x| excluded.contains(x)) {
                 break;
             }
+            let h = t.seat_height.values().copied().min().unwrap_or(0);
+            let off = inactive(hist, h);
+            if t.listed.iter().any(|x| off.contains(x)) {
+                break;
+            }
             rp.reviews.insert(k, t);
         }
         rp.review = rp.review_state(a, rpc);
@@ -1886,6 +1891,58 @@ pub fn overturned_votes(logs: &[TierLog]) -> HashMap<String, Vec<String>> {
     out
 }
 
+/// Inactivity (§10.3): an arbitrator that left more than 80% of its last 30 review assignments
+/// unanswered (at least 5) is suspended: no seats, no review draws.
+pub const INACTIVE_WINDOW: usize = 30;
+pub const INACTIVE_MIN: usize = 5;
+
+/// Per arbitrator, its review assignments before `height`, in order: true if it answered (accepted or
+/// posted a replacement fee), false if it let the window pass.
+pub fn assignments(hist: &[Envelope], height: u32) -> HashMap<String, Vec<bool>> {
+    let mut drawn: Vec<(u32, String, u32, String)> = vec![];
+    for e in hist.iter().filter(|e| e.height < height) {
+        let Some(c) = e.msg.case_id() else { continue };
+        match &e.msg {
+            Msg::Seated { tier, seats, .. } if is_review(*tier) => {
+                for w in seats {
+                    drawn.push((e.height, c.to_string(), *tier, w.clone()));
+                }
+            }
+            Msg::Reseated {
+                tier, seat, from, ..
+            } if is_review(*tier) && from.is_empty() => {
+                drawn.push((e.height, c.to_string(), *tier, seat.clone()));
+            }
+            _ => {}
+        }
+    }
+    drawn.sort();
+    drawn.dedup();
+    let mut out: HashMap<String, Vec<bool>> = HashMap::new();
+    for (_, c, k, w) in drawn {
+        let answered = hist.iter().any(|e| {
+            e.sender == w
+                && matches!(&e.msg, Msg::ReviewAnswer { case_id, tier, seat, .. }
+                    if *case_id == c && *tier == k && seat.is_empty())
+        });
+        out.entry(w).or_default().push(answered);
+    }
+    out
+}
+
+/// The arbitrators suspended for inactivity as of `height`.
+pub fn inactive(hist: &[Envelope], height: u32) -> std::collections::HashSet<String> {
+    assignments(hist, height)
+        .into_iter()
+        .filter(|(_, v)| {
+            let last = &v[v.len().saturating_sub(INACTIVE_WINDOW)..];
+            let silent = last.iter().filter(|x| !**x).count();
+            last.len() >= INACTIVE_MIN && silent * 5 > last.len() * 4
+        })
+        .map(|(w, _)| w)
+        .collect()
+}
+
 /// The case id under which arbitrators register their bonds (the prototype's stand-in for the pool's
 /// registry of bonds on chain).
 pub fn registry_case() -> String {
@@ -2144,7 +2201,51 @@ mod tests {
         assert_eq!(step_of(4.0 * multiplier(1.0)), 80);
         assert_eq!(step_of(2.5 * multiplier(1.5)), 70);
         assert_eq!(max_step(9.0), 1280);
-        // a case unit: twice the case value, or the largest penalty if that is more (§10.2)
+        // inactivity: more than 80% of at least 5 review assignments left unanswered
+        let env = |h: u32, who: &str, msg: Msg| crate::wire::Envelope {
+            v: 1,
+            height: h,
+            sender: who.into(),
+            msg,
+        };
+        let mut hist = vec![];
+        for i in 0..6u32 {
+            let c = format!("{:064x}", i + 1);
+            hist.push(env(
+                10 + i,
+                "conv",
+                Msg::Seated {
+                    case_id: c.clone(),
+                    tier: REVIEW_BASE + 1,
+                    height: 10 + i,
+                    block_hash: String::new(),
+                    offers: vec![],
+                    seats: vec!["afk".into(), "busy".into()],
+                    sealed_keys: vec![],
+                    refund_spk: String::new(),
+                },
+            ));
+            // "busy" answers all but the first draw, "afk" answers only the last
+            for (who, ans) in [("busy", i > 0), ("afk", i == 5)] {
+                if ans {
+                    hist.push(env(
+                        10 + i,
+                        who,
+                        Msg::ReviewAnswer {
+                            case_id: c.clone(),
+                            tier: REVIEW_BASE + 1,
+                            accept: true,
+                            fee: 0,
+                            seat: String::new(),
+                        },
+                    ));
+                }
+            }
+        }
+        let off = inactive(&hist, 100);
+        assert!(off.contains("afk") && !off.contains("busy"));
+        assert!(inactive(&hist, 13).is_empty()); // fewer than 5 assignments yet
+                                                 // a case unit: twice the case value, or the largest penalty if that is more (§10.2)
         assert_eq!(unit_value(900_000, 40, 20_000), 1_800_000);
         assert_eq!(unit_value(1_000, 1280, 20_000), 2_560_000);
         assert_eq!(steps_upto(40).len(), 5);

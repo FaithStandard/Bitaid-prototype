@@ -1674,6 +1674,14 @@ fn escalate_tier(
         if offers.iter().any(|o| o.0 == who) {
             continue;
         }
+        // suspended for inactivity: no seats (§10.3)
+        if arb::inactive(&n.history, n.rpc.height() + 1).contains(&who) {
+            n.log(&format!(
+                "seat offer from {} refused: suspended for inactivity",
+                &who[..8]
+            ));
+            continue;
+        }
         // an entry bond at the floor; what the case risks is the seat's case unit, checked with its
         // forfeitures (§10.2)
         let ok = (|| {
@@ -2700,10 +2708,21 @@ fn review_stage(
     );
     let excluded = arb::Replay::build_core(&n.history, a, r, &n.rpc)?.review_excluded();
     let reg = arb::registry(&n.history);
+    // suspended for inactivity (§10.3): no review draws
+    let off = arb::inactive(&n.history, n.rpc.height() + 1);
+    for w in &off {
+        if reg.contains_key(w) {
+            n.log(&format!(
+                "{} suspended for inactivity: left more than 80% of its review draws unanswered",
+                &w[..8]
+            ));
+        }
+    }
     let mut eligible: Vec<String> = reg
         .iter()
         .filter(|(w, b)| {
             !excluded.contains(*w)
+                && !off.contains(*w)
                 && b.value >= ARB_BOND_FLOOR
                 && n.rpc
                     .utxo(&b.op)
