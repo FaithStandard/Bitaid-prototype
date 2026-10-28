@@ -36,6 +36,10 @@ start)
   fi
   $B/bitcoind -version | head -1 || { echo "BITCOIND_CANNOT_RUN"; ls -l $B; exit 1; }
   mkdir -p $D
+  # a node of the other chain still answering on the RPC port (an earlier run): stop it first
+  WANT=regtest; [ "$CHAIN" = signet ] && WANT=signet
+  GOT=$($CLI getblockchaininfo 2>/dev/null | sed -n 's/.*"chain": "\([a-z]*\)".*/\1/p')
+  if [ -n "$GOT" ] && [ "$GOT" != "$WANT" ]; then echo "stopping the $GOT node from an earlier run"; $CLI stop >/dev/null 2>&1; sleep 8; fi
   $CLI getblockcount >/dev/null 2>&1 || $B/bitcoind $NET -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
       -rpcbind=127.0.0.1 -rpcallowip=127.0.0.1 -port=$P2P -listen=0 -fallbackfee=0.0001 -txindex=1 -daemon
   for i in $(seq 1 60); do $CLI getblockcount >/dev/null 2>&1 && break; sleep 2; done
