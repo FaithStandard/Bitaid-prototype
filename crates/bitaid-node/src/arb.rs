@@ -578,6 +578,32 @@ impl Replay {
     /// forfeitures verified against the steps that momentum calls for.
     pub fn build(hist: &[Envelope], a: &Alerted, r: &Rostered, rpc: &Rpc) -> Option<Replay> {
         let mut rp = Replay::build_core(hist, a, r, rpc)?;
+        let oracle = rp.oracle;
+        // entry bonds and their seizures, pre-signed at joining under the registry case (B.1)
+        let reg = registry_case();
+        for e in hist
+            .iter()
+            .filter(|e| e.msg.case_id() == Some(reg.as_str()))
+        {
+            if let Msg::Forfeits { sigs, stake, .. } = &e.msg {
+                let Some(b) = hist.iter().find_map(|x| match &x.msg {
+                    Msg::SeatOffer { case_id, .. } if *case_id == reg && x.sender == e.sender => {
+                        Bond::from_offer(&x.msg)
+                    }
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let (_, d) = b.entry_seizure(&oracle);
+                if b.op.to_string() == *stake
+                    && sigs.first().is_some_and(|g| schnorr_ok(&b.scoped, &d, g))
+                {
+                    rp.entries
+                        .entry(e.sender.clone())
+                        .or_insert((b, sigs[0].clone()));
+                }
+            }
+        }
         let logs = ledger(hist, rpc, &a.oracle_key);
         let seizure = rp.seizure_spk();
         let (oracle, base_fee) = (rp.oracle, rp.base_fee);
@@ -629,31 +655,6 @@ impl Replay {
             review: ReviewState::NotDrawn,
             entries: HashMap::new(),
         };
-        // entry bonds and their seizures, pre-signed at joining under the registry case (B.1)
-        let reg = registry_case();
-        for e in hist
-            .iter()
-            .filter(|e| e.msg.case_id() == Some(reg.as_str()))
-        {
-            if let Msg::Forfeits { sigs, stake, .. } = &e.msg {
-                let Some(b) = hist.iter().find_map(|x| match &x.msg {
-                    Msg::SeatOffer { case_id, .. } if *case_id == reg && x.sender == e.sender => {
-                        Bond::from_offer(&x.msg)
-                    }
-                    _ => None,
-                }) else {
-                    continue;
-                };
-                let (_, d) = b.entry_seizure(&oracle);
-                if b.op.to_string() == *stake
-                    && sigs.first().is_some_and(|g| schnorr_ok(&b.scoped, &d, g))
-                {
-                    rp.entries
-                        .entry(e.sender.clone())
-                        .or_insert((b, sigs[0].clone()));
-                }
-            }
-        }
         let mine: Vec<&Envelope> = hist
             .iter()
             .filter(|e| e.msg.case_id() == Some(case.as_str()))
@@ -1749,6 +1750,17 @@ pub struct TierLog {
 /// Every committed tier of every case in the log, ordered by the height of its commitment. Old cases
 /// are replayed from the log and the chain, their funding outputs read as created (spent or not).
 pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
+    // per case, the logs read from its messages: kept while the case gets no new message, once every
+    // commitment they rest on is confirmed (replaying every case for every seat grows with the log)
+    type Cache = HashMap<(String, String, usize), Vec<TierLog>>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for e in hist {
+        if let Some(c) = e.msg.case_id() {
+            *counts.entry(c).or_default() += 1;
+        }
+    }
     let mut out = vec![];
     let mut seen = std::collections::HashSet::new();
     for e in hist {
@@ -1758,6 +1770,17 @@ pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
         if !seen.insert(case_id.clone()) {
             continue;
         }
+        let key = (
+            case_id.clone(),
+            oracle_key.to_string(),
+            counts.get(case_id.as_str()).copied().unwrap_or(0),
+        );
+        if let Some(v) = cache.lock().unwrap().get(&key) {
+            out.extend(v.iter().cloned());
+            continue;
+        }
+        let start = out.len();
+        let mut complete = true;
         let Ok(a) = Alerted::check(&e.sender, &e.msg, |op| rpc.output(op), oracle_key) else {
             continue;
         };
@@ -1774,6 +1797,7 @@ pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
         };
         for (k, t) in rp.tiers {
             let Some(h) = t.commit_txid.as_ref().and_then(|x| rpc.tx_height(x)) else {
+                complete &= t.commit_txid.is_none();
                 continue;
             };
             out.push(TierLog {
@@ -1790,6 +1814,7 @@ pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
         let mut last = 0;
         for (k, t) in rp.reviews.iter() {
             let Some(h) = t.commit_txid.as_ref().and_then(|x| rpc.tx_height(x)) else {
+                complete &= t.commit_txid.is_none();
                 continue;
             };
             last = last.max(h);
@@ -1815,6 +1840,9 @@ pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
                 review: true,
                 overturn: Some(v.clone()),
             });
+        }
+        if complete {
+            cache.lock().unwrap().insert(key, out[start..].to_vec());
         }
     }
     out.sort_by(|x, y| (x.height, &x.case, x.tier).cmp(&(y.height, &y.case, y.tier)));
