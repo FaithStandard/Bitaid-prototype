@@ -1,0 +1,42 @@
+M3 staged review with review duty over Tor (2026-10-28): PC (WSL1, 26 arbitrators, archivist, pool members 1-2, r3, r4), tablet (responder r1 + pool member 3), phone on mobile data (caller + pool member 4). Phone 13/0; PC 9 + 2 + archivist 24 + arbitrators 10, all passed. The tablet's own output was lost (battery died before copying); its pool member co-signed the review seizure (pool members [1, 3, 4]).
+
+== phone (caller)
+[caller] 13 passed, 0 failed
+
+== PC
+[PASS] archivist-pc case 66293058: drawn for review at block 310 (100% for a split final panel); convening the staged review
+[PASS] archivist-pc review stage 1: 5 of the 23 eligible arbitrators in the pool drawn from block 317; each must accept or pay its replacement
+[PASS] archivist-pc review stage 1: 9be92c41 would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist-pc review stage 1: 2586dad1 would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist-pc review stage 1: 9be92c41 replaced at 25488 sats by 7f62ddec, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist-pc review stage 1: the leaver paid its replacement 7f62ddec the 25488 sats on chain; the case disclosed to the replacement — 406d8a51aedf524d
+[PASS] archivist-pc review stage 1: 2586dad1 replaced at 25488 sats by bae10bee, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist-pc review stage 1: the leaver paid its replacement bae10bee the 25488 sats on chain; the case disclosed to the replacement — 4615e83fa1d393b6
+[PASS] archivist-pc review stage 1: 5 of 5 findings revealed and committed on chain; 80% found I,D — 21.4 s from convening
+[PASS] archivist-pc review stage 2: 5 of the 16 eligible arbitrators in the pool drawn from block 323; each must accept or pay its replacement
+[PASS] archivist-pc review stage 2: 5 of 5 findings revealed and committed on chain; 80% found I,D — 7.9 s from convening
+[PASS] archivist-pc review stage 3: 5 of the 11 eligible arbitrators in the pool drawn from block 325; each must accept or pay its replacement
+[PASS] archivist-pc review stage 3: a93b0e12 would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist-pc review stage 3: 4889936f would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist-pc review stage 3: a93b0e12 replaced at 25488 sats by e3710afc, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist-pc review stage 3: the leaver paid its replacement e3710afc the 25488 sats on chain; the case disclosed to the replacement — e5f3095cd37ae204
+[PASS] archivist-pc review stage 3: 4889936f replaced at 25488 sats by c68cd4e8, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist-pc review stage 3: the leaver paid its replacement c68cd4e8 the 25488 sats on chain; the case disclosed to the replacement — 853ada2dbda5be6a
+[PASS] archivist-pc review stage 3: 5 of 5 findings revealed and committed on chain; 80% found I,D — 21.4 s from convening
+[PASS] archivist-pc case 66293058: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist-pc case 66293058: 2 arbitrator(s) voted for the overturned verdict, each unit held since the draw
+[PASS] archivist-pc tier 1 arbitrator 33ee5709: its whole unit (2000000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — b983f707453b689d (pool members [1, 3, 4])
+[PASS] archivist-pc tier 1 arbitrator 4e1769d2: its whole unit (2000000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 27da1a6947cb3f5f (pool members [1, 4, 3])
+[PASS] archivist-pc review seizure distributed (§12) by the pool and the archivist: 2840000 sats to a responder, 60000 sats to a vindicated dissenter, 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 200000 sats to the archivist (retention of the case's evidence) — 68bd89b1fa50c13f
+[PASS] arb1-pc case 66293058: review draw at block 310 (100% for a split final panel): drawn for review; units held
+[PASS] arb1-pc case 66293058: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
+[PASS] arb21-pc review stage 1: replaced by bae10bee, drawn blind from 1 offer(s); paid it 25488 sats — 4615e83fa1d393b6
+[PASS] arb22-pc review stage 1: replaced by 7f62ddec, drawn blind from 1 offer(s); paid it 25488 sats — 406d8a51aedf524d
+[PASS] arb23-pc review stage 3: replaced by e3710afc, drawn blind from 1 offer(s); paid it 25488 sats — e5f3095cd37ae204
+[PASS] arb24-pc review stage 3: replaced by c68cd4e8, drawn blind from 1 offer(s); paid it 25488 sats — 853ada2dbda5be6a
+[PASS] arb4-pc case 66293058: review draw at block 310 (100% for a split final panel): drawn for review; units held
+[PASS] arb4-pc case 66293058: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+[PASS] arb8-pc case 66293058: review draw at block 310 (100% for a split final panel): drawn for review; units held
+[PASS] arb8-pc case 66293058: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+[r3-pc] 9 passed, 0 failed
+[r4-pc-cheat] 2 passed, 0 failed
