@@ -1,9 +1,0 @@
-[PASS] r3 alert c82fb65c in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
-[PASS] r3 pre-signed set v0 verified (seat 0) — 39 payouts
-[PASS] r3 incident transaction on chain: every pot output exists — ef29e775859874c73208e513cb3de3e7796df6f87b0508a1be4dbcb32f4c126b
-[PASS] r3 evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
-[PASS] r3 deposit: "returned" completed by the attestation and broadcast — already broadcast by another party
-[PASS] r3 reward: "paid (7, 3)" completed by the attestation and broadcast — already broadcast by another party
-[PASS] r3 bounty: "split (7, 3)" completed by the attestation and broadcast — already broadcast by another party
-[PASS] r3 my shares arrived at my payout address — 630000 sats
-[r3] 8 passed, 0 failed
