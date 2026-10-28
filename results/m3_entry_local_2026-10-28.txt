@@ -1,0 +1,29 @@
+Review stalls, momentum overturns, entry-bond seizure, local regtest, 2026-10-28
+
+1) CAPTURE=1 NOAPPEAL=1 STALL=1 REVIEW_PCT=100 ARBS=26
+[caller] 11 passed, 0 failed
+[r1-liar] 17 passed, 0 failed
+[r3] 8 passed, 0 failed
+
+2) 12 cases at protocol review rates, 25 arbitrators: 500 passed, 0 failed (an earlier run lost one case to an archivist starved by slow replays: 500 passed, 6 failed; fixed)
+== case units (§10.2-10.3)
+review draws seen by seated arbitrators: 104; of which drawn: 19
+cases drawn: 2 of 12
+units released by the pool's co-signature: 96; failed: 0
+staged reviews: 2 convened, 2 cleared, 0 overturned; reviewers who paid their way out or stalled: 0
+arb1 (capital for 3 units): seat offers declined for capital 0, units taken 3
+== momentum when seated, by arbitrator (case order)
+== momentum when seated, by arbitrator (case order)
+arb1: 0.00 0.00 0.00 
+arb2: 0.00 0.00 0.00 
+arb3: 0.00 0.00 0.00 0.00 0.00 0.00 
+arb4: 0.00 0.00 0.00 0.00 0.00 0.00 
+arb5: 0.00 0.00 0.00 0.00 0.00 0.00 
+arb6: 0.00 0.00 0.00 0.00 
+arb7: 0.00 0.00 0.00 
+arb8: 0.00 0.00 0.00 0.00 0.00 0.00 
+arb9: 0.00 0.00 0.00 
+arb10: 0.00 0.00 0.00 0.82 0.62 
+arb11: 0.00 0.00 0.88 1.73 2.52 
+arb12: 0.00 0.00 0.00 1.00 1.85 2.64 3.42 
+arb13: 0.00 0.00 0.00 0.85 1.68 
