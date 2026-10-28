@@ -2416,6 +2416,7 @@ fn take_seat(
 /// draw passed the case over, releases this arbitrator's units back under its bond's script with the
 /// pool's co-signature (§10.2, §10.3). None while the draw block is not yet mined; Some(true) when the
 /// units are free, Some(false) when the case was drawn and the units stay held through the review.
+#[allow(clippy::too_many_arguments)]
 fn release_units(
     n: &mut Node,
     view: &pool::PoolView,
@@ -2424,6 +2425,7 @@ fn release_units(
     cold: Scalar,
     session: &mut u32,
     announced: &mut std::collections::HashSet<String>,
+    release_seen: &mut HashMap<String, Instant>,
 ) -> Option<bool> {
     let rp = arb::Replay::build(&n.history, a, r, &n.rpc)?;
     let Some(dr) = rp.review_draw(a, &n.rpc) else {
@@ -2457,6 +2459,19 @@ fn release_units(
     }
     let oxo = wire::xonly(&view.key_hex()).unwrap();
     let state = rp.review_state(a, &n.rpc);
+    // releases wait for the case's own penalties to be distributed (up to --release-wait s), so the
+    // pool is not asked for a dozen releases while it co-signs the case's forfeitures
+    if !matches!(state, arb::ReviewState::Pending(_)) {
+        let since = *release_seen.entry(c.clone()).or_insert_with(Instant::now);
+        if since.elapsed() < secs(num("--release-wait", 600u64)) {
+            let pens = rp.penalties();
+            if let Some((d, _)) = rp.distribution(&pens) {
+                if n.rpc.confirmations(&d.compute_txid()) == 0 {
+                    return None;
+                }
+            }
+        }
+    }
     if let arb::ReviewState::Pending(_) = state {
         // --greedy-release: ask for the release anyway; every pool member's replay must refuse
         if first && flag("--greedy-release") {
@@ -3483,6 +3498,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut pending: HashMap<String, Instant> = HashMap::new();
     let mut release_session = 0u32;
     let mut announced: std::collections::HashSet<String> = Default::default();
+    let mut release_seen: HashMap<String, Instant> = HashMap::new();
     // review seats this arbitrator is leaving: when the fee was last raised, and the fee (§10.3)
     let mut leaving: HashMap<(String, u32), (Instant, u64)> = HashMap::new();
     let mut reveal_due: HashMap<(String, u32), Instant> = HashMap::new();
@@ -3662,6 +3678,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 bc,
                 &mut release_session,
                 &mut announced,
+                &mut release_seen,
             ) {
                 None => {}
                 Some(true) => {
