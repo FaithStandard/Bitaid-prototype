@@ -254,34 +254,32 @@ impl Rpc {
             .iter()
             .position(|o| o.script_pubkey == bitaid_core::scripts::p2a())
             .ok_or("no anchor")? as u32;
+        // the fee coin is claimed with lockunspent, which the wallet refuses for a coin already locked:
+        // several nodes of one machine may share a wallet, and a coin two fee children both spend makes
+        // the second package fail ("inputs missing or spent")
         let utxos = self.wcall("listunspent", json!([1]))?;
         let u = {
             let mut used = self.used.lock().unwrap();
-            let u = utxos
-                .as_array()
-                .ok_or("listunspent")?
-                .iter()
-                .find(|u| {
-                    u["amount"].as_f64().unwrap_or(0.0) > 0.01
-                        && !used.contains(&format!(
-                            "{}:{}",
-                            u["txid"].as_str().unwrap_or(""),
-                            u["vout"]
-                        ))
-                })
-                .ok_or("no wallet coin to pay the fee")?
-                .clone();
-            used.insert(format!(
-                "{}:{}",
-                u["txid"].as_str().unwrap_or(""),
-                u["vout"]
-            ));
-            u
+            let mut got = None;
+            for u in utxos.as_array().ok_or("listunspent")? {
+                let key = format!("{}:{}", u["txid"].as_str().unwrap_or(""), u["vout"]);
+                if u["amount"].as_f64().unwrap_or(0.0) <= 0.01 || used.contains(&key) {
+                    continue;
+                }
+                used.insert(key);
+                if self
+                    .wcall(
+                        "lockunspent",
+                        json!([false, [{"txid": u["txid"], "vout": u["vout"]}]]),
+                    )
+                    .is_ok()
+                {
+                    got = Some(u.clone());
+                    break;
+                }
+            }
+            got.ok_or("no wallet coin to pay the fee")?
         };
-        let _ = self.wcall(
-            "lockunspent",
-            json!([false, [{"txid": u["txid"], "vout": u["vout"]}]]),
-        );
         let uval = (u["amount"].as_f64().unwrap() * 1e8).round() as u64;
         let child = Transaction {
             version: txbuild::VERSION,
