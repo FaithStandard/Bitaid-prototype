@@ -19,6 +19,7 @@ pub struct Rpc {
     /// transactions of the blocks since the run began, for a node without a transaction index (a
     /// pruned node cannot keep one): next height to read, and txid → (outputs, height, block hash)
     index: Mutex<(u32, std::collections::HashMap<String, (Value, u32, String)>)>,
+    tip: Mutex<(u32, Option<std::time::Instant>)>,
 }
 
 impl Rpc {
@@ -37,6 +38,7 @@ impl Rpc {
             used: Mutex::new(HashSet::new()),
             memo: Mutex::new(std::collections::HashMap::new()),
             index: Mutex::new((0, std::collections::HashMap::new())),
+            tip: Mutex::new((0, None)),
         }
     }
 
@@ -258,6 +260,10 @@ impl Rpc {
     /// A transaction (verbose) from the node, or, when the node keeps no transaction index and the
     /// transaction has left the mempool, from the blocks this node has read since the run began.
     fn raw_tx(&self, txid: &str) -> Option<Value> {
+        // already read from a block: answered locally (over Tor each call costs a second or more)
+        if let Some(v) = self.from_index(txid) {
+            return Some(v);
+        }
         match self.call("getrawtransaction", json!([txid, true])) {
             Ok(v) => Some(v),
             Err(e) if e.contains("txindex") || e.contains("No such mempool") => self.indexed(txid),
@@ -268,6 +274,19 @@ impl Rpc {
                 None
             }
         }
+    }
+
+    /// `txid` from the blocks already read, with its confirmations against a tip at most 5 s old.
+    fn from_index(&self, txid: &str) -> Option<Value> {
+        let (vout, h, bh) = self.index.lock().unwrap().1.get(txid)?.clone();
+        let tip = {
+            let mut t = self.tip.lock().unwrap();
+            if t.1.map_or(true, |at| at.elapsed() > std::time::Duration::from_secs(5)) {
+                *t = (self.height(), Some(std::time::Instant::now()));
+            }
+            t.0
+        };
+        Some(json!({"txid": txid, "vout": vout, "blockhash": bh, "confirmations": tip.saturating_sub(h) + 1}))
     }
 
     /// Reads every block not yet read (from BITAID_INDEX_FROM, or BITAID_INDEX_BACK blocks — 36 by
