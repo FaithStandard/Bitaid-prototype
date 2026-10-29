@@ -261,7 +261,12 @@ impl Rpc {
         match self.call("getrawtransaction", json!([txid, true])) {
             Ok(v) => Some(v),
             Err(e) if e.contains("txindex") || e.contains("No such mempool") => self.indexed(txid),
-            Err(_) => None,
+            Err(e) => {
+                if std::env::var("BITAID_DEBUG").is_ok() {
+                    eprintln!("raw_tx {txid}: {e}");
+                }
+                None
+            }
         }
     }
 
@@ -279,8 +284,14 @@ impl Rpc {
         while ix.0 <= tip {
             let h = ix.0;
             let Some(bh) = self.block_hash(h) else { break };
-            let Ok(b) = self.call("getblock", json!([bh, 2])) else {
-                break;
+            let b = match self.call("getblock", json!([bh, 2])) {
+                Ok(b) => b,
+                // pruned away (or otherwise not kept): nothing of the run's can be in it
+                Err(e) if e.contains("pruned") || e.contains("not found on disk") => {
+                    ix.0 = h + 1;
+                    continue;
+                }
+                Err(_) => break,
             };
             for t in b["tx"].as_array().cloned().unwrap_or_default() {
                 if let Some(id) = t["txid"].as_str() {
