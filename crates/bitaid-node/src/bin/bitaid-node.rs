@@ -1333,7 +1333,7 @@ fn settle(
                                 (
                                     k,
                                     if k {
-                                        format!("broadcast by another party ({e})")
+                                        "broadcast by another party first".to_string()
                                     } else {
                                         e
                                     },
