@@ -15,11 +15,12 @@ responder|caller)
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
   PC=${PC:-$CORE}; [ -n "$PC" ] || { echo "set PC to the PC's onion address"; exit 1; }
   case "$PC" in *.*) ;; *) PC=$PC.onion ;; esac
-  export BITAID_RPC=http://bitaid:regtest@${CHAIN_ONION:-$PC}:18443
+  export BITAID_RPC=http://bitaid:${RPC_PASS:-regtest}@${CHAIN_ONION:-$PC}:18443
   P="--peer $PC:7700 --pool ${POOL:-tor1}"
   termux-wake-lock 2>/dev/null
-  # slower blocks: TIME_SCALE stretches every wait of a minute or more (the PC prints the value to use)
-  export BITAID_TIME_SCALE=${TIME_SCALE:-1}
+  # slower blocks: TIME_SCALE stretches every wait of a minute or more; SAT_SCALE divides every amount
+  # (a faucet-funded chain); RPC_PASS is the chain node's RPC password (the PC prints all three)
+  export BITAID_TIME_SCALE=${TIME_SCALE:-1} BITAID_SAT_SCALE=${SAT_SCALE:-1}
   LINGER=${LINGER:-$(( 600 * ${TIME_SCALE:-1} ))}
   # a pool member started with & ignores Ctrl+C, so one from an earlier run can still be alive and
   # answer under an old identity: stop it first, and stop ours when this run is interrupted

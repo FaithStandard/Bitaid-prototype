@@ -52,6 +52,10 @@ fn flag(name: &str) -> bool {
 fn num<T: FromStr>(name: &str, d: T) -> T {
     arg(name).and_then(|s| s.parse().ok()).unwrap_or(d)
 }
+/// An amount flag (sats), divided by BITAID_SAT_SCALE for a faucet-funded test chain.
+fn amt(name: &str, d: u64) -> u64 {
+    bitaid_node::sats(num(name, d))
+}
 fn secs(n: u64) -> Duration {
     Duration::from_secs(bitaid_node::slow(n))
 }
@@ -622,7 +626,7 @@ fn pool_member(mut n: Node) -> i32 {
                     );
                     (u.script_pubkey == t.script_pubkey()
                         && u.value.to_sat() == *bond_value
-                        && u.value.to_sat() >= ARB_BOND_FLOOR.max(2 * value))
+                        && u.value.to_sat() >= bitaid_node::sats(ARB_BOND_FLOOR).max(2 * value))
                     .then_some(())
                 })()
                 .is_some();
@@ -1307,14 +1311,7 @@ fn settle(
             Some(tx) => {
                 if broadcast {
                     // another party may have broadcast it first: then it is already in the mempool or a block
-                    let known = |n: &Node| {
-                        n.rpc
-                            .call(
-                                "getrawtransaction",
-                                serde_json::json!([tx.compute_txid().to_string()]),
-                            )
-                            .is_ok()
-                    };
+                    let known = |n: &Node| n.rpc.knows(&tx.compute_txid());
                     let (ok, how) = if known(n) {
                         (true, "already broadcast by another party".to_string())
                     } else {
@@ -1689,7 +1686,7 @@ fn escalate_tier(
             let u = n.rpc.utxo(&b.op)?;
             (u.script_pubkey == b.tree(&oxo).script_pubkey()
                 && u.value.to_sat() == b.value
-                && b.value >= ARB_BOND_FLOOR)
+                && b.value >= bitaid_node::sats(ARB_BOND_FLOOR))
                 .then_some(b)
         })();
         match ok {
@@ -2746,7 +2743,7 @@ fn review_stage(
         .filter(|(w, b)| {
             !excluded.contains(*w)
                 && !off.contains(*w)
-                && b.value >= ARB_BOND_FLOOR
+                && b.value >= bitaid_node::sats(ARB_BOND_FLOOR)
                 && n.rpc
                     .utxo(&b.op)
                     .map(|u| u.script_pubkey == b.tree(&oxo).script_pubkey())
@@ -3416,7 +3413,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let (bs, bc) = (random_scalar(), random_scalar());
     let bf = n.rpc.height() + 52_560;
     let bt = outputs::bond(&secp, &xo(&bs), &xo(&bc), &wire::xonly(&okey).unwrap(), bf);
-    let bond_value = num("--bond", 10_000_000u64);
+    let bond_value = amt("--bond", 10_000_000);
     let bond = match n.rpc.fund(&bt.script_pubkey(), bond_value) {
         Ok(op) => op,
         Err(e) => {
@@ -3491,7 +3488,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut refunds: HashMap<(String, u32), bitcoin::ScriptBuf> = HashMap::new();
     // case units committed per seat, out of --capital (§10.2); released once the case is closed and
     // its review draw has passed it over, or held through the review if drawn
-    let capital = num("--capital", 1_000_000_000u64);
+    let capital = amt("--capital", 1_000_000_000);
     let mut units: HashMap<(String, u32), u64> = HashMap::new();
     let mut final_by: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
     // final cases whose review draw this arbitrator waits for, to release its units (§10.2, §10.3)
@@ -4240,7 +4237,7 @@ fn arbitrator(mut n: Node) -> i32 {
             } => {
                 let key = (case_id.clone(), tier, s.clone());
                 if s == me
-                    || fee < num("--review-price", 0u64)
+                    || fee < amt("--review-price", 0)
                     || flag("--review-leave")
                     || flag("--review-silent")
                     || review_offered.contains(&key)
@@ -4384,16 +4381,16 @@ fn caller(mut n: Node) -> i32 {
             .unwrap();
     let template = Template {
         pots: [
-            num("--deposit", 100_000u64),
-            num("--reward", 600_000u64),
-            num("--bounty", 300_000u64),
+            amt("--deposit", 100_000),
+            amt("--reward", 600_000),
+            amt("--bounty", 300_000),
         ],
         intervener_pct: 70,
         good_faith_pct: 50,
         max_signers: num("--max-signers", 5u8),
         joining_window: num("--window", 15u32),
         dispute_window: num("--dispute-window", 5u32),
-        arb_fee: num("--arb-fee", 20_000u64),
+        arb_fee: amt("--arb-fee", 20_000),
         refund_delay: 12_960,
         refund_xpub: bitcoin::bip32::Xpub::from_priv(&secp, &xpriv).to_string(),
         commit_deadline: num("--commit-deadline", 60u32),
@@ -4519,7 +4516,7 @@ fn caller(mut n: Node) -> i32 {
                 &wire::xonly(&okey)?,
                 bf,
             );
-            (utxo.value.to_sat() >= BOND_FLOOR && utxo.script_pubkey == t.script_pubkey())
+            (utxo.value.to_sat() >= bitaid_node::sats(BOND_FLOOR) && utxo.script_pubkey == t.script_pubkey())
                 .then_some(())
         })();
         if ok.is_none() {
@@ -4788,7 +4785,7 @@ fn responder(mut n: Node) -> i32 {
     );
     let bond = match n
         .rpc
-        .fund(&btree.script_pubkey(), num("--bond", BOND_FLOOR))
+        .fund(&btree.script_pubkey(), amt("--bond", BOND_FLOOR))
     {
         Ok(op) => op,
         Err(e) => {

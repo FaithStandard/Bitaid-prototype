@@ -19,6 +19,18 @@ pub fn slow(secs: u64) -> u64 {
     (secs as f64 * k) as u64
 }
 
+/// Amounts divided for a test chain whose coins come from a faucet: `BITAID_SAT_SCALE` (default 1)
+/// divides every amount the prototype chooses — bonds, case pots, fees, retention — so a run fits a
+/// few hundredths of a coin. Every mechanism and proportion stays the same.
+pub fn sats(x: u64) -> u64 {
+    let k: u64 = std::env::var("BITAID_SAT_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|k: &u64| *k >= 1)
+        .unwrap_or(1);
+    x / k
+}
+
 pub mod blossom;
 pub mod case;
 pub mod chain;

@@ -180,7 +180,9 @@ pub fn unit_value(case_value: u64, max: u64, fee: u64) -> u64 {
 /// The review sampling rate in basis points (§10.3): 5% up to 0.01 BTC, 10% up to 0.1 BTC, 20% up to
 /// 1 BTC, 40% above, and at least 40% when the final panel was split.
 pub fn review_rate_bp(case_value: u64, split: bool) -> u64 {
-    let r = match case_value {
+    // the bands are in full-size sats: a run with divided amounts (BITAID_SAT_SCALE) keeps its rates
+    let k = 1_000_000 / crate::sats(1_000_000).max(1);
+    let r = match case_value * k {
         0..=1_000_000 => 500,
         1_000_001..=10_000_000 => 1_000,
         10_000_001..=100_000_000 => 2_000,
@@ -1366,7 +1368,7 @@ impl Replay {
                 * self.base_fee
                 * t.reveals.iter().filter(|x| verdict_key(&x.1) == ck).count() as u64;
         }
-        due + self.flagger_due() + RETENTION_SATS
+        due + self.flagger_due() + crate::sats(RETENTION_SATS)
     }
 
     /// The flagger's stake back with the review premium, owed only when the review confirmed (§12).
@@ -1507,7 +1509,7 @@ impl Replay {
         }
         // retention of the case's evidence (§12 item 5): a case overturned on review is precedent and
         // review material, and its seizure pays for keeping it, to the base-slot archivists
-        let keep = RETENTION_SATS.min(left);
+        let keep = crate::sats(RETENTION_SATS).min(left);
         if keep > 0 {
             let secp = Secp256k1::verification_only();
             let ks: Vec<ScriptBuf> = self

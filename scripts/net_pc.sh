@@ -15,12 +15,34 @@ V=31.1; B=${BITCOIN_BIN:-$HOME/bitcoin-$V/bin}
 # stretches them for slower blocks. The devices must be started with the same TIME_SCALE.
 TS=$(( ${BLOCK:-20} / 20 )); [ "$TS" -lt 1 ] && TS=1
 export BITAID_TIME_SCALE=${TIME_SCALE:-$TS}
-if [ "$CHAIN" = signet ]; then
+# CHAIN=public: the public signet, through the Windows node that START_bitaid_signet.bat runs (pruned,
+# no transaction index: the nodes index the blocks of the run themselves). Blocks every ~10 minutes,
+# so TIME_SCALE defaults to 30, and its coins come from a faucet, so every amount is divided by
+# SAT_SCALE (default 100). The devices are started with the TIME_SCALE, SAT_SCALE and RPC_PASS shown.
+[ "$CHAIN" = public ] && TS=30
+export BITAID_TIME_SCALE=${TIME_SCALE:-$TS}
+SS=1; [ "$CHAIN" = public ] && SS=100
+export BITAID_SAT_SCALE=${SAT_SCALE:-$SS}
+RPCPORT=18443; PASS=regtest
+if [ "$CHAIN" = public ]; then
+  WCONF=/mnt/c/Users/alber/bitaid-signet/bitcoin.conf
+  PASS=$(sed -n 's/^rpcpassword=//p' "$WCONF" 2>/dev/null | tr -d '\r' | head -1)
+  [ -n "$PASS" ] || { echo "NO_WINDOWS_SIGNET_NODE: run START_bitaid_signet.bat first ($WCONF)"; exit 1; }
+  NET="-signet"; RPCPORT=38332; P2P=38333
+  CLI="$B/bitcoin-cli -signet -rpcconnect=127.0.0.1 -rpcport=$RPCPORT -rpcuser=bitaid -rpcpassword=$PASS"
+elif [ "$CHAIN" = signet ]; then
   NET="-signet -signetchallenge=51"; D=${SIGNET_DIR:-$HOME/bitaid-signet}; P2P=38333
 else
   NET="-regtest"; D=${REGTEST_DIR:-$HOME/bitaid-regtest}; P2P=18444
 fi
-CLI="$B/bitcoin-cli $NET -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
+[ "$CHAIN" = public ] || CLI="$B/bitcoin-cli $NET -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
+# many small coins in each wallet: every zero-fee transaction's fee child needs a confirmed coin of its
+# own, and with 10-minute blocks change confirms too slowly to be reused (public signet; SMALL=1 elsewhere)
+fund_small() {  # wallet, lump in BTC, number of small coins
+  m="\"$($CLI -rpcwallet=$1 getnewaddress)\":$2"
+  for i in $(seq 1 $3); do m="$m,\"$($CLI -rpcwallet=$1 getnewaddress)\":0.00003"; done
+  $CLI -rpcwallet=$SRC sendmany "" "{$m}" >/dev/null || { echo "FUNDING_FAILED ($1)"; exit 1; }
+}
 WIN="/mnt/c/Users/alber/OneDrive/Documentos/Bitaid/10/v6/Files for Claude"
 L=${LOGDIR:-$WIN/pc_logs}; mkdir -p "$L"
 case "$1" in
@@ -39,13 +61,23 @@ start)
     B=$HOME/bitcoin-$V/bin; CLI="$B/bitcoin-cli -regtest -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
   fi
   $B/bitcoind -version | head -1 || { echo "BITCOIND_CANNOT_RUN"; ls -l $B; exit 1; }
+  if [ "$CHAIN" = public ]; then
+    $CLI getblockchaininfo | grep -q '"initialblockdownload": false' || { echo "WINDOWS_SIGNET_NODE_NOT_READY (not running, or still syncing)"; exit 1; }
+    $CLI loadwallet bitaid >/dev/null 2>&1; SRC=bitaid
+    for w in w caller r1 r3 r4; do $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1; done
+    echo "faucet wallet: $($CLI -rpcwallet=bitaid getbalance) signet BTC"
+    fund_small w 0.015 40; for w in caller r1 r3 r4; do fund_small $w 0.002 12; done
+    echo "wallets funded; waiting for the next block (about 10 minutes)"
+    h=$($CLI getblockcount); while [ $($CLI getblockcount) -le $h ]; do sleep 10; done
+  else
   mkdir -p $D
   # a node of the other chain still answering on the RPC port (an earlier run): stop it first
   WANT=regtest; [ "$CHAIN" = signet ] && WANT=signet
   GOT=$($CLI getblockchaininfo 2>/dev/null | sed -n 's/.*"chain": "\([a-z]*\)".*/\1/p')
   if [ -n "$GOT" ] && [ "$GOT" != "$WANT" ]; then echo "stopping the $GOT node from an earlier run"; $CLI stop >/dev/null 2>&1; sleep 8; fi
+  # TXINDEX=0: no transaction index, as on a pruned node (a rehearsal of the public signet)
   $CLI getblockcount >/dev/null 2>&1 || $B/bitcoind $NET -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443 \
-      -rpcbind=127.0.0.1 -rpcallowip=127.0.0.1 -port=$P2P -listen=0 -fallbackfee=0.0001 -txindex=1 -daemon
+      -rpcbind=127.0.0.1 -rpcallowip=127.0.0.1 -port=$P2P -listen=0 -fallbackfee=0.0001 -txindex=${TXINDEX:-1} -daemon
   for i in $(seq 1 60); do $CLI getblockcount >/dev/null 2>&1 && break; sleep 2; done
   $CLI createwallet w >/dev/null 2>&1 || $CLI loadwallet w >/dev/null 2>&1
   # (on signet each block needs real proof of work, a few seconds each: hence the high maxtries)
@@ -56,15 +88,19 @@ start)
   fi
   for w in caller r1 r3 r4; do
     $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1
-    for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done
+    if [ "$SMALL" = 1 ]; then SRC=w; fund_small $w 0.002 12
+    else for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done; fi
   done
+  # (SMALL=1: w also splits off small coins to itself, as on the public signet)
+  [ "$SMALL" = 1 ] && { SRC=w; fund_small w 0.015 40; }
   if [ "$CHAIN" = signet ]; then h=$($CLI getblockcount); while [ $($CLI getblockcount) -le $h ]; do sleep 2; done
   else $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null; fi
+  fi
   echo "chain: $($CLI getblockchaininfo | sed -n 's/.*"chain": "\([a-z]*\)".*/\1/p') height $($CLI getblockcount)"
-  OUT=$(sh scripts/tor_up.sh 7700 7480 18443) || { echo "$OUT"; exit 1; }
+  OUT=$(sh scripts/tor_up.sh 7700 7480 18443:$RPCPORT) || { echo "$OUT"; exit 1; }
   ONION=$(echo "$OUT" | sed -n 's/^ONION=//p')
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
-  export BITAID_RPC=http://bitaid:regtest@127.0.0.1:18443 BITAID_SELF_ONION=$ONION
+  export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_SELF_ONION=$ONION
   X="--exit-after ${WAIT:-10800}"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
   # REVIEW=1: the staged review (§10.3) — a captured tier 1 that no one appeals or challenges, drawn for
@@ -103,12 +139,13 @@ start)
   BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
   echo "$ONION" > "$L/onion.txt"
-  echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE"
+  echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE"
+  [ "$CHAIN" = public ] && echo "RPC_PASS=$PASS"
   ;;
 report)
   cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
   ;;
 stop)
-  pkill -x bitaid-node; pkill -f block_producer.sh 2>/dev/null; $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped
+  pkill -x bitaid-node; pkill -f block_producer.sh 2>/dev/null; [ "$CHAIN" = public ] || $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped
   ;;
 esac

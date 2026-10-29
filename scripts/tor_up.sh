@@ -1,6 +1,7 @@
 #!/bin/sh
 # Starts this device's own Tor (separate from any system Tor) with an onion service for the given
-# local ports, and prints the onion address.  sh scripts/tor_up.sh 7700 7480
+# local ports, and prints the onion address.  sh scripts/tor_up.sh 7700 7480 18443:38332
+# (PORT:LOCAL publishes a local port under another number)
 # Tor's SOCKS port for outgoing onion connections is TOR_SOCKS (default 9160).
 D=$HOME/bitaid-tor; S=${TOR_SOCKS:-9160}
 # NO_TOR=1: a dry run on one machine without Tor (services reached at 127.0.0.1)
@@ -10,7 +11,7 @@ command -v tor >/dev/null || { echo "TOR_NOT_INSTALLED"; exit 1; }
 mkdir -p $D/hs $D/data; chmod 700 $D/hs
 {
   echo "SocksPort $S"; echo "DataDirectory $D/data"; echo "Log notice file $D/tor.log"; echo "RunAsDaemon 1"
-  if [ $# -gt 0 ]; then echo "HiddenServiceDir $D/hs"; for p in "$@"; do echo "HiddenServicePort $p 127.0.0.1:$p"; done; fi
+  if [ $# -gt 0 ]; then echo "HiddenServiceDir $D/hs"; for p in "$@"; do echo "HiddenServicePort ${p%%:*} 127.0.0.1:${p##*:}"; done; fi
 } > $D/torrc
 pkill -f "tor -f $D/torrc" 2>/dev/null; sleep 1
 tor -f $D/torrc >/dev/null 2>&1

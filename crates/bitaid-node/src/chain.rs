@@ -16,6 +16,9 @@ pub struct Rpc {
     /// confirmed transactions and block hashes, which never change: a replay of a case asks for the
     /// same ones many times, and over Tor each call costs a second or more
     memo: Mutex<std::collections::HashMap<String, Value>>,
+    /// transactions of the blocks since the run began, for a node without a transaction index (a
+    /// pruned node cannot keep one): next height to read, and txid → (outputs, height, block hash)
+    index: Mutex<(u32, std::collections::HashMap<String, (Value, u32, String)>)>,
 }
 
 impl Rpc {
@@ -33,6 +36,7 @@ impl Rpc {
             wallet: wallet.into(),
             used: Mutex::new(HashSet::new()),
             memo: Mutex::new(std::collections::HashMap::new()),
+            index: Mutex::new((0, std::collections::HashMap::new())),
         }
     }
 
@@ -89,7 +93,7 @@ impl Rpc {
         if let Some(v) = self.memo.lock().unwrap().get(&k) {
             return Some(v.clone());
         }
-        let v = self.call("getrawtransaction", json!([txid, true])).ok()?;
+        let v = self.raw_tx(txid)?;
         if v["confirmations"].as_u64().unwrap_or(0) > 0 {
             self.memo.lock().unwrap().insert(k, v.clone());
         }
@@ -241,10 +245,52 @@ impl Rpc {
     }
 
     pub fn confirmations(&self, txid: &Txid) -> u32 {
-        self.call("getrawtransaction", json!([txid.to_string(), true]))
-            .ok()
+        self.raw_tx(&txid.to_string())
             .and_then(|v| v["confirmations"].as_u64())
             .unwrap_or(0) as u32
+    }
+
+    /// Whether `txid` is in the mempool or a block.
+    pub fn knows(&self, txid: &Txid) -> bool {
+        self.raw_tx(&txid.to_string()).is_some()
+    }
+
+    /// A transaction (verbose) from the node, or, when the node keeps no transaction index and the
+    /// transaction has left the mempool, from the blocks this node has read since the run began.
+    fn raw_tx(&self, txid: &str) -> Option<Value> {
+        match self.call("getrawtransaction", json!([txid, true])) {
+            Ok(v) => Some(v),
+            Err(e) if e.contains("txindex") || e.contains("No such mempool") => self.indexed(txid),
+            Err(_) => None,
+        }
+    }
+
+    /// Reads every block not yet read (from BITAID_INDEX_FROM, or BITAID_INDEX_BACK blocks — 36 by
+    /// default — before the first lookup) and looks `txid` up among their transactions.
+    fn indexed(&self, txid: &str) -> Option<Value> {
+        let mut ix = self.index.lock().unwrap();
+        let tip = self.height();
+        if ix.0 == 0 {
+            let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+            ix.0 = env("BITAID_INDEX_FROM")
+                .unwrap_or_else(|| tip.saturating_sub(env("BITAID_INDEX_BACK").unwrap_or(36)))
+                .max(1);
+        }
+        while ix.0 <= tip {
+            let h = ix.0;
+            let Some(bh) = self.block_hash(h) else { break };
+            let Ok(b) = self.call("getblock", json!([bh, 2])) else {
+                break;
+            };
+            for t in b["tx"].as_array().cloned().unwrap_or_default() {
+                if let Some(id) = t["txid"].as_str() {
+                    ix.1.insert(id.to_string(), (t["vout"].clone(), h, bh.clone()));
+                }
+            }
+            ix.0 = h + 1;
+        }
+        let (vout, h, bh) = ix.1.get(txid)?.clone();
+        Some(json!({"txid": txid, "vout": vout, "blockhash": bh, "confirmations": tip.saturating_sub(h) + 1}))
     }
 
     /// Submits a zero-fee version-3 transaction with a wallet-funded child spending its anchor.
@@ -257,13 +303,21 @@ impl Rpc {
         // the fee coin is claimed with lockunspent, which the wallet refuses for a coin already locked:
         // several nodes of one machine may share a wallet, and a coin two fee children both spend makes
         // the second package fail ("inputs missing or spent")
+        // the child's fee: 20,000 sats, divided with every amount on a faucet-funded chain but at
+        // least 1,000 (a package of a few hundred vbytes at a few sat/vB); BITAID_CHILD_FEE overrides
+        let fee: u64 = std::env::var("BITAID_CHILD_FEE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| crate::sats(20_000).max(1_000));
         let utxos = self.wcall("listunspent", json!([1]))?;
         let u = {
             let mut used = self.used.lock().unwrap();
             let mut got = None;
             for u in utxos.as_array().ok_or("listunspent")? {
                 let key = format!("{}:{}", u["txid"].as_str().unwrap_or(""), u["vout"]);
-                if u["amount"].as_f64().unwrap_or(0.0) <= 0.01 || used.contains(&key) {
+                if ((u["amount"].as_f64().unwrap_or(0.0) * 1e8).round() as u64) < fee + 1_000
+                    || used.contains(&key)
+                {
                     continue;
                 }
                 used.insert(key);
@@ -301,7 +355,7 @@ impl Rpc {
                 },
             ],
             output: vec![TxOut {
-                value: Amount::from_sat(uval - 20_000),
+                value: Amount::from_sat(uval - fee),
                 script_pubkey: self.new_spk()?,
             }],
         };
