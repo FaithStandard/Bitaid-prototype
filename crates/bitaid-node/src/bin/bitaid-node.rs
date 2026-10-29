@@ -5063,13 +5063,16 @@ fn responder(mut n: Node) -> i32 {
     if flag("--mine") {
         n.rpc.mine(1).ok();
     }
+    // the payouts confirm in the next block after whoever broadcasts them (a phone over Tor may be
+    // the one): up to 5 minutes, stretched with the blocks
     let mut got = 0;
-    for _ in 0..60 {
+    let end = Instant::now() + secs(300);
+    while Instant::now() < end {
         got = n.rpc.received(&payout);
         if got > 0 {
             break;
         }
-        std::thread::sleep(secs(1));
+        std::thread::sleep(secs(2));
     }
     let expected_some = paid
         .iter()
