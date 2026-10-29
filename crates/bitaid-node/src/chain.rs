@@ -62,6 +62,10 @@ impl Rpc {
         {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
+        if std::env::var("BITAID_RPC_TRACE").is_ok() {
+            let p = params.to_string();
+            eprintln!("rpc {method} {}", &p[..p.len().min(90)]);
+        }
         let body = json!({"jsonrpc": "1.0", "id": "bitaid", "method": method, "params": params});
         let r = crate::http_for(&url)
             .post(&url)
