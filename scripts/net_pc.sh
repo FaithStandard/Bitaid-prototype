@@ -108,6 +108,8 @@ start)
   ONION=$(echo "$OUT" | sed -n 's/^ONION=//p')
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
   export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_SELF_ONION=$ONION
+  # nodes without a transaction index read the blocks of the run themselves, from this height on
+  export BITAID_INDEX_FROM=${INDEX_FROM:-$(( $($CLI getblockcount) - 1 ))}
   X="--exit-after ${WAIT:-10800}"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
   # REVIEW=1: the staged review (§10.3) — a captured tier 1 that no one appeals or challenges, drawn for
@@ -146,7 +148,7 @@ start)
   BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
   echo "$ONION" > "$L/onion.txt"
-  echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE"
+  echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE INDEX_FROM=$BITAID_INDEX_FROM"
   [ "$CHAIN" = public ] && echo "RPC_PASS=$PASS"
   ;;
 report)

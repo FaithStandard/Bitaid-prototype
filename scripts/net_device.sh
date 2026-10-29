@@ -19,8 +19,10 @@ responder|caller)
   P="--peer $PC:7700 --pool ${POOL:-tor1}"
   termux-wake-lock 2>/dev/null
   # slower blocks: TIME_SCALE stretches every wait of a minute or more; SAT_SCALE divides every amount
-  # (a faucet-funded chain); RPC_PASS is the chain node's RPC password (the PC prints all three)
+  # (a faucet-funded chain); RPC_PASS is the chain node's RPC password (the PC prints them all)
   export BITAID_TIME_SCALE=${TIME_SCALE:-1} BITAID_SAT_SCALE=${SAT_SCALE:-1}
+  # INDEX_FROM: the height the run began at, for a chain node without a transaction index
+  [ -n "$INDEX_FROM" ] && export BITAID_INDEX_FROM=$INDEX_FROM
   LINGER=${LINGER:-$(( 600 * ${TIME_SCALE:-1} ))}
   # a pool member started with & ignores Ctrl+C, so one from an earlier run can still be alive and
   # answer under an old identity: stop it first, and stop ours when this run is interrupted
