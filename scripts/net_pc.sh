@@ -11,6 +11,10 @@ V=31.1; B=${BITCOIN_BIN:-$HOME/bitcoin-$V/bin}
 # CHAIN=signet: a custom signet (challenge OP_TRUE) instead of regtest: nobody mines on demand, a block
 # producer on this PC makes a block every BLOCK seconds (default 20), and every node waits for blocks as
 # on a real chain. Its data is kept between runs, so only the first start mines the first 110 blocks.
+# Waits of a minute or more are tuned for 20-second blocks; TIME_SCALE (default BLOCK/20, at least 1)
+# stretches them for slower blocks. The devices must be started with the same TIME_SCALE.
+TS=$(( ${BLOCK:-20} / 20 )); [ "$TS" -lt 1 ] && TS=1
+export BITAID_TIME_SCALE=${TIME_SCALE:-$TS}
 if [ "$CHAIN" = signet ]; then
   NET="-signet -signetchallenge=51"; D=${SIGNET_DIR:-$HOME/bitaid-signet}; P2P=38333
 else
@@ -99,7 +103,7 @@ start)
   BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
   echo "$ONION" > "$L/onion.txt"
-  echo "PC_READY  onion: $ONION"
+  echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE"
   ;;
 report)
   cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30

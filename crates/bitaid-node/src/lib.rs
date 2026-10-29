@@ -3,6 +3,22 @@
 //! evidence on Blossom-compatible servers.
 //!
 //! This is a prototype for testing and review, not production software. It must not hold real funds.
+/// Long waits (a minute or more) stretched for slow chains: `BITAID_TIME_SCALE` (default 1) multiplies
+/// every wait that may span blocks — a node's idle exit, settlement, a panel's seating, the chain's
+/// own confirmations — while message-level timeouts under a minute stay as they are. On a chain with
+/// 10-minute blocks the waits tuned for 20-second blocks are about 30 times too short.
+pub fn slow(secs: u64) -> u64 {
+    if secs < 60 {
+        return secs;
+    }
+    let k: f64 = std::env::var("BITAID_TIME_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|k: &f64| *k >= 1.0)
+        .unwrap_or(1.0);
+    (secs as f64 * k) as u64
+}
+
 pub mod blossom;
 pub mod case;
 pub mod chain;

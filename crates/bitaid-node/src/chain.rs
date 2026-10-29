@@ -169,7 +169,7 @@ impl Rpc {
         }
         let t0 = std::time::Instant::now();
         while txids.iter().any(|t| self.confirmations(t) == 0)
-            && t0.elapsed() < std::time::Duration::from_secs(900)
+            && t0.elapsed() < std::time::Duration::from_secs(crate::slow(900))
         {
             std::thread::sleep(std::time::Duration::from_millis(2000));
         }
@@ -186,8 +186,8 @@ impl Rpc {
         let start = self.height();
         let t0 = std::time::Instant::now();
         while self.height() < start + k {
-            if t0.elapsed() > std::time::Duration::from_secs(1800) {
-                return Err(format!("no new block in 30 min (at {start})"));
+            if t0.elapsed() > std::time::Duration::from_secs(crate::slow(1800)) {
+                return Err(format!("no new block in {} s (at {start})", crate::slow(1800)));
             }
             std::thread::sleep(std::time::Duration::from_millis(1000));
         }

@@ -18,6 +18,9 @@ responder|caller)
   export BITAID_RPC=http://bitaid:regtest@${CHAIN_ONION:-$PC}:18443
   P="--peer $PC:7700 --pool ${POOL:-tor1}"
   termux-wake-lock 2>/dev/null
+  # slower blocks: TIME_SCALE stretches every wait of a minute or more (the PC prints the value to use)
+  export BITAID_TIME_SCALE=${TIME_SCALE:-1}
+  LINGER=${LINGER:-$(( 600 * ${TIME_SCALE:-1} ))}
   # a pool member started with & ignores Ctrl+C, so one from an earlier run can still be alive and
   # answer under an old identity: stop it first, and stop ours when this run is interrupted
   pkill -f -- "--role pool-member" 2>/dev/null && { echo "stopped a pool member left from an earlier run"; sleep 2; }

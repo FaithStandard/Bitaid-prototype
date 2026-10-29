@@ -53,7 +53,7 @@ fn num<T: FromStr>(name: &str, d: T) -> T {
     arg(name).and_then(|s| s.parse().ok()).unwrap_or(d)
 }
 fn secs(n: u64) -> Duration {
-    Duration::from_secs(n)
+    Duration::from_secs(bitaid_node::slow(n))
 }
 
 fn relay_host(url: &str) -> String {

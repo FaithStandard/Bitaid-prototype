@@ -158,7 +158,7 @@ impl Filter {
     }
     /// Only events from the last `secs` seconds: public relays keep announcements of earlier runs.
     pub fn recent(mut self, secs: u64) -> Filter {
-        self.since = Some(now().saturating_sub(secs));
+        self.since = Some(now().saturating_sub(crate::slow(secs)));
         self
     }
     pub fn tag(mut self, name: char, values: &[String]) -> Filter {
