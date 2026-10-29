@@ -43,6 +43,13 @@ fund_small() {  # wallet, lump in BTC, number of small coins
   for i in $(seq 1 $3); do m="$m,\"$($CLI -rpcwallet=$1 getnewaddress)\":0.00003"; done
   $CLI -rpcwallet=$SRC sendmany "" "{$m}" >/dev/null || { echo "FUNDING_FAILED ($1)"; exit 1; }
 }
+# until every test wallet's coins are confirmed (the next block can come from a template made before
+# the funding was sent, so one block is not enough)
+wait_funded() {
+  for w in w caller r1 r3 r4; do
+    while $CLI -rpcwallet=$w getbalances | tr -d ' \n' | grep -Eq '"untrusted_pending":([1-9]|0\.0*[1-9])'; do sleep 10; done
+  done
+}
 WIN="/mnt/c/Users/alber/OneDrive/Documentos/Bitaid/10/v6/Files for Claude"
 L=${LOGDIR:-$WIN/pc_logs}; mkdir -p "$L"
 case "$1" in
@@ -67,8 +74,8 @@ start)
     for w in w caller r1 r3 r4; do $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1; done
     echo "faucet wallet: $($CLI -rpcwallet=bitaid getbalance) signet BTC"
     fund_small w 0.015 40; for w in caller r1 r3 r4; do fund_small $w 0.002 12; done
-    echo "wallets funded; waiting for the next block (about 10 minutes)"
-    h=$($CLI getblockcount); while [ $($CLI getblockcount) -le $h ]; do sleep 10; done
+    echo "wallets funded; waiting for the funding to confirm (about 10 minutes, sometimes more)"
+    wait_funded
   else
   mkdir -p $D
   # a node of the other chain still answering on the RPC port (an earlier run): stop it first
@@ -93,7 +100,7 @@ start)
   done
   # (SMALL=1: w also splits off small coins to itself, as on the public signet)
   [ "$SMALL" = 1 ] && { SRC=w; fund_small w 0.015 40; }
-  if [ "$CHAIN" = signet ]; then h=$($CLI getblockcount); while [ $($CLI getblockcount) -le $h ]; do sleep 2; done
+  if [ "$CHAIN" = signet ]; then h=$($CLI getblockcount); while [ $($CLI getblockcount) -le $h ]; do sleep 2; done; wait_funded
   else $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null; fi
   fi
   echo "chain: $($CLI getblockchaininfo | sed -n 's/.*"chain": "\([a-z]*\)".*/\1/p') height $($CLI getblockcount)"
