@@ -52,9 +52,15 @@ fn flag(name: &str) -> bool {
 fn num<T: FromStr>(name: &str, d: T) -> T {
     arg(name).and_then(|s| s.parse().ok()).unwrap_or(d)
 }
-/// An amount flag (sats), divided by BITAID_SAT_SCALE for a faucet-funded test chain.
+/// An amount flag (sats), divided by BITAID_SAT_SCALE for a faucet-funded test chain, but never
+/// below the 330-sat dust limit of a taproot output (a divided 20,000-sat seat fee would be 200).
 fn amt(name: &str, d: u64) -> u64 {
-    bitaid_node::sats(num(name, d))
+    let v = num(name, d);
+    if v == 0 {
+        0
+    } else {
+        bitaid_node::sats(v).max(bitaid_core::payouts::DUST)
+    }
 }
 fn secs(n: u64) -> Duration {
     Duration::from_secs(bitaid_node::slow(n))
