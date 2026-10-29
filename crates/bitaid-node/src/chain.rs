@@ -279,21 +279,24 @@ impl Rpc {
     /// `txid` from the blocks already read, with its confirmations against a tip at most 5 s old.
     fn from_index(&self, txid: &str) -> Option<Value> {
         let (vout, h, bh) = self.index.lock().unwrap().1.get(txid)?.clone();
-        let tip = {
-            let mut t = self.tip.lock().unwrap();
-            if t.1.map_or(true, |at| at.elapsed() > std::time::Duration::from_secs(5)) {
-                *t = (self.height(), Some(std::time::Instant::now()));
-            }
-            t.0
-        };
+        let tip = self.tip();
         Some(json!({"txid": txid, "vout": vout, "blockhash": bh, "confirmations": tip.saturating_sub(h) + 1}))
+    }
+
+    /// The chain's height, asked at most every 5 s (lookups of unknown transactions are frequent).
+    fn tip(&self) -> u32 {
+        let mut t = self.tip.lock().unwrap();
+        if t.1.map_or(true, |at| at.elapsed() > std::time::Duration::from_secs(5)) {
+            *t = (self.height(), Some(std::time::Instant::now()));
+        }
+        t.0
     }
 
     /// Reads every block not yet read (from BITAID_INDEX_FROM, or BITAID_INDEX_BACK blocks — 36 by
     /// default — before the first lookup) and looks `txid` up among their transactions.
     fn indexed(&self, txid: &str) -> Option<Value> {
+        let tip = self.tip();
         let mut ix = self.index.lock().unwrap();
-        let tip = self.height();
         if ix.0 == 0 {
             let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
             ix.0 = env("BITAID_INDEX_FROM")
