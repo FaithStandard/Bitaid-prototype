@@ -188,6 +188,8 @@ fn pool_member(mut n: Node) -> i32 {
         HashMap::new();
     // per case, when last replayed: the review's seizure due and the units releasable
     #[allow(clippy::type_complexity)]
+    // transactions this member already checked and co-signed: (case, txid, input) → digest
+    let mut approved: HashMap<(String, bitcoin::Txid, u32), [u8; 32]> = HashMap::new();
     let mut later_due: HashMap<
         String,
         (
@@ -424,6 +426,12 @@ fn pool_member(mut n: Node) -> i32 {
                         &[txbuild::txout(a.funding_value, tree.script_pubkey())],
                         &tree.scripts[funding_leaf::ACCEPT],
                     )
+                } else if let Some(d) = approved.get(&(case_id.clone(), t.compute_txid(), *input)) {
+                    // asked again in a later session (the requester retries when too few members
+                    // committed in time): already checked, so answered at once — a replay over a slow
+                    // link takes longer than a session waits
+                    n.log(&format!("co-signing again for {} (checked before)", &case_id[..8]));
+                    *d
                 } else if let Some((d, what)) = (!done.contains(case_id))
                     .then(|| seat_forfeit_due(&n, a, r, &t, *input, &vcommits, &fee_at))
                     .flatten()
@@ -507,6 +515,7 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log("co-signature refused: not the template's incident transaction");
                     continue;
                 };
+                approved.insert((case_id.clone(), t.compute_txid(), *input), d);
                 digests.insert((case_id.clone(), *session), d);
                 let (nonces, commitment) = m.commit();
                 sessions.insert((case_id.clone(), *session), nonces);
