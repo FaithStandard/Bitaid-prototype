@@ -52,6 +52,21 @@ wait_funded() {
     while $CLI -rpcwallet=$w getbalances | tr -d ' \n' | grep -Eq '"untrusted_pending":([1-9]|0\.0*[1-9])'; do sleep 10; done
   done
 }
+# tops wallet $1 up to $2 BTC in coins of 0.0005 or more and to $3 fee coins (0.00015 to 0.0005)
+topup() {
+  read add n <<EOT
+$($CLI -rpcwallet=$1 listunspent 0 | python3 -c "
+import json,sys; u=json.load(sys.stdin); big=sum(x['amount'] for x in u if x['amount']>=0.0005)
+fee=sum(1 for x in u if 0.00015<=x['amount']<0.0005)
+print('%.8f' % max(0,$2-big), max(0,$3-fee))")
+EOT
+  [ -n "$n" ] || { echo "FUNDING_FAILED ($1: cannot read the wallet)"; exit 1; }
+  m=""; [ "$add" != "0.00000000" ] && m="\"$($CLI -rpcwallet=$1 getnewaddress)\":$add"
+  for i in $(seq 1 $n); do m="$m${m:+,}\"$($CLI -rpcwallet=$1 getnewaddress)\":0.00015"; done
+  [ -z "$m" ] && { echo "$1: already funded"; return; }
+  echo "$1: adding $add BTC and $n fee coins"
+  $CLI -rpcwallet=$SRC sendmany "" "{$m}" >/dev/null || { echo "FUNDING_FAILED ($1)"; exit 1; }
+}
 WIN="/mnt/c/Users/alber/OneDrive/Documentos/Bitaid/10/v6/Files for Claude"
 L=${LOGDIR:-$WIN/pc_logs}; mkdir -p "$L"
 case "$1" in
@@ -75,7 +90,8 @@ start)
     $CLI loadwallet bitaid >/dev/null 2>&1; SRC=bitaid
     for w in w caller r1 r3 r4; do $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1; done
     echo "faucet wallet: $($CLI -rpcwallet=bitaid getbalance) signet BTC"
-    fund_small w 0.012 25; for w in caller r1 r3 r4; do fund_small $w 0.001 6; done
+    # coins left in the test wallets by earlier runs count: each is only topped up to what it needs
+    topup w 0.015 25; for w in caller r1 r3 r4; do topup $w 0.001 6; done
     echo "wallets funded; waiting for the funding to confirm (about 10 minutes, sometimes more)"
     wait_funded
   else

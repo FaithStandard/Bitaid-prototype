@@ -220,10 +220,13 @@ impl Rpc {
         // the wallet held, to tell a short wallet from a busy one
         let end = std::time::Instant::now() + std::time::Duration::from_secs(crate::slow(300));
         let txid = loop {
-            match self.wcall(
-                "sendtoaddress",
-                json!([addr.to_string(), format!("{:.8}", sats as f64 / 1e8)]),
-            ) {
+            let amount = format!("{:.8}", sats as f64 / 1e8);
+            // at the node's estimate (the wallet's own choice ran several times higher on signet)
+            let params = match self.wallet_fee_rate() {
+                Some(r) => json!([addr.to_string(), amount, "", "", false, true, null, "unset", null, r]),
+                None => json!([addr.to_string(), amount]),
+            };
+            match self.wcall("sendtoaddress", params) {
                 Ok(t) => break t,
                 Err(e)
                     if (e.contains("exceeds your balance") || e.contains("Insufficient funds"))
@@ -372,6 +375,12 @@ impl Rpc {
         Some(r.min(max))
     }
 
+    /// The fee rate (sat/vB, whole, at least 1) for the wallet's own payments — bonds, units, fees,
+    /// commitments: the node's estimate for two blocks, or None to leave it to the wallet.
+    fn wallet_fee_rate(&self) -> Option<u64> {
+        self.fee_rate(2).map(|r| (r.ceil() as u64).max(1))
+    }
+
     /// `package_within(parent, 2)`: a fee for confirmation within two blocks.
     pub fn package(&self, parent: &Transaction) -> Result<Txid, String> {
         self.package_within(parent, 2)
@@ -486,7 +495,11 @@ impl Rpc {
             "createrawtransaction",
             json!([[], [{"data": hex::encode(data)}]]),
         )?;
-        let funded = self.wcall("fundrawtransaction", json!([raw]))?;
+        let opts = match self.wallet_fee_rate() {
+            Some(r) => json!({"fee_rate": r}),
+            None => json!({}),
+        };
+        let funded = self.wcall("fundrawtransaction", json!([raw, opts]))?;
         let signed = self.wcall("signrawtransactionwithwallet", json!([funded["hex"]]))?;
         let txid = self.call("sendrawtransaction", json!([signed["hex"]]))?;
         Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())
@@ -518,7 +531,11 @@ impl Rpc {
                 .unwrap_or(0.0);
             m.insert(a.to_string(), json!(prev + *sats as f64 / 1e8));
         }
-        let txid = self.wcall("sendmany", json!(["", m]))?;
+        let params = match self.wallet_fee_rate() {
+            Some(r) => json!(["", m, null, "", null, true, null, "unset", r]),
+            None => json!(["", m]),
+        };
+        let txid = self.wcall("sendmany", params)?;
         Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())
     }
 
