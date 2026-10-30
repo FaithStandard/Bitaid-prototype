@@ -478,6 +478,29 @@ impl Rpc {
         }
     }
 
+    /// The unspent coins under `spk` (outpoint, value), confirmed, from the UTXO set (works on a
+    /// pruned node).
+    pub fn unspent_at(&self, spk: &ScriptBuf) -> Vec<(OutPoint, u64)> {
+        let Ok(addr) = Address::from_script(spk, self.network()) else {
+            return vec![];
+        };
+        self.call("scantxoutset", json!(["start", [format!("addr({addr})")]]))
+            .ok()
+            .and_then(|v| v["unspents"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|u| {
+                Some((
+                    OutPoint {
+                        txid: Txid::from_str(u["txid"].as_str()?).ok()?,
+                        vout: u["vout"].as_u64()? as u32,
+                    },
+                    (u["amount"].as_f64()? * 1e8).round() as u64,
+                ))
+            })
+            .collect()
+    }
+
     pub fn received(&self, spk: &ScriptBuf) -> u64 {
         let Ok(addr) = Address::from_script(spk, self.network()) else {
             return 0;

@@ -10,6 +10,13 @@ chain)
   sh scripts/m3_chain.sh || exit 1
   sh scripts/tor_up.sh 18443
   ;;
+reclaim)
+  OUT=$(sh scripts/tor_up.sh) || { echo "$OUT"; exit 1; }
+  [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
+  PC=${PC:-$CORE}; case "$PC" in *.*) ;; *) PC=$PC.onion ;; esac
+  export BITAID_RPC=http://bitaid:${RPC_PASS:-regtest}@$PC:18443 BITAID_WALLET=bitaid
+  for f in $HOME/bitaid_keys_*.jsonl; do [ -f "$f" ] && { echo "== $f"; $BIN --role reclaim --keys "$f"; }; done
+  ;;
 responder|caller)
   OUT=$(sh scripts/tor_up.sh) || { echo "$OUT"; exit 1; }; echo "$OUT"
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
@@ -23,6 +30,9 @@ responder|caller)
   export BITAID_TIME_SCALE=${TIME_SCALE:-1} BITAID_SAT_SCALE=${SAT_SCALE:-1}
   # INDEX_FROM: the height the run began at, for a chain node without a transaction index
   [ -n "$INDEX_FROM" ] && export BITAID_INDEX_FROM=$INDEX_FROM
+  # faucet coins: keep the keys of this device's bond and funding output, to take back what is left
+  # a day later (sh scripts/net_device.sh reclaim, with the same RPC_PASS and PC)
+  [ "${SAT_SCALE:-1}" -gt 1 ] && export BITAID_KEYFILE=$HOME/bitaid_keys_$1.jsonl
   LINGER=${LINGER:-$(( 600 * ${TIME_SCALE:-1} ))}
   # a pool member started with & ignores Ctrl+C, so one from an earlier run can still be alive and
   # answer under an old identity: stop it first, and stop ours when this run is interrupted

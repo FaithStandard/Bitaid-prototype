@@ -86,8 +86,130 @@ fn chain_view(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBu
     move |op| rpc.utxo(op).map(|o| (o.value.to_sat(), o.script_pubkey))
 }
 
+/// Blocks until an output's fallback leaf lets its owner's key alone spend it: a year (52,560) on a
+/// real chain; a day (144) on a faucet-funded test chain (BITAID_SAT_SCALE above 1), so a test run's
+/// bonds, units and funding outputs can be taken back (`--role reclaim`); BITAID_FALLBACK_BLOCKS sets it.
+fn fallback_blocks() -> u32 {
+    std::env::var("BITAID_FALLBACK_BLOCKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(if bitaid_node::sats(100) < 100 { 144 } else { 52_560 })
+}
+
+fn name_of(n: &Node) -> String {
+    n.name.clone()
+}
+
+/// Test chains only: appends the keys of a bond (scoped, cold) or a funding output (scoped, wallet)
+/// to BITAID_KEYFILE, one JSON line each, so `--role reclaim` can spend what is left under it by the
+/// fallback leaf once its height passes. Never set on a chain with real coins.
+fn keep_keys(kind: &str, who: &str, a: &Scalar, b: &Scalar, oracle: &str, fallback: u32) {
+    let Ok(path) = std::env::var("BITAID_KEYFILE") else {
+        return;
+    };
+    let line = serde_json::json!({
+        "kind": kind, "who": who, "a": hex::encode(a.serialize()), "b": hex::encode(b.serialize()),
+        "oracle": oracle, "fallback": fallback,
+    });
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// `--role reclaim --keys FILE`: for each line of a key file, every coin still under that bond's or
+/// funding output's script whose fallback height has passed is sent back to this wallet by the
+/// fallback leaf (the owner's key alone). Coins not yet past their height are listed and left.
+fn reclaim() -> i32 {
+    let rpc = Rpc::from_env();
+    let secp = Secp256k1::new();
+    let path = arg("--keys").unwrap_or("bitaid_keys.jsonl".into());
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        eprintln!("no key file {path}");
+        return 1;
+    };
+    let tip = rpc.height();
+    let to = rpc.new_spk().expect("an address of this wallet");
+    let rate = rpc.fee_rate(6).unwrap_or(2.0).max(1.0);
+    let (mut back, mut waiting) = (0u64, 0u64);
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let sc = |k: &str| {
+            hex::decode(v[k].as_str().unwrap_or(""))
+                .ok()
+                .and_then(|b| Scalar::from_slice(&b).ok())
+        };
+        let (Some(a), Some(b), Some(o)) = (
+            sc("a"),
+            sc("b"),
+            v["oracle"].as_str().and_then(wire::xonly),
+        ) else {
+            continue;
+        };
+        let bf = v["fallback"].as_u64().unwrap_or(u64::MAX) as u32;
+        let tree = if v["kind"] == "funding" {
+            outputs::funding(&secp, &xo(&b), &xo(&a), &o, bf)
+        } else {
+            outputs::bond(&secp, &xo(&a), &xo(&b), &o, bf)
+        };
+        let spk = tree.script_pubkey();
+        let coins = rpc.unspent_at(&spk);
+        if coins.is_empty() {
+            continue;
+        }
+        let total: u64 = coins.iter().map(|c| c.1).sum();
+        let who = v["who"].as_str().unwrap_or("?");
+        if tip < bf {
+            println!("{who} {}: {total} sats in {} coin(s), back after block {bf} (now {tip})", v["kind"].as_str().unwrap_or("?"), coins.len());
+            waiting += total;
+            continue;
+        }
+        let fee = (((coins.len() as f64) * 112.0 + 53.0) * rate).ceil() as u64;
+        if total <= fee + 330 {
+            continue;
+        }
+        let mut tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::from_height(bf).unwrap(),
+            input: coins
+                .iter()
+                .map(|c| bitcoin::TxIn {
+                    previous_output: c.0,
+                    sequence: bitcoin::Sequence::ENABLE_LOCKTIME_NO_RBF,
+                    ..Default::default()
+                })
+                .collect(),
+            output: vec![txbuild::txout(total - fee, to.clone())],
+        };
+        let prev: Vec<bitcoin::TxOut> = coins.iter().map(|c| txbuild::txout(c.1, spk.clone())).collect();
+        let leaf = &tree.scripts[funding_leaf::FALLBACK];
+        for i in 0..tx.input.len() {
+            let d = txbuild::scriptspend_digest(&tx, i, &prev, leaf);
+            tx.input[i].witness = Witness::from_slice(&[
+                sign_bip340(&b, &d).to_vec(),
+                leaf.to_bytes(),
+                tree.control(funding_leaf::FALLBACK).serialize(),
+            ]);
+        }
+        match rpc.call("sendrawtransaction", serde_json::json!([serialize_hex(&tx)])) {
+            Ok(t) => {
+                println!("{who} {}: {total} sats back ({} coin(s), fee {fee}) — {}", v["kind"].as_str().unwrap_or("?"), coins.len(), t.as_str().unwrap_or(""));
+                back += total - fee;
+            }
+            Err(e) => println!("{who} {}: {total} sats not sent: {e}", v["kind"].as_str().unwrap_or("?")),
+        }
+    }
+    println!("reclaimed {back} sats; {waiting} sats still waiting for their fallback height");
+    0
+}
+
 fn main() {
     let role = arg("--role").expect("--role caller|responder|oracle|archivist");
+    if role == "reclaim" {
+        std::process::exit(reclaim());
+    }
     let relays = args_all("--relay");
     let peers = args_all("--peer");
     let listen = arg("--listen-gossip");
@@ -3426,8 +3548,9 @@ fn arbitrator(mut n: Node) -> i32 {
     };
     let okey = view.key_hex();
     let (bs, bc) = (random_scalar(), random_scalar());
-    let bf = n.rpc.height() + 52_560;
+    let bf = n.rpc.height() + fallback_blocks();
     let bt = outputs::bond(&secp, &xo(&bs), &xo(&bc), &wire::xonly(&okey).unwrap(), bf);
+    keep_keys("bond", &name_of(&n), &bs, &bc, &okey, bf);
     let bond_value = amt("--bond", 10_000_000);
     let bond = match n.rpc.fund(&bt.script_pubkey(), bond_value) {
         Ok(op) => op,
@@ -4413,7 +4536,8 @@ fn caller(mut n: Node) -> i32 {
         review_pct: arg("--review-pct").and_then(|x| x.parse().ok()),
     };
     let total: u64 = template.pots.iter().sum();
-    let fallback = n.rpc.height() + 52_560;
+    let fallback = n.rpc.height() + fallback_blocks();
+    keep_keys("funding", &name_of(&n), &k, &w, &okey, fallback);
     let tree = outputs::funding(
         &secp,
         &xo(&w),
@@ -4791,7 +4915,8 @@ fn responder(mut n: Node) -> i32 {
     let archivists = n.all_services("archivist", num("--archivists", 1usize), secs(60));
     // ------------------------------------------------ bond
     let (bond_scoped, bond_cold) = (random_scalar(), random_scalar());
-    let bf = n.rpc.height() + 52_560;
+    let bf = n.rpc.height() + fallback_blocks();
+    keep_keys("bond", &name_of(&n), &bond_scoped, &bond_cold, &okey, bf);
     let btree = outputs::bond(
         &secp,
         &xo(&bond_scoped),

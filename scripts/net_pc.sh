@@ -126,6 +126,9 @@ start)
   ONION=$(echo "$OUT" | sed -n 's/^ONION=//p')
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
   export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_SELF_ONION=$ONION
+  # faucet coins (public signet): every bond's and funding output's keys are kept, so what a run leaves
+  # under them can be taken back a day later (sh scripts/net_pc.sh reclaim)
+  [ "$CHAIN" = public ] && { mkdir -p "$WIN/keys"; export BITAID_KEYFILE="$WIN/keys/bitaid_keys_pc.jsonl"; }
   # nodes without a transaction index read the blocks of the run themselves, from this height on
   export BITAID_INDEX_FROM=${INDEX_FROM:-$(( $($CLI getblockcount) - 1 ))}
   X="--exit-after ${WAIT:-10800}"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
@@ -171,6 +174,13 @@ start)
   ;;
 report)
   cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
+  ;;
+reclaim)
+  # coins left under this PC's bonds and funding outputs by earlier runs, back to the faucet wallet once
+  # their fallback height has passed (a day on the public signet); also the devices' key files if they
+  # were copied into the keys folder
+  export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_WALLET=bitaid
+  for f in "$WIN"/keys/*.jsonl; do [ -f "$f" ] && { echo "== $f"; target/release/bitaid-node --role reclaim --keys "$f"; }; done
   ;;
 stop)
   pkill -x bitaid-node; pkill -f block_producer.sh 2>/dev/null; [ "$CHAIN" = public ] || $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped
