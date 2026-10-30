@@ -33,7 +33,9 @@ responder|caller)
   # faucet coins: keep the keys of this device's bond and funding output, to take back what is left
   # a day later (sh scripts/net_device.sh reclaim, with the same RPC_PASS and PC)
   [ "${SAT_SCALE:-1}" -gt 1 ] && export BITAID_KEYFILE=$HOME/bitaid_keys_$1.jsonl
-  LINGER=${LINGER:-$(( 600 * ${TIME_SCALE:-1} ))}
+  # the pool member stays for the late penalties, distribution and unit releases (on the public signet
+  # these came 5 hours after the device's own checks)
+  LINGER=${LINGER:-$(( 1200 * ${TIME_SCALE:-1} ))}
   # a pool member started with & ignores Ctrl+C, so one from an earlier run can still be alive and
   # answer under an old identity: stop it first, and stop ours when this run is interrupted
   if [ "$1" = responder ]; then PMNAME=pool3; else PMNAME=pool4-liar; fi

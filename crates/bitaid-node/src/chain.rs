@@ -364,14 +364,26 @@ impl Rpc {
     /// mempool and recent blocks show (estimatesmartfee, conservative), capped by BITAID_MAX_FEE_RATE
     /// (default 200 sat/vB). None where the node has no estimate yet (regtest, a fresh test chain).
     pub fn fee_rate(&self, target: u32) -> Option<f64> {
-        let v = self
-            .call("estimatesmartfee", json!([target, "conservative"]))
-            .ok()?;
-        let r = v["feerate"].as_f64()? * 1e5; // BTC/kvB → sat/vB
         let max: f64 = std::env::var("BITAID_MAX_FEE_RATE")
             .ok()
             .and_then(|x| x.parse().ok())
             .unwrap_or(200.0);
+        // first the mempool itself: while everything waiting fits in the next block (well under its
+        // 1,000,000 vbytes), the next block takes every transaction that pays the relay minimum, and
+        // the estimator's history (a signet with sporadic high-fee spam ran it to 30+ sat/vB with the
+        // blocks a twentieth full) only overpays; twice the minimum, at least 1 sat/vB
+        if let Ok(m) = self.call("getmempoolinfo", json!([])) {
+            let (bytes, minfee) = (m["bytes"].as_f64(), m["mempoolminfee"].as_f64());
+            if let (Some(b), Some(f)) = (bytes, minfee) {
+                if b < 500_000.0 {
+                    return Some((f * 1e5 * 2.0).max(1.0).min(max));
+                }
+            }
+        }
+        let v = self
+            .call("estimatesmartfee", json!([target, "conservative"]))
+            .ok()?;
+        let r = v["feerate"].as_f64()? * 1e5; // BTC/kvB → sat/vB
         Some(r.min(max))
     }
 
