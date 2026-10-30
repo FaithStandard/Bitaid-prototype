@@ -38,9 +38,11 @@ fi
 [ "$CHAIN" = public ] || CLI="$B/bitcoin-cli $NET -datadir=$D -rpcuser=bitaid -rpcpassword=regtest -rpcport=18443"
 # many small coins in each wallet: every zero-fee transaction's fee child needs a confirmed coin of its
 # own, and with 10-minute blocks change confirms too slowly to be reused (public signet; SMALL=1 elsewhere)
-fund_small() {  # wallet, lump in BTC, number of small coins
+# (each fee child pays the node's estimate for the whole package, a few thousand sats at signet's
+# usual 10 sat/vB: a fee coin is 15,000 sats)
+fund_small() {  # wallet, lump in BTC, number of fee coins
   m="\"$($CLI -rpcwallet=$1 getnewaddress)\":$2"
-  for i in $(seq 1 $3); do m="$m,\"$($CLI -rpcwallet=$1 getnewaddress)\":0.00003"; done
+  for i in $(seq 1 $3); do m="$m,\"$($CLI -rpcwallet=$1 getnewaddress)\":0.00015"; done
   $CLI -rpcwallet=$SRC sendmany "" "{$m}" >/dev/null || { echo "FUNDING_FAILED ($1)"; exit 1; }
 }
 # until every test wallet's coins are confirmed (the next block can come from a template made before
@@ -73,7 +75,7 @@ start)
     $CLI loadwallet bitaid >/dev/null 2>&1; SRC=bitaid
     for w in w caller r1 r3 r4; do $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1; done
     echo "faucet wallet: $($CLI -rpcwallet=bitaid getbalance) signet BTC"
-    fund_small w 0.015 40; for w in caller r1 r3 r4; do fund_small $w 0.002 12; done
+    fund_small w 0.012 25; for w in caller r1 r3 r4; do fund_small $w 0.001 6; done
     echo "wallets funded; waiting for the funding to confirm (about 10 minutes, sometimes more)"
     wait_funded
   else

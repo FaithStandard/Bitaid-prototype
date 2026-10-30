@@ -215,10 +215,36 @@ impl Rpc {
     /// Sends `sats` to `spk` from the wallet; returns the outpoint (unconfirmed until mined).
     pub fn fund(&self, spk: &ScriptBuf, sats: u64) -> Result<OutPoint, String> {
         let addr = Address::from_script(spk, self.network()).map_err(|e| e.to_string())?;
-        let txid = self.wcall(
-            "sendtoaddress",
-            json!([addr.to_string(), format!("{:.8}", sats as f64 / 1e8)]),
-        )?;
+        // a wallet whose coins are briefly unavailable (still unconfirmed, or taken by another node of
+        // the same wallet at that moment) is asked again for up to 5 minutes; the error then says what
+        // the wallet held, to tell a short wallet from a busy one
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(crate::slow(300));
+        let txid = loop {
+            match self.wcall(
+                "sendtoaddress",
+                json!([addr.to_string(), format!("{:.8}", sats as f64 / 1e8)]),
+            ) {
+                Ok(t) => break t,
+                Err(e)
+                    if (e.contains("exceeds your balance") || e.contains("Insufficient funds"))
+                        && std::time::Instant::now() < end =>
+                {
+                    std::thread::sleep(std::time::Duration::from_secs(20));
+                }
+                Err(e) => {
+                    let b = self.wcall("getbalances", json!([])).unwrap_or_default();
+                    let n = self
+                        .wcall("listunspent", json!([0]))
+                        .ok()
+                        .and_then(|v| v.as_array().map(|a| a.len()))
+                        .unwrap_or(0);
+                    return Err(format!(
+                        "{e} (asked {sats} sats; wallet {}: trusted {}, pending {}, {n} coins)",
+                        self.wallet, b["mine"]["trusted"], b["mine"]["untrusted_pending"]
+                    ));
+                }
+            }
+        };
         let txid = txid.as_str().unwrap_or("").to_string();
         let raw = self.wcall("gettransaction", json!([txid]))?;
         let tx: Transaction =
@@ -331,7 +357,32 @@ impl Rpc {
     }
 
     /// Submits a zero-fee version-3 transaction with a wallet-funded child spending its anchor.
+    /// The node's own fee estimate (sat/vB) for confirmation within `target` blocks, from what its
+    /// mempool and recent blocks show (estimatesmartfee, conservative), capped by BITAID_MAX_FEE_RATE
+    /// (default 200 sat/vB). None where the node has no estimate yet (regtest, a fresh test chain).
+    pub fn fee_rate(&self, target: u32) -> Option<f64> {
+        let v = self
+            .call("estimatesmartfee", json!([target, "conservative"]))
+            .ok()?;
+        let r = v["feerate"].as_f64()? * 1e5; // BTC/kvB → sat/vB
+        let max: f64 = std::env::var("BITAID_MAX_FEE_RATE")
+            .ok()
+            .and_then(|x| x.parse().ok())
+            .unwrap_or(200.0);
+        Some(r.min(max))
+    }
+
+    /// `package_within(parent, 2)`: a fee for confirmation within two blocks.
     pub fn package(&self, parent: &Transaction) -> Result<Txid, String> {
+        self.package_within(parent, 2)
+    }
+
+    /// Submits `parent` (zero-fee, version 3) with a child spending its anchor that pays the fee for
+    /// the whole package to confirm within `target` blocks, at the node's current estimate. The
+    /// parent was signed long before, at no fee; the fee is chosen now, at broadcast, from the market
+    /// as it is now. Where the node has no estimate, 20,000 sats (divided on a faucet-funded chain,
+    /// at least 1,000); BITAID_CHILD_FEE fixes it.
+    pub fn package_within(&self, parent: &Transaction, target: u32) -> Result<Txid, String> {
         let anchor = parent
             .output
             .iter()
@@ -342,10 +393,16 @@ impl Rpc {
         // the second package fail ("inputs missing or spent")
         // the child's fee: 20,000 sats, divided with every amount on a faucet-funded chain but at
         // least 1,000 (a package of a few hundred vbytes at a few sat/vB); BITAID_CHILD_FEE overrides
+        // (the child: two inputs, one output, about 160 vB)
         let fee: u64 = std::env::var("BITAID_CHILD_FEE")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or_else(|| crate::sats(20_000).max(1_000));
+            .or_else(|| {
+                self.fee_rate(target)
+                    .map(|r| ((parent.vsize() as f64 + 160.0) * r).ceil() as u64)
+            })
+            .unwrap_or_else(|| crate::sats(20_000))
+            .max(1_000);
         let utxos = self.wcall("listunspent", json!([1]))?;
         let u = {
             let mut used = self.used.lock().unwrap();

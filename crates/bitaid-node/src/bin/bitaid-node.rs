@@ -4711,7 +4711,8 @@ fn caller(mut n: Node) -> i32 {
         leaf.to_bytes(),
         tree.control(funding_leaf::ACCEPT).serialize(),
     ]);
-    let r = n.rpc.package(&inc);
+    // the incident is urgent: its fee is for the next block
+    let r = n.rpc.package_within(&inc, 1);
     n.check(
         "incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package",
         r.is_ok(),
