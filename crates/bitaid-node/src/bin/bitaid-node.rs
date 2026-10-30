@@ -1185,6 +1185,42 @@ fn archivist(mut n: Node) -> i32 {
                 let Some(rp) = arb::Replay::build(&n.history, a, r, &n.rpc) else {
                     continue;
                 };
+                // a seized entry bond's move out of the holding output: signed by a committee
+                // archivist only if its own replay finds the confirmed review that calls for it (B.1)
+                let me = n.keys.x_only_public_key().0;
+                if let Some((w, mv, d2)) = rp
+                    .entry_seizures(a, r)
+                    .into_iter()
+                    .find(|x| x.5.compute_txid() == t.compute_txid())
+                    .map(|x| (x.0, x.5, x.6))
+                {
+                    let mine = rp
+                        .entries
+                        .get(&w)
+                        .is_some_and(|e| e.2.contains(&me));
+                    if !mine {
+                        continue;
+                    }
+                    let g = Secp256k1::new()
+                        .sign_schnorr(&bitcoin::secp256k1::Message::from_digest(d2), &n.keys)
+                        .serialize();
+                    n.log(&format!(
+                        "signed the move of {}'s seized entry bond into the seizure output of {}",
+                        &w[..8],
+                        &case_id[..8]
+                    ));
+                    n.send_case(
+                        case_id,
+                        std::slice::from_ref(&env.sender),
+                        Msg::SeizureSig {
+                            case_id: case_id.clone(),
+                            txid: mv.compute_txid().to_string(),
+                            sigs: vec![hex::encode(g)],
+                        },
+                        false,
+                    );
+                    continue;
+                }
                 let mut pens = rp.penalties();
                 let mut called = rp.distribution(&pens);
                 // after a confirmed review, the distribution of what it seized (§12)
@@ -1741,6 +1777,7 @@ fn wait_forfeits(
                 stake,
                 value,
                 sigs,
+                ..
             } if *case_id == cc && *t == tier && ww.contains(&env.sender) => {
                 Some((env.sender.clone(), stake.clone(), *value, sigs.clone()))
             }
@@ -2539,6 +2576,7 @@ fn take_seat(
                 stake: sop.to_string(),
                 value,
                 sigs,
+                holders: vec![],
             },
             false,
         );
@@ -3298,6 +3336,68 @@ fn review_stage(
 /// After a confirmed review, as its convener: take the whole unit of everyone who voted for the
 /// overturned verdict by their pre-signed forfeitures and the pool's co-signature, then distribute it
 /// (§12) with this archivist's signature and the pool's.
+/// A majority of an entry bond's archivist committee on the move out of the holding output: this
+/// node's own signature if it sits on the committee, and the others' asked for over the case.
+fn holding_sigs(
+    n: &mut Node,
+    c: &str,
+    mv: &Transaction,
+    d: &[u8; 32],
+    holders: &[bitcoin::XOnlyPublicKey],
+) -> HashMap<bitcoin::XOnlyPublicKey, Vec<u8>> {
+    let need = holders.len() / 2 + 1;
+    let secp = Secp256k1::new();
+    let me = n.keys.x_only_public_key().0;
+    let mut got: HashMap<bitcoin::XOnlyPublicKey, Vec<u8>> = HashMap::new();
+    if holders.contains(&me) {
+        let g = secp
+            .sign_schnorr(&bitcoin::secp256k1::Message::from_digest(*d), &n.keys)
+            .serialize()
+            .to_vec();
+        got.insert(me, g);
+    }
+    if got.len() >= need {
+        return got;
+    }
+    let others: Vec<String> = holders
+        .iter()
+        .filter(|h| **h != me)
+        .map(|h| hex::encode(h.serialize()))
+        .collect();
+    let txid = mv.compute_txid().to_string();
+    n.send_case(
+        c,
+        &others,
+        Msg::SeizureRequest {
+            case_id: c.to_string(),
+            tx: serialize_hex(mv),
+        },
+        false,
+    );
+    let (cc, tt) = (c.to_string(), txid);
+    let hs = holders.to_vec();
+    let d = *d;
+    let more = n.collect(
+        secs(90),
+        |env, _| match &env.msg {
+            Msg::SeizureSig {
+                case_id,
+                txid,
+                sigs,
+            } if *case_id == cc && *txid == tt => {
+                let k = wire::xonly(&env.sender)?;
+                let g = sigs.first()?;
+                (hs.contains(&k) && arb::schnorr_ok(&k, &d, g))
+                    .then(|| (k, hex::decode(g).unwrap_or_default()))
+            }
+            _ => None,
+        },
+        |v| v.len() + got.len() >= need,
+    );
+    got.extend(more);
+    got
+}
+
 fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Rostered) {
     let Some(rp) = arb::Replay::build(&n.history, a, r, &n.rpc) else {
         return;
@@ -3352,7 +3452,7 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
     n.rpc.mine(1).ok();
     // the entry bonds of the same arbitrators, by the seizure each pre-signed when it joined: into the
     // holding output, then into this case's seizure output (§10.8, B.1)
-    for (w, b, pre, mut tx, d, mut mv, d2, paid) in rp.entry_seizures(a, r) {
+    for (w, b, pre, mut tx, d, mut mv, d2, paid, holders) in rp.entry_seizures(a, r) {
         let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, session)
             .and_then(|(osig, _, _)| {
                 b.witness(&oxo, &mut tx, &hex::decode(&pre).unwrap_or_default(), &osig);
@@ -3360,10 +3460,30 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
             })
             .and_then(|t| {
                 n.rpc.confirm(&[t]);
+                // out of the holding output only with a majority of its archivist committee, each
+                // signing after its own replay (this archivist's own signature among them if it sits
+                // on the committee)
+                let arch = holding_sigs(n, &c, &mv, &d2, &holders);
+                let need = holders.len() / 2 + 1;
+                n.check(
+                    &format!(
+                        "the move of {}'s seized entry bond signed by {} of its {} committee archivist(s) after their own replay",
+                        &w[..8],
+                        arch.len(),
+                        holders.len()
+                    ),
+                    arch.len() >= need,
+                    "",
+                );
+                if arch.len() < need {
+                    return Err("too few committee archivists signed the move".to_string());
+                }
                 pool::cosign(n, view, &c, &serialize_hex(&mv), 0, &d2, session + 5)
+                    .map(|(osig, a2, signers)| (osig, a2, signers, arch))
             })
-            .and_then(|(osig, _, signers)| {
-                arb::holding_witness(&oxo, &mut mv, &osig);
+            .and_then(|(osig, _, signers, arch)| {
+                arb::holding_witness(&oxo, &holders, &b.cold, &mut mv, &osig, &arch)
+                    .ok_or("move witness incomplete")?;
                 n.rpc.package(&mv).map(|t| (t, signers))
             });
         session += 10;
@@ -3591,7 +3711,20 @@ fn arbitrator(mut n: Node) -> i32 {
         fallback: bf,
         payout: payout.clone(),
     };
-    let (_, ed) = entry.entry_seizure(&wire::xonly(&okey).unwrap());
+    // the archivist committee that, with the pool, may move the bond out of the holding output once
+    // seized: drawn from the archivists announced now, by the hash of the current block (§10.8, B.1)
+    let archs: Vec<String> = n
+        .all_services("archivist", 1, secs(60))
+        .into_iter()
+        .map(|x| x.0)
+        .collect();
+    let bh = n.rpc.block_hash(n.rpc.height()).unwrap_or_default();
+    let holders = arb::holding_committee(&archs, &bh);
+    let hx: Vec<bitcoin::XOnlyPublicKey> = holders.iter().filter_map(|h| wire::xonly(h)).collect();
+    let Some((_, ed)) = entry.entry_seizure(&wire::xonly(&okey).unwrap(), &hx) else {
+        n.log("no archivist to hold entry-bond seizures: not registered");
+        return 1;
+    };
     n.send_case(
         &reg,
         &[],
@@ -3601,6 +3734,7 @@ fn arbitrator(mut n: Node) -> i32 {
             stake: bond.to_string(),
             value: bond_value,
             sigs: vec![hex::encode(sign_bip340(&bs, &ed))],
+            holders,
         },
         false,
     );

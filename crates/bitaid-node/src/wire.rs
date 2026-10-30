@@ -380,6 +380,10 @@ pub enum Msg {
         stake: String,
         value: u64,
         sigs: Vec<String>,
+        /// an entry bond's seizure only (registry case): the archivist committee whose majority, with
+        /// the oracle pool, must co-sign moving the seized bond out of the holding output (B.1)
+        #[serde(default)]
+        holders: Vec<Hex32>,
     },
     /// Whoever collects a case's seizure output asks its archivists to co-sign the distribution (§12).
     SeizureRequest {

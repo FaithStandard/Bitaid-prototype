@@ -228,30 +228,68 @@ pub fn seizure_tree(
     ))
 }
 
-/// Where an entry bond's seizure goes first (B.1): an output only the oracle pool can spend, by one
-/// leaf `<oracle> CHECKSIG` (no key path), which it spends only into the seizure output of the case a
-/// confirmed review found against the arbitrator.
-pub fn holding_tree(oracle: &XOnlyPublicKey) -> ScriptTree {
-    let leaf = bitcoin::script::Builder::new()
-        .push_x_only_key(oracle)
-        .push_opcode(bitcoin::opcodes::all::OP_CHECKSIG)
-        .into_script();
-    ScriptTree::new(
-        &Secp256k1::verification_only(),
-        bitaid_core::scripts::nums(),
-        vec![leaf],
-    )
+/// Blocks after an entry bond's seizure confirms before its owner's cold key alone may take it back
+/// out of the holding output: longer than a staged review can take, so a bond seized for a review that
+/// then confirms is moved long before, while one seized without a confirmed review goes back (B.1).
+pub const HOLD_RETURN: u32 = 12_960;
+
+/// Where an entry bond's seizure goes first (B.1). Two leaves, no key path: the oracle pool together
+/// with a majority of the archivist committee named when the arbitrator joined, who move it into the
+/// seizure output of the case a confirmed review found against the arbitrator, each only after its
+/// own replay; or the arbitrator's cold key alone, HOLD_RETURN blocks after the seizure confirmed. A
+/// captured pool alone can push an entry bond in here, but not take it out.
+pub fn holding_tree(
+    oracle: &XOnlyPublicKey,
+    holders: &[XOnlyPublicKey],
+    cold: &XOnlyPublicKey,
+) -> Option<(ScriptTree, KeyPolicy)> {
+    let first = *holders.first()?;
+    let _ = first;
+    let pol = KeyPolicy::of(holders.len() / 2 + 1, holders.to_vec());
+    let secp = Secp256k1::verification_only();
+    Some((
+        ScriptTree::new(
+            &secp,
+            bitaid_core::scripts::nums(),
+            vec![
+                bitaid_core::scripts::policy_and(&pol, oracle),
+                bitaid_core::scripts::after_relative(HOLD_RETURN, cold),
+            ],
+        ),
+        pol,
+    ))
+}
+
+/// The archivist committee for entry bonds joining at a block: up to 9 announced archivists, drawn by
+/// that block's hash (§10.8, B.1; the specification weights the draw by archival labor score, which
+/// the prototype does not keep).
+pub fn holding_committee(archivists: &[String], block_hash: &str) -> Vec<String> {
+    let mut v: Vec<(Vec<u8>, String)> = archivists
+        .iter()
+        .map(|a| {
+            let h = <bitcoin::hashes::sha256::Hash as bitcoin::hashes::Hash>::hash(
+                format!("{block_hash}{a}").as_bytes(),
+            );
+            (bitcoin::hashes::Hash::to_byte_array(h).to_vec(), a.clone())
+        })
+        .collect();
+    v.sort();
+    v.dedup_by(|x, y| x.1 == y.1);
+    v.into_iter().take(9).map(|x| x.1).collect()
 }
 
 /// The move of a seized entry bond from the holding output into a case's seizure output.
+#[allow(clippy::too_many_arguments)]
 pub fn holding_move(
     oracle: &XOnlyPublicKey,
+    holders: &[XOnlyPublicKey],
+    cold: &XOnlyPublicKey,
     seized: &Transaction,
     value: u64,
     seizure: &ScriptBuf,
     keep: Option<(u64, ScriptBuf)>,
-) -> (Transaction, [u8; 32]) {
-    let t = holding_tree(oracle);
+) -> Option<(Transaction, [u8; 32])> {
+    let (t, _) = holding_tree(oracle, holders, cold)?;
     // what the case is owed to its seizure output; any remainder back under the bond's script
     let outs = match keep {
         Some((due, back)) if due < value => vec![(due, seizure.clone()), (value - due, back)],
@@ -270,16 +308,41 @@ pub fn holding_move(
         &[txbuild::txout(value, t.script_pubkey())],
         &t.scripts[0],
     );
-    (tx, d)
+    Some((tx, d))
 }
 
-pub fn holding_witness(oracle: &XOnlyPublicKey, tx: &mut Transaction, osig: &[u8; 64]) {
-    let t = holding_tree(oracle);
-    tx.input[0].witness = Witness::from_slice(&[
-        osig.to_vec(),
-        t.scripts[0].to_bytes(),
-        t.control(0).serialize(),
-    ]);
+/// Completes the move with the oracle's co-signature and a majority of the committee's signatures.
+pub fn holding_witness(
+    oracle: &XOnlyPublicKey,
+    holders: &[XOnlyPublicKey],
+    cold: &XOnlyPublicKey,
+    tx: &mut Transaction,
+    osig: &[u8; 64],
+    arch: &HashMap<XOnlyPublicKey, Vec<u8>>,
+) -> Option<()> {
+    let (t, pol) = holding_tree(oracle, holders, cold)?;
+    let mut items: Vec<Vec<u8>> = vec![osig.to_vec()];
+    if pol.devices.len() == 1 {
+        items.push(arch.get(&pol.devices[0])?.clone());
+    } else {
+        let mut given = 0;
+        for d in pol.devices.iter().rev() {
+            match arch.get(d).filter(|_| given < pol.threshold) {
+                Some(s) => {
+                    items.push(s.clone());
+                    given += 1;
+                }
+                None => items.push(vec![]),
+            }
+        }
+        if given < pol.threshold {
+            return None;
+        }
+    }
+    items.push(t.scripts[0].to_bytes());
+    items.push(t.control(0).serialize());
+    tx.input[0].witness = Witness::from_slice(&items);
+    Some(())
 }
 
 /// A bond as its offer names it.
@@ -380,8 +443,13 @@ impl Bond {
     }
     /// The entry bond's seizure, pre-signed when the arbitrator joins (§10.8, B.1): the whole bond
     /// into the holding output.
-    pub fn entry_seizure(&self, oracle: &XOnlyPublicKey) -> (Transaction, [u8; 32]) {
-        self.penalty_tx(oracle, self.value, &holding_tree(oracle).script_pubkey())
+    pub fn entry_seizure(
+        &self,
+        oracle: &XOnlyPublicKey,
+        holders: &[XOnlyPublicKey],
+    ) -> Option<(Transaction, [u8; 32])> {
+        let (t, _) = holding_tree(oracle, holders, &self.cold)?;
+        Some(self.penalty_tx(oracle, self.value, &t.script_pubkey()))
     }
     /// A unit's release (§10.2): the whole output back under the bond's script, signed by the cold
     /// key and co-signed by the oracle once the case is closed and the review draw passed it over.
@@ -578,7 +646,7 @@ pub struct Replay {
     /// where the staged review stands, as of the replay
     pub review: ReviewState,
     /// each registered arbitrator's entry bond and its verified pre-signed seizure
-    pub entries: HashMap<String, (Bond, String)>,
+    pub entries: HashMap<String, (Bond, String, Vec<XOnlyPublicKey>)>,
     /// per arbitrator, the other cases in which it voted for a verdict a staged review overturned
     pub prior_overturns: HashMap<String, usize>,
     /// the bonded arbitrator that flagged the case, if the draw passed it over (§10.3)
@@ -601,7 +669,15 @@ impl Replay {
             .iter()
             .filter(|e| e.msg.case_id() == Some(reg.as_str()))
         {
-            if let Msg::Forfeits { sigs, stake, .. } = &e.msg {
+            if let Msg::Forfeits {
+                sigs,
+                stake,
+                holders,
+                ..
+            } = &e.msg
+            {
+                let holders: Vec<XOnlyPublicKey> =
+                    holders.iter().filter_map(|h| wire::xonly(h)).collect();
                 let Some(b) = hist.iter().find_map(|x| match &x.msg {
                     Msg::SeatOffer { case_id, .. } if *case_id == reg && x.sender == e.sender => {
                         Bond::from_offer(&x.msg)
@@ -610,13 +686,15 @@ impl Replay {
                 }) else {
                     continue;
                 };
-                let (_, d) = b.entry_seizure(&oracle);
+                let Some((_, d)) = b.entry_seizure(&oracle, &holders) else {
+                    continue;
+                };
                 if b.op.to_string() == *stake
                     && sigs.first().is_some_and(|g| schnorr_ok(&b.scoped, &d, g))
                 {
                     rp.entries
                         .entry(e.sender.clone())
-                        .or_insert((b, sigs[0].clone()));
+                        .or_insert((b, sigs[0].clone(), holders));
                 }
             }
         }
@@ -1297,6 +1375,7 @@ impl Replay {
         Transaction,
         [u8; 32],
         u64,
+        Vec<XOnlyPublicKey>,
     )> {
         let Some(spk) = self.seizure_spk() else {
             return vec![];
@@ -1324,12 +1403,13 @@ impl Replay {
         who.dedup_by(|x, y| x.0 == y.0);
         who.into_iter()
             .filter_map(|(w, part)| {
-                let (b, pre) = self.entries.get(&w)?.clone();
-                let (tx, d) = b.entry_seizure(&self.oracle);
+                let (b, pre, holders) = self.entries.get(&w)?.clone();
+                let (tx, d) = b.entry_seizure(&self.oracle, &holders)?;
                 let keep = part.map(|p| (p, b.tree(&self.oracle).script_pubkey()));
-                let (mv, d2) = holding_move(&self.oracle, &tx, b.value, &spk, keep);
+                let (mv, d2) =
+                    holding_move(&self.oracle, &holders, &b.cold, &tx, b.value, &spk, keep)?;
                 let paid = part.map(|p| p.min(b.value)).unwrap_or(b.value);
-                Some((w, b, pre, tx, d, mv, d2, paid))
+                Some((w, b, pre, tx, d, mv, d2, paid, holders))
             })
             .collect()
     }
@@ -1387,7 +1467,7 @@ impl Replay {
 
     pub fn review_inputs(&self, a: &Alerted, r: &Rostered) -> Vec<Penalty> {
         let mut v = self.review_penalties();
-        for (w, b, pre, _, _, mv, d2, paid) in self.entry_seizures(a, r) {
+        for (w, b, pre, _, _, mv, d2, paid, _) in self.entry_seizures(a, r) {
             v.push(Penalty {
                 arbitrator: w,
                 tier: 0,
@@ -1570,7 +1650,7 @@ impl Replay {
                 )
             })
             .collect();
-        for (w, b, _, tx, d, mv, d2, _) in self.entry_seizures(a, r) {
+        for (w, b, _, tx, d, mv, d2, _, _) in self.entry_seizures(a, r) {
             out.push((
                 tx.compute_txid(),
                 0,

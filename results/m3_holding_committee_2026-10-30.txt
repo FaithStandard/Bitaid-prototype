@@ -1,0 +1,15 @@
+Holding output with an archivist committee (B.1), 2026-10-30
+
+1) Script checks on regtest (cargo run --release --example holding_check): a holding output for an oracle key, a committee of 3 archivists and a cold key
+oracle pool alone: refused
+oracle + 1 of 3 archivists: refused
+3 of 3 archivists, no oracle: refused
+oracle + 2 of 3 archivists (threshold 2): accepted
+cold key alone, 1 block after: refused
+cold key alone, 12960 blocks after: accepted
+
+2) The review network, local regtest: CASES=2 CAPTURE=1 NOAPPEAL=1 REVIEW_PCT=100 ARBS=26 — the same corrupt pair captures two cases; the second confirmed overturn seizes both entry bonds, now moved out of the holding output only with the committee archivist's signature after its own replay: 78 checks passed, 0 failed
+[PASS] archivist the move of aafe64a1's seized entry bond signed by 1 of its 1 committee archivist(s) after their own replay
+[PASS] archivist arbitrator aafe64a1: a second confirmed overturn: its whole entry bond (10000000 sats) seized by the forfeiture it pre-signed when it joined, and moved into the case's seizure output, both co-signed by the pool — d2010bee60736600 (pool members [3, 4, 2])
+[PASS] archivist the move of f62eb66d's seized entry bond signed by 1 of its 1 committee archivist(s) after their own replay
+[PASS] archivist arbitrator f62eb66d: a second confirmed overturn: its whole entry bond (10000000 sats) seized by the forfeiture it pre-signed when it joined, and moved into the case's seizure output, both co-signed by the pool — ab73f13594b4545a (pool members [2, 1, 4])
