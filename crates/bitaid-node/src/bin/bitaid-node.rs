@@ -434,7 +434,9 @@ fn pool_member(mut n: Node) -> i32 {
                 }
             }
         }
-        let Some(env) = n.wait(Duration::from_millis(500), |env, _| Some(env.clone())) else {
+        let Some((env, sent_at)) =
+            n.wait(Duration::from_millis(500), |env, e| Some((env.clone(), e.created_at)))
+        else {
             continue;
         };
         last = Instant::now();
@@ -727,7 +729,14 @@ fn pool_member(mut n: Node) -> i32 {
                         esc.get(case_id).cloned(),
                     ),
                 );
-                esc.insert(case_id.clone(), (*tier, s.clone(), n.rpc.height()));
+                // the height the draw must come after: this member's own height when it sees the
+                // escalation, as before — but a member that sees it late (more than 5 minutes after its
+                // timestamp: a phone whose link dropped, catching up from the Core's log) takes the
+                // height the escalator's signed envelope states, which the members that saw it fresh
+                // held to their own; its height now would reject a fair draw made in the meantime
+                let fresh = bitaid_node::nostr::now().saturating_sub(sent_at) < 300;
+                let h0 = if fresh { n.rpc.height() } else { env.height };
+                esc.insert(case_id.clone(), (*tier, s.clone(), h0));
                 ready_at.remove(case_id);
                 deadlock_at.remove(case_id);
                 n.log(&format!(
