@@ -111,9 +111,15 @@ fn keep_keys(kind: &str, who: &str, a: &Scalar, b: &Scalar, oracle: &str, fallba
         "kind": kind, "who": who, "a": hex::encode(a.serialize()), "b": hex::encode(b.serialize()),
         "oracle": oracle, "fallback": fallback,
     });
+    // one file per node, written in one call: several nodes appending to one shared file on a
+    // Windows folder interleaved their lines byte by byte (the public-signet run of 2026-10-31)
+    let path = match path.strip_suffix(".jsonl") {
+        Some(stem) => format!("{stem}-{who}.jsonl"),
+        None => format!("{path}-{who}"),
+    };
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{line}");
+        let _ = f.write_all(format!("{line}\n").as_bytes());
     }
 }
 
