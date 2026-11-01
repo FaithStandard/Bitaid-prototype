@@ -304,6 +304,8 @@ fn pool_member(mut n: Node) -> i32 {
     let mut reveals: HashMap<String, BTreeMap<String, Ballot>> = HashMap::new();
     let mut ready_at: HashMap<String, Instant> = HashMap::new();
     let mut done: std::collections::HashSet<String> = Default::default();
+    // messages to look at again later: (when, message)
+    let mut deferred: Vec<(Instant, wire::Envelope, bitaid_node::nostr::Event)> = vec![];
     // per final case, the forfeitures and distribution inputs its replay calls for (computed once)
     #[allow(clippy::type_complexity)]
     let mut due_arb: HashMap<String, Vec<(bitcoin::Txid, usize, [u8; 32], String)>> =
@@ -434,11 +436,18 @@ fn pool_member(mut n: Node) -> i32 {
                 }
             }
         }
-        let Some((env, sent_at)) =
-            n.wait(Duration::from_millis(500), |env, e| Some((env.clone(), e.created_at)))
+        // deferred messages whose time has come go back in the mailbox
+        let now_i = Instant::now();
+        let (back, keep): (Vec<_>, Vec<_>) = deferred.drain(..).partition(|x: &(Instant, wire::Envelope, bitaid_node::nostr::Event)| x.0 <= now_i);
+        deferred = keep;
+        for (_, env, e) in back {
+            n.defer(env, e);
+        }
+        let Some((env, ev)) = n.wait(Duration::from_millis(500), |env, e| Some((env.clone(), e.clone())))
         else {
             continue;
         };
+        let sent_at = ev.created_at;
         last = Instant::now();
         let s = env.sender.clone();
         match &env.msg {
@@ -712,6 +721,18 @@ fn pool_member(mut n: Node) -> i32 {
                     && arb::Replay::build(&n.history, a, r, &n.rpc)
                         .and_then(|rp| rp.tiers.get(tier).map(|t| t.escalator == s && t.challenger))
                         .unwrap_or(false);
+                if *tier == cur + 1 && !party && !challenger && !done.contains(case_id) {
+                    // perhaps a dissenter's re-roll whose tier below this member cannot yet see whole
+                    // (its commitment still unconfirmed, or a message still on its way after a dropped
+                    // link): looked at again every 30 s for an hour before it is ignored
+                    let age = bitaid_node::nostr::now().saturating_sub(sent_at);
+                    if age < bitaid_node::slow(3600) {
+                        deferred.push((Instant::now() + secs(30), env.clone(), ev.clone()));
+                    } else {
+                        n.log(&format!("case {}: escalation to tier {tier} by {} ignored: neither a party nor a dissenter of the tier below", &case_id[..8], &s[..8]));
+                    }
+                    continue;
+                }
                 if *tier != cur + 1 || !(party || challenger) || done.contains(case_id) {
                     continue;
                 }

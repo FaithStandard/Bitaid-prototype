@@ -319,6 +319,12 @@ impl Node {
         }
     }
 
+    /// Puts a message back in the mailbox, to be handled again by a later `wait` (a message that
+    /// arrived before what it depends on, such as an escalation before the tier below is on chain).
+    pub fn defer(&mut self, env: Envelope, e: Event) {
+        self.backlog.push_back((env, e));
+    }
+
     /// The first message, old or new, for which `f` returns Some; others stay in the mailbox.
     pub fn wait<T>(
         &mut self,
