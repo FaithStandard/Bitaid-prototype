@@ -724,10 +724,10 @@ fn pool_member(mut n: Node) -> i32 {
                 if *tier == cur + 1 && !party && !challenger && !done.contains(case_id) {
                     // perhaps a dissenter's re-roll whose tier below this member cannot yet see whole
                     // (its commitment still unconfirmed, or a message still on its way after a dropped
-                    // link): looked at again every 30 s for an hour before it is ignored
+                    // link): looked at again every 10 s for an hour before it is ignored
                     let age = bitaid_node::nostr::now().saturating_sub(sent_at);
                     if age < bitaid_node::slow(3600) {
-                        deferred.push((Instant::now() + secs(30), env.clone(), ev.clone()));
+                        deferred.push((Instant::now() + Duration::from_secs(10), env.clone(), ev.clone()));
                     } else {
                         n.log(&format!("case {}: escalation to tier {tier} by {} ignored: neither a party nor a dissenter of the tier below", &case_id[..8], &s[..8]));
                     }
@@ -751,11 +751,12 @@ fn pool_member(mut n: Node) -> i32 {
                     ),
                 );
                 // the height the draw must come after: this member's own height when it sees the
-                // escalation, as before — but a member that sees it late (more than 5 minutes after its
-                // timestamp: a phone whose link dropped, catching up from the Core's log) takes the
-                // height the escalator's signed envelope states, which the members that saw it fresh
-                // held to their own; its height now would reject a fair draw made in the meantime
-                let fresh = bitaid_node::nostr::now().saturating_sub(sent_at) < 300;
+                // escalation, as before — but a member that takes it up late (more than 20 s after its
+                // timestamp: a phone whose link dropped, catching up from the Core's log, or one that
+                // had to look at it again once the tier below was on chain) takes the height the
+                // escalator's signed envelope states, which the members that saw it at once held to
+                // their own; its height now would reject a fair draw made in the meantime
+                let fresh = bitaid_node::nostr::now().saturating_sub(sent_at) < 20;
                 let h0 = if fresh { n.rpc.height() } else { env.height };
                 esc.insert(case_id.clone(), (*tier, s.clone(), h0));
                 ready_at.remove(case_id);
