@@ -129,7 +129,13 @@ fn reclaim() -> i32 {
         return 1;
     };
     let tip = rpc.height();
-    let to = rpc.new_spk().expect("an address of this wallet");
+    let to = match rpc.new_spk() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot reach the chain node's wallet ({e}); is the PC side up?");
+            return 1;
+        }
+    };
     let rate = rpc.fee_rate(6).unwrap_or(2.0).max(1.0);
     let (mut back, mut waiting) = (0u64, 0u64);
     for line in text.lines() {

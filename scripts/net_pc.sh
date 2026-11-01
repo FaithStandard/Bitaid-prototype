@@ -180,7 +180,11 @@ reclaim)
   # their fallback height has passed (a day on the public signet); also the devices' key files if they
   # were copied into the keys folder
   export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_WALLET=bitaid
+  $CLI loadwallet bitaid >/dev/null 2>&1
   for f in "$WIN"/keys/*.jsonl; do [ -f "$f" ] && { echo "== $f"; target/release/bitaid-node --role reclaim --keys "$f"; }; done
+  # the devices reclaim their own through this PC's onion address: the chain's RPC published again
+  OUT=$(sh scripts/tor_up.sh 7700 7480 18443:$RPCPORT) || { echo "$OUT"; exit 1; }
+  echo; echo "DEVICES_MAY_RECLAIM_NOW (onion: $(echo "$OUT" | sed -n 's/^ONION=//p')) - keep this window open until they finish"
   ;;
 stop)
   pkill -x bitaid-node; pkill -f block_producer.sh 2>/dev/null; [ "$CHAIN" = public ] || $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped
