@@ -1,0 +1,120 @@
+Arbitration on the PUBLIC signet over Tor, third run, 2026-11-01/02 (blocks from 328986): same layout as 2026-10-30; new build with fees from the mempool, devices staying 10 h, one key file per node, and pool members that take up a late escalation at the escalator's stated height and look again at one they cannot yet place.
+Totals: tablet 15/0, phone 13/0, PC 47/8 - 75 passed, 8 failed. The tablet followed the tier-2 re-roll this time (the run of 2026-10-31 failed there): both seat forfeitures and three of four penalties co-signed.
+The 8 failures: one tier-1 penalty and six unit releases ('only 2 members committed'), though both phones' logs show they co-signed every one: a session waited 30 s for commitments and 6 s for partial signatures, too little for a phone over Tor whose first answer replays the case; with one PC member a deliberate staller every session needed both phones. Fixed: commitments wait 30 s stretched with the blocks (to 2 minutes), signatures 30 s on a slow chain.
+Reclaim of the run of 2026-10-31 the next day: 1,246,841 sats back to the faucet wallet in 11 transactions (bonds and the units stuck under them), from a key file rebuilt after twelve nodes' appends had interleaved it (now one file per node).
+
+===== PC
+##### arb1.out
+[PASS] arb1-pc dissented on tier 1 and no party appealed: buying the re-roll to tier 2 on a party's terms
+[PASS] arb1-pc tier 2: 7 of 9 offering arbitrators drawn from block 329003, case disclosed only to them — 425.3 s after escalating
+[PASS] arb1-pc tier 2: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 7 of 7
+[PASS] arb1-pc tier 2: 7 × 412 sats paid to the seats — 62482395e079e4a3
+[PASS] arb1-pc tier 2: arbitrator 465e45ec missed its commit deadline (60 s); its seat forfeiture refunded the 412-sat fee to the payer, co-signed by the pool — 54599c24d2e539e6
+[PASS] arb1-pc tier 2: replacement 7f890504 drawn from the 2 offers left by block 329007, staked, pre-signed and paid — a10886ff931616ab
+[PASS] arb1-pc tier 2: arbitrator 66b62709 missed its commit deadline (60 s); its seat forfeiture refunded the 412-sat fee to the payer, co-signed by the pool — 027be5af583440ed
+[PASS] arb1-pc tier 2: replacement 34153062 drawn from the 1 offers left by block 329011, staked, pre-signed and paid — bbe901fb5a517a75
+[PASS] arb1-pc tier 2: 7 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 486321feecbdb3494e5abf23d6d9ca272153ca67b0790aaf3a067a3f54571393
+[PASS] arb1-pc tier 2: two-thirds verdict (5 of 7); 2 dissenter(s) owe 2.5× the fee each, settled against the final ruling — 8738.6 s from escalation
+[PASS] arb1-pc tier 2: the larger panel agreed with the dissent — I,D
+[PASS] arb1-pc the pool attested the final outcome — 3 members
+[PASS] arb1-pc tier 1 arbitrator 34153062: 2.5× the 330-sat fee (825 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 6a72bc91dddfb8e7 (pool members [1, 4, 3])
+[FAIL] arb1-pc tier 1 arbitrator 57ce82d6: 2.5× the 330-sat fee (825 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — only 2 members committed
+[PASS] arb1-pc tier 2 arbitrator 34153062: 2.5× the 412-sat fee (1030 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — f279e98efe866fc3 (pool members [1, 4, 3])
+[PASS] arb1-pc tier 2 arbitrator 57ce82d6: 2.5× the 412-sat fee (1030 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 89fda3d56369278a (pool members [1, 4, 3])
+[arb1-pc] 15 passed, 1 failed
+[PASS] arb1-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb1-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+[FAIL] arb1-pc tier 1 unit of 20000 sats released under the bond's script by the pool's co-signature — only 2 members committed
+##### arb2.out
+[PASS] arb2-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb2-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+[FAIL] arb2-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — only 2 members committed
+##### arb3.out
+[PASS] arb3-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb3-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+[FAIL] arb3-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — only 2 members committed
+##### arb4.out
+[PASS] arb4-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb4-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+##### arb5.out
+[PASS] arb5-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb5-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+[FAIL] arb5-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — only 2 members committed
+##### arb6.out
+[PASS] arb6-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb6-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+[FAIL] arb6-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — only 2 members committed
+##### arb7.out
+[PASS] arb7-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb7-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+[FAIL] arb7-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — only 2 members committed
+##### arb8.out
+[PASS] arb8-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb8-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+##### arb9.out
+[PASS] arb9-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb9-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+##### arb10.out
+[PASS] arb10-pc case 5754084d: review draw at block 329016 (40% for a split final panel): drawn for review; units held
+[PASS] arb10-pc case 5754084d: the staged review cleared the verdict at stage 0 (0: too few to draw a panel, the verdict stands); units released
+##### r3.out
+[PASS] r3-pc alert 5754084d in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r3-pc pre-signed set v1 verified (seat 0) — 39 payouts
+[PASS] r3-pc incident transaction on chain: every pot output exists — b8698a8744a749b287e990cd1b8bc9f65380378d3071fa4ae71af536908eb2d5
+[PASS] r3-pc evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[PASS] r3-pc 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[PASS] r3-pc deposit: "returned" completes with the attestation
+[PASS] r3-pc reward: "paid (7, 3)" completes with the attestation
+[PASS] r3-pc bounty: "split (7, 3)" completes with the attestation
+[PASS] r3-pc my shares arrived at my payout address — 6300 sats
+[r3-pc] 9 passed, 0 failed
+##### r4.out
+[PASS] r4-pc-cheat alert 5754084d in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r4-pc-cheat dropped from the set after sending a bad partial signature (expected for this test)
+[r4-pc-cheat] 2 passed, 0 failed
+##### archivist.out
+[PASS] archivist-pc case 5754084d: too few arbitrators who sat on neither the case to draw a review panel; the verdict stands
+
+===== tablet (responder)
+TOR_READY socks 127.0.0.1:9160
+[r1] gossip: dialling 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700 through Tor …
+gossip: link up (to 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700)
+[PASS] r1 alert 5754084d in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r1 pre-signed set v1 verified (seat 1) — 39 payouts
+[PASS] r1 incident transaction on chain: every pot output exists — b8698a8744a749b287e990cd1b8bc9f65380378d3071fa4ae71af536908eb2d5
+[PASS] r1 evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 4.41 s
+[PASS] r1 attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
+[PASS] r1 tier 1: 3 of 3 offering arbitrators drawn from block 328999, case disclosed only to them — 83.1 s after escalating
+[PASS] r1 tier 1: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[PASS] r1 tier 1: 3 × 330 sats paid to the seats — 19c9e2d8df5da60e
+[PASS] r1 tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — e6801325d148715be489092815c59d6f8cf05c51c32814628e643a5156f60b12
+[PASS] r1 tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 1251.7 s from escalation
+[PASS] r1 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[PASS] r1 deposit: "returned" completed by the attestation and broadcast
+[PASS] r1 reward: "paid (7, 3)" completed by the attestation and broadcast
+[PASS] r1 bounty: "split (7, 3)" completed by the attestation and broadcast
+[PASS] r1 my shares arrived at my payout address — 2700 sats
+[r1] 15 passed, 0 failed
+keeping pool member up 36000 s for penalties
+~/bitaid-prototype $
+
+===== phone (caller)
+TOR_READY socks 127.0.0.1:9160
+[caller] gossip: dialling 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700 through Tor …
+gossip: link up (to 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700)
+[PASS] caller oracle pool found and checked: 4 members, threshold 3, 60 nonces — 3326d3db83dce3a4
+[PASS] caller registration: funding output (no key path) and template committed — 7674f8417db60f2a8754a367234800c5e53cc0f1b8fcd56234aadf75652867a5:1
+[PASS] caller 3 responder(s) accepted within the joining window, bonds checked on chain — first after 5.43 s
+[PASS] caller signer 2 caught sending an invalid partial signature; its seat is given up and the set re-signed — signer 2: invalid partial signature on message 0
+[PASS] caller pre-signed set v1 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
+[PASS] caller pool co-signed the incident (FROST, 3 of 4 members) — 2 session(s), signers [1, 3, 4], 13.28 s
+[PASS] caller incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
+[PASS] caller evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 13.95 s
+[PASS] caller 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[PASS] caller deposit: "returned" completed by the attestation and broadcast — broadcast by another party first
+[PASS] caller reward: "paid (7, 3)" completed by the attestation and broadcast — already broadcast by another party
+[PASS] caller bounty: "split (7, 3)" completed by the attestation and broadcast — already broadcast by another party
+[PASS] caller all 3 pots settled on chain by the attested outcome (3 payouts confirmed) — deposit: returned; reward: paid (7, 3); bounty: split (7, 3)
+[caller] 13 passed, 0 failed
+keeping pool member up 36000 s for penalties
+~/bitaid-prototype $
