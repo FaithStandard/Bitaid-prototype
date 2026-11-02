@@ -695,7 +695,9 @@ pub fn cosign_tries(
         );
         let (c, v, ch) = (case.to_string(), view.clone(), chosen.clone());
         let shares = n.collect(
-            Duration::from_secs(6),
+            // the signing round: 6 s, or 30 s on a slow chain (TIME_SCALE above 1), where members are
+            // phones over Tor and a commitment taken but not signed within 6 s cost the whole session
+            Duration::from_secs(if crate::slow(60) > 60 { 30 } else { 6 }),
             |env, _| match &env.msg {
                 Msg::PoolSigShare {
                     case_id,
