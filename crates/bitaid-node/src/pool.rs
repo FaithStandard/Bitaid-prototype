@@ -646,7 +646,9 @@ pub fn cosign_tries(
         );
         let (c, v, ex) = (case.to_string(), view.clone(), excluded.clone());
         let commits = n.collect(
-            Duration::from_secs(30),
+            // members over slow links replay the case before their first answer: a session waits
+            // 30 s, stretched with the chain's blocks (BITAID_TIME_SCALE) up to 2 minutes
+            Duration::from_secs(crate::slow(60).min(240) / 2),
             |env, _| match &env.msg {
                 Msg::PoolCommit {
                     case_id,
