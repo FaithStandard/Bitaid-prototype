@@ -4688,6 +4688,30 @@ fn caller(mut n: Node) -> i32 {
         "pool ready; alerting in {delay} s so responders can start listening"
     ));
     std::thread::sleep(secs(delay));
+    // --min-arbs N: wait (up to --setup-wait) until N arbitrators have registered their bonds, so an
+    // escalation finds enough to seat; on a slow chain some post theirs an hour after the pool forms
+    let min_arbs = num("--min-arbs", 0usize);
+    if min_arbs > 0 {
+        n.subscribe_history(
+            "registry",
+            vec![Filter::kinds(&[kind::CASE])
+                .tag('c', &[arb::registry_case()])
+                .recent(86_400)],
+        );
+        let end = Instant::now() + secs(num("--setup-wait", 3600u64));
+        loop {
+            let have = arb::registry(&n.history).len();
+            if have >= min_arbs || Instant::now() > end {
+                n.check(
+                    &format!("{min_arbs} arbitrators registered before the alert"),
+                    have >= min_arbs,
+                    &format!("{have} registered"),
+                );
+                break;
+            }
+            let _ = n.wait(Duration::from_secs(5), |_, _| None::<()>);
+        }
+    }
 
     // ------------------------------------------------ registration
     let (w, k) = (random_scalar(), even(random_scalar()));

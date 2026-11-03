@@ -61,7 +61,13 @@ fee=sum(1 for x in u if 0.00015<=x['amount']<0.0005)
 print('%.8f' % max(0,$2-big), max(0,$3-fee))")
 EOT
   [ -n "$n" ] || { echo "FUNDING_FAILED ($1: cannot read the wallet)"; exit 1; }
-  m=""; [ "$add" != "0.00000000" ] && m="\"$($CLI -rpcwallet=$1 getnewaddress)\":$add"
+  # the lump in $4 coins (default 1): nodes sharing a wallet each take one, instead of queueing on
+  # one coin's unconfirmed change (ten arbitrators' bonds from one lump were refused for an hour)
+  k=${4:-1}; m=""
+  if [ "$add" != "0.00000000" ]; then
+    part=$(python3 -c "print('%.8f' % ($add/$k))")
+    for i in $(seq 1 $k); do m="$m${m:+,}\"$($CLI -rpcwallet=$1 getnewaddress)\":$part"; done
+  fi
   for i in $(seq 1 $n); do m="$m${m:+,}\"$($CLI -rpcwallet=$1 getnewaddress)\":0.00015"; done
   [ -z "$m" ] && { echo "$1: already funded"; return; }
   echo "$1: adding $add BTC and $n fee coins"
@@ -91,7 +97,7 @@ start)
     for w in w caller r1 r3 r4; do $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1; done
     echo "faucet wallet: $($CLI -rpcwallet=bitaid getbalance) signet BTC"
     # coins left in the test wallets by earlier runs count: each is only topped up to what it needs
-    topup w 0.015 25; for w in caller r1 r3 r4; do topup $w 0.001 6; done
+    topup w 0.015 25 12; for w in caller r1 r3 r4; do topup $w 0.001 6; done
     echo "wallets funded; waiting for the funding to confirm (about 10 minutes, sometimes more)"
     wait_funded
   else
