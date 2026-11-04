@@ -317,6 +317,7 @@ fn pool_member(mut n: Node) -> i32 {
     let mut ready_at: HashMap<String, Instant> = HashMap::new();
     let mut done: std::collections::HashSet<String> = Default::default();
     let mut stalled_once = false;
+    let mut retried: std::collections::HashSet<(String, u32)> = Default::default();
     // messages to look at again later: (when, message)
     let mut deferred: Vec<(Instant, wire::Envelope, bitaid_node::nostr::Event)> = vec![];
     // per final case, the forfeitures and distribution inputs its replay calls for (computed once)
@@ -399,10 +400,27 @@ fn pool_member(mut n: Node) -> i32 {
             ready_at.remove(&c);
             let (a, r) = (&alerts[&c], &rosters[&c]);
             // an arbitrated case settles on its last tier's verdict; otherwise on the ballots
-            let ballots: Vec<Ballot> = match verdicts.get(&c) {
+            let mut ballots: Vec<Ballot> = match verdicts.get(&c) {
                 Some(v) => vec![v.clone()],
                 None => reveals[&c].values().cloned().collect(),
             };
+            // an arbitrated case: the ruling attested is the one this member's replay of the whole
+            // record (log and chain) finds, not only what it followed live — a member that missed or
+            // misjudged a step along the way still attests what the record shows
+            if esc.contains_key(&c) || verdicts.contains_key(&c) {
+                if let Some((ft, v)) = arb::Replay::build(&n.history, a, r, &n.rpc)
+                    .and_then(|rp| rp.final_ruling())
+                {
+                    if verdicts.get(&c).map(arb::verdict_key) != Some(arb::verdict_key(&v)) {
+                        n.log(&format!(
+                            "case {}: the record's final ruling is tier {ft}'s {}; attesting that",
+                            &c[..8],
+                            verdict_classes(&v)
+                        ));
+                    }
+                    ballots = vec![v];
+                }
+            }
             match decide(r.seats.len(), a.template.pots, &a.template, &ballots) {
                 Decision::Settled(ends) => {
                     for e in ends {
@@ -859,7 +877,19 @@ fn pool_member(mut n: Node) -> i32 {
                     lapse.remove(case_id);
                     n.log(&format!("tier {tier} panel of {} checked: block {height}, draw reproduced, bonds above twice the case value", seats.len()));
                 } else {
-                    n.log(&format!("tier {tier} panel rejected: block {block_ok}, offers {offers_ok}, draw {draw_ok}"));
+                    // not verifiable from what this member holds yet (an offer still on its way, a
+                    // block not yet seen): looked at again every 10 s for an hour, never written off at
+                    // once — the record decides, not the order things arrived in
+                    let age = bitaid_node::nostr::now().saturating_sub(sent_at);
+                    if age < bitaid_node::slow(3600) {
+                        if !retried.contains(&(case_id.clone(), *tier)) {
+                            retried.insert((case_id.clone(), *tier));
+                            n.log(&format!("tier {tier} panel not verifiable yet (block {block_ok}, offers {offers_ok}, draw {draw_ok}); looking again"));
+                        }
+                        deferred.push((Instant::now() + Duration::from_secs(10), env.clone(), ev.clone()));
+                    } else {
+                        n.log(&format!("tier {tier} panel rejected: block {block_ok}, offers {offers_ok}, draw {draw_ok}"));
+                    }
                 }
             }
             Msg::Reseated {
@@ -893,6 +923,10 @@ fn pool_member(mut n: Node) -> i32 {
                             &replaced[..8],
                             &seat[..8]
                         ));
+                    }
+                    // the panel or the forfeiture behind it not yet verifiable here: looked at again
+                    _ if bitaid_node::nostr::now().saturating_sub(sent_at) < bitaid_node::slow(3600) => {
+                        deferred.push((Instant::now() + Duration::from_secs(60), env.clone(), ev.clone()));
                     }
                     _ => n.log("replacement seat rejected"),
                 }
