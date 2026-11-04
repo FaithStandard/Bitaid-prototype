@@ -316,6 +316,7 @@ fn pool_member(mut n: Node) -> i32 {
     let mut reveals: HashMap<String, BTreeMap<String, Ballot>> = HashMap::new();
     let mut ready_at: HashMap<String, Instant> = HashMap::new();
     let mut done: std::collections::HashSet<String> = Default::default();
+    let mut stalled_once = false;
     // messages to look at again later: (when, message)
     let mut deferred: Vec<(Instant, wire::Envelope, bitaid_node::nostr::Event)> = vec![];
     // per final case, the forfeitures and distribution inputs its replay calls for (computed once)
@@ -690,7 +691,12 @@ fn pool_member(mut n: Node) -> i32 {
                 let Some(nonces) = sessions.remove(&(case_id.clone(), *session)) else {
                     continue;
                 };
-                if m.cfg.stall {
+                // the test's staller withholds its signature in the first session it commits to
+                // (the incident's), so the requester's replacement of a staller is shown; after that it
+                // signs like the others: a pool that kept one member stalling for good had no member
+                // to spare, and a single slow phone then failed every co-signature
+                if m.cfg.stall && !stalled_once {
+                    stalled_once = true;
                     n.log(&format!("stalling on co-signing session {session} (test)"));
                     continue;
                 }
