@@ -337,7 +337,7 @@ fn pool_member(mut n: Node) -> i32 {
     > = HashMap::new();
     // arbitration, per case: the current tier, who escalated it and at what height
     let mut esc: HashMap<String, (u32, String, u32)> = HashMap::new();
-    let mut offers: HashMap<(String, u32), HashMap<String, (bool, String)>> = HashMap::new(); // sender -> (bond ok, payout)
+    let mut offers: HashMap<(String, u32), HashMap<String, (bool, String, u32)>> = HashMap::new(); // sender -> (bond ok, payout, its height when offering)
     let mut panels: HashMap<(String, u32), Vec<String>> = HashMap::new();
     let mut fees_ok: std::collections::HashSet<(String, u32)> = Default::default();
     let mut fee_at: HashMap<(String, u32, String), Instant> = HashMap::new();
@@ -768,14 +768,12 @@ fn pool_member(mut n: Node) -> i32 {
                         esc.get(case_id).cloned(),
                     ),
                 );
-                // the height the draw must come after: this member's own height when it sees the
-                // escalation, as before — but a member that takes it up late (more than 20 s after its
-                // timestamp: a phone whose link dropped, catching up from the Core's log, or one that
-                // had to look at it again once the tier below was on chain) takes the height the
-                // escalator's signed envelope states, which the members that saw it at once held to
-                // their own; its height now would reject a fair draw made in the meantime
-                let fresh = bitaid_node::nostr::now().saturating_sub(sent_at) < 20;
-                let h0 = if fresh { n.rpc.height() } else { env.height };
+                // the height the draw must come after: the escalator's, as its signed envelope states
+                // it. No member's own clock or arrival time enters (a phone that took the escalation up
+                // late, or whose clock differs, rejected fair draws); an escalator that understates its
+                // height gains nothing, since the draw must also come after every listed offer, and the
+                // offering arbitrators state their own heights
+                let h0 = env.height;
                 esc.insert(case_id.clone(), (*tier, s.clone(), h0));
                 ready_at.remove(case_id);
                 deadlock_at.remove(case_id);
@@ -819,7 +817,7 @@ fn pool_member(mut n: Node) -> i32 {
                 offers
                     .entry((case_id.clone(), *tier))
                     .or_default()
-                    .insert(s.clone(), (ok, payout_spk.clone()));
+                    .insert(s.clone(), (ok, payout_spk.clone(), env.height));
             }
             Msg::Seated {
                 case_id,
@@ -843,7 +841,13 @@ fn pool_member(mut n: Node) -> i32 {
                 let size = bitaid_node::arb::panel_size(*tier);
                 // the draw must be reproducible: a block mined after escalation, offers this member
                 // saw with valid bonds, and the seats the block's hash picks among them
+                let after_offers = listed
+                    .iter()
+                    .filter_map(|o| seen.get(o).map(|x| x.2))
+                    .max()
+                    .unwrap_or(0);
                 let block_ok = *height > h0
+                    && *height > after_offers
                     && n.rpc.block_hash(*height).as_deref() == Some(block_hash.as_str());
                 let offers_ok = listed
                     .iter()
