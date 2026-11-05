@@ -2382,7 +2382,8 @@ fn escalate_tier(
             "",
         );
         if let Ok(txid) = n.rpc.op_return(&commitment) {
-            n.rpc.mine(1).ok();
+            // announced once it is confirmed: the next block can come from a template made before it
+            n.rpc.confirm(&[txid]);
             n.send_case(
                 &c,
                 &[],
@@ -2395,6 +2396,10 @@ fn escalate_tier(
             );
             committed = Some(txid.to_string());
         }
+    }
+    // a commitment announced by another seat may still be waiting for its block
+    if let Some(t) = committed.as_ref().and_then(|t| bitcoin::Txid::from_str(t).ok()) {
+        n.rpc.confirm(&[t]);
     }
     let on_chain = committed
         .as_ref()
@@ -3407,7 +3412,8 @@ fn review_stage(
     let commitment = arb::tier_commitment(&c, k, &seats, &reveals);
     if committed.is_none() {
         if let Ok(txid) = n.rpc.op_return(&commitment) {
-            n.rpc.mine(1).ok();
+            // announced once it is confirmed: the next block can come from a template made before it
+            n.rpc.confirm(&[txid]);
             n.send_case(
                 &c,
                 &[],
@@ -3420,6 +3426,10 @@ fn review_stage(
             );
             committed = Some(txid.to_string());
         }
+    }
+    // a commitment announced by another seat may still be waiting for its block
+    if let Some(t) = committed.as_ref().and_then(|t| bitcoin::Txid::from_str(t).ok()) {
+        n.rpc.confirm(&[t]);
     }
     let on_chain = committed
         .as_ref()
@@ -4573,7 +4583,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     let cm = bitaid_node::arb::tier_commitment(&case_id, tier, &seats, list);
                     match n.rpc.op_return(&cm) {
                         Ok(txid) => {
-                            n.rpc.mine(1).ok();
+                            n.rpc.confirm(&[txid]);
                             n.send_case(
                                 &case_id,
                                 &[],

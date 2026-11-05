@@ -20,6 +20,8 @@ pub struct Rpc {
     /// pruned node cannot keep one): next height to read, and txid → (outputs, height, block hash)
     index: Mutex<(u32, std::collections::HashMap<String, (Value, u32, String)>)>,
     tip: Mutex<(u32, Option<std::time::Instant>)>,
+    /// transactions this node has broadcast and not yet seen confirmed: `mine` waits for them
+    sent: Mutex<Vec<Txid>>,
 }
 
 impl Rpc {
@@ -39,6 +41,7 @@ impl Rpc {
             memo: Mutex::new(std::collections::HashMap::new()),
             index: Mutex::new((0, std::collections::HashMap::new())),
             tip: Mutex::new((0, None)),
+            sent: Mutex::new(vec![]),
         }
     }
 
@@ -201,7 +204,27 @@ impl Rpc {
             }
             std::thread::sleep(std::time::Duration::from_millis(1000));
         }
+        // where blocks are not made on demand, the next block may come from a template made before
+        // what this node just broadcast: wait until its own broadcasts are confirmed as well (the
+        // callers of `mine(1)` mean "until what I sent is in a block")
+        let pending: Vec<Txid> = std::mem::take(&mut *self.sent.lock().unwrap());
+        let t1 = std::time::Instant::now();
+        // (one that has left the mempool unconfirmed — replaced, or conflicting with another
+        // party's broadcast of the same spend — is not waited for)
+        while pending
+            .iter()
+            .any(|t| self.confirmations(t) == 0 && self.knows(t))
+            && t1.elapsed() < std::time::Duration::from_secs(crate::slow(1200))
+        {
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+        }
         Ok(())
+    }
+
+    fn note_sent(&self, txid: Option<&str>) {
+        if let Some(t) = txid.and_then(|t| Txid::from_str(t).ok()) {
+            self.sent.lock().unwrap().push(t);
+        }
     }
 
     pub fn new_spk(&self) -> Result<ScriptBuf, String> {
@@ -227,7 +250,10 @@ impl Rpc {
                 None => json!([addr.to_string(), amount]),
             };
             match self.wcall("sendtoaddress", params) {
-                Ok(t) => break t,
+                Ok(t) => {
+                    self.note_sent(t.as_str());
+                    break t;
+                }
                 Err(e)
                     if (e.contains("exceeds your balance") || e.contains("Insufficient funds"))
                         && std::time::Instant::now() < end =>
@@ -484,6 +510,7 @@ impl Rpc {
             json!([[serialize_hex(parent), signed["hex"].as_str().unwrap_or("")]]),
         )?;
         if r["package_msg"] == "success" {
+            self.sent.lock().unwrap().push(parent.compute_txid());
             Ok(parent.compute_txid())
         } else {
             Err(r.to_string())
@@ -537,6 +564,7 @@ impl Rpc {
         let funded = self.wcall("fundrawtransaction", json!([raw, opts]))?;
         let signed = self.wcall("signrawtransactionwithwallet", json!([funded["hex"]]))?;
         let txid = self.call("sendrawtransaction", json!([signed["hex"]]))?;
+        self.note_sent(txid.as_str());
         Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())
     }
 
@@ -571,6 +599,7 @@ impl Rpc {
             None => json!(["", m]),
         };
         let txid = self.wcall("sendmany", params)?;
+        self.note_sent(txid.as_str());
         Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())
     }
 
