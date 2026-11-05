@@ -479,6 +479,22 @@ fn pool_member(mut n: Node) -> i32 {
             continue;
         };
         let sent_at = ev.created_at;
+        // a message whose prerequisites this member does not hold yet (the escalation it belongs to,
+        // the panel, a commitment not yet confirmed) goes back in the mailbox for 10 s, for up to an
+        // hour (stretched with the blocks), instead of being dropped: what arrived out of order is
+        // judged once the record behind it is in
+        macro_rules! later {
+            () => {{
+                if bitaid_node::nostr::now().saturating_sub(sent_at) < bitaid_node::slow(3600) {
+                    deferred.push((
+                        Instant::now() + Duration::from_secs(10),
+                        env.clone(),
+                        ev.clone(),
+                    ));
+                }
+                continue;
+            }};
+        }
         last = Instant::now();
         let s = env.sender.clone();
         match &env.msg {
@@ -847,8 +863,11 @@ fn pool_member(mut n: Node) -> i32 {
                 ..
             } => {
                 let Some((t, by, h0)) = esc.get(case_id).cloned() else {
-                    continue;
+                    later!();
                 };
+                if *tier > t {
+                    later!();
+                }
                 if *tier != t || by != s {
                     continue;
                 }
@@ -938,7 +957,7 @@ fn pool_member(mut n: Node) -> i32 {
             } => {
                 let key = (case_id.clone(), *tier);
                 let (Some(seats), Some(a)) = (panels.get(&key), alerts.get(case_id)) else {
-                    continue;
+                    later!();
                 };
                 let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, *tier);
                 let seen = offers.get(&key).cloned().unwrap_or_default();
@@ -969,6 +988,9 @@ fn pool_member(mut n: Node) -> i32 {
                 commitment,
             } => {
                 let key = (case_id.clone(), *tier);
+                if !panels.contains_key(&key) {
+                    later!();
+                }
                 if panels.get(&key).map(|p| p.contains(&s)).unwrap_or(false) {
                     let m = vcommits.entry(key.clone()).or_default();
                     m.insert(s.clone(), commitment.clone());
@@ -985,6 +1007,9 @@ fn pool_member(mut n: Node) -> i32 {
                 salt,
             } => {
                 let key = (case_id.clone(), *tier);
+                if vcommits.get(&key).and_then(|m| m.get(&s)).is_none() {
+                    later!();
+                }
                 let ok = vcommits
                     .get(&key)
                     .and_then(|m| m.get(&s))
@@ -1006,7 +1031,7 @@ fn pool_member(mut n: Node) -> i32 {
                 let (Some(seats), Some(rv)) =
                     (panels.get(&key).cloned(), vreveals.get(&key).cloned())
                 else {
-                    continue;
+                    later!();
                 };
                 let deadline_passed = all_committed_at
                     .get(&key)
@@ -1016,18 +1041,22 @@ fn pool_member(mut n: Node) -> i32 {
                     || !fees_ok.contains(&key)
                     || esc.get(case_id).map(|x| x.0) != Some(*tier)
                 {
-                    n.log(&format!(
-                        "tier {tier}: not attestable yet (reveals {}/{}, fees {})",
-                        rv.len(),
-                        seats.len(),
-                        fees_ok.contains(&key)
-                    ));
-                    continue;
+                    if retried.insert((case_id.clone(), tier + 10_000)) {
+                        n.log(&format!(
+                            "tier {tier}: not attestable yet (reveals {}/{}, fees {}); looking again",
+                            rv.len(),
+                            seats.len(),
+                            fees_ok.contains(&key)
+                        ));
+                    }
+                    later!();
                 }
                 let cm = bitaid_node::arb::tier_commitment(case_id, *tier, &seats, &rv);
                 if !n.rpc.has_op_return(txid, &cm) {
-                    n.log("tier commitment not on chain; not attesting");
-                    continue;
+                    if retried.insert((case_id.clone(), tier + 20_000)) {
+                        n.log(&format!("tier {tier} commitment not on chain yet; looking again"));
+                    }
+                    later!();
                 }
                 let votes: Vec<Ballot> = rv.iter().map(|x| x.1.clone()).collect();
                 match bitaid_node::arb::supermajority(seats.len(), &votes) {
