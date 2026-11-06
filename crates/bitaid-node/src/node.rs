@@ -44,6 +44,13 @@ impl Net {
     }
 }
 
+/// Bounds on what a hostile peer can make a node hold (see `gossip` for the link-level limits).
+pub const MAX_BACKLOG: usize = 20_000;
+pub const MAX_LOCKED: usize = 5_000;
+pub const MAX_HISTORY: usize = 100_000;
+/// Blocks a sender's claimed height may run ahead of this node's chain.
+pub const MAX_AHEAD: u32 = 6;
+
 pub struct Node {
     pub name: String,
     pub keys: Keypair,
@@ -277,7 +284,11 @@ impl Node {
             match self.case_keys.get(&case) {
                 Some(k) => wire::decrypt(k, case.as_bytes(), &raw)?,
                 None => {
+                    // a case this node holds no key for (yet): kept, within a bound, in case the key arrives
                     self.locked.push(e.clone());
+                    if self.locked.len() > MAX_LOCKED {
+                        self.locked.remove(0);
+                    }
                     return None;
                 }
             }
@@ -289,8 +300,27 @@ impl Node {
         if env.sender != e.pubkey {
             return None;
         }
+        // a sender claiming to see blocks this node's chain does not have is lying or on another
+        // chain; acting on it could set draws and deadlines by a future that never comes
+        if env.height > self.height() + MAX_AHEAD {
+            self.height_at = None;
+            let h = self.height();
+            if h > 0 && env.height > h + MAX_AHEAD {
+                self.log(&format!(
+                    "refused {} from {}: claims height {} (chain at {h})",
+                    env.msg.name(),
+                    &env.sender[..8.min(env.sender.len())],
+                    env.height
+                ));
+                return None;
+            }
+        }
         if env.msg.case_id().is_some() {
             self.history.push(env.clone());
+            if self.history.len() > MAX_HISTORY {
+                let over = self.history.len() - MAX_HISTORY;
+                self.history.drain(..over);
+            }
         }
         Some(env)
     }
@@ -300,7 +330,7 @@ impl Node {
         let locked = std::mem::take(&mut self.locked);
         for e in locked {
             if let Some(env) = self.decode(&e) {
-                self.backlog.push_back((env, e));
+                self.push_backlog(env, e);
             }
         }
     }
@@ -310,7 +340,7 @@ impl Node {
             Some((sub, e)) => {
                 if let Some(env) = self.decode(&e) {
                     if !self.history_only.contains(&sub) {
-                        self.backlog.push_back((env, e));
+                        self.push_backlog(env, e);
                     }
                 }
                 true
@@ -322,7 +352,16 @@ impl Node {
     /// Puts a message back in the mailbox, to be handled again by a later `wait` (a message that
     /// arrived before what it depends on, such as an escalation before the tier below is on chain).
     pub fn defer(&mut self, env: Envelope, e: Event) {
+        self.push_backlog(env, e);
+    }
+
+    /// The mailbox is bounded: past MAX_BACKLOG the oldest unhandled message is dropped, so a flood
+    /// of well-formed messages nobody acts on cannot grow it without end.
+    fn push_backlog(&mut self, env: Envelope, e: Event) {
         self.backlog.push_back((env, e));
+        while self.backlog.len() > MAX_BACKLOG {
+            self.backlog.pop_front();
+        }
     }
 
     /// The first message, old or new, for which `f` returns Some; others stay in the mailbox.

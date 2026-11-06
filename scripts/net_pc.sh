@@ -77,7 +77,10 @@ WIN="/mnt/c/Users/alber/OneDrive/Documentos/Bitaid/10/v6/Files for Claude"
 L=${LOGDIR:-$WIN/pc_logs}; mkdir -p "$L"
 case "$1" in
 start)
-  pkill -x bitaid-node 2>/dev/null; sleep 1
+  pkill -x bitaid-node 2>/dev/null; pkill -x rogue 2>/dev/null; sleep 1
+  # REVIEW=1: the staged review (§10.3) — a captured tier 1 that no one appeals or challenges, drawn for
+  # review (the phone's caller sets REVIEW_PCT=100), three independent panels of 5 drawn from 26 arbitrators
+  if [ "$REVIEW" = 1 ]; then CHALLENGE=0; STALL=0; CAPTURE=1; ARBS=${ARBS:-26}; fi
   # Bitcoin Core 31.1: install it if missing, from the copy in the Windows folder or from bitcoincore.org,
   # checking the release checksum either way
   if ! $B/bitcoind -version >/dev/null 2>&1; then
@@ -97,7 +100,9 @@ start)
     for w in w caller r1 r3 r4; do $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1; done
     echo "faucet wallet: $($CLI -rpcwallet=bitaid getbalance) signet BTC"
     # coins left in the test wallets by earlier runs count: each is only topped up to what it needs
-    topup w 0.015 25 12; for w in caller r1 r3 r4; do topup $w 0.001 6; done
+    # the arbitrators' wallet scales with their number (ten: 0.015 in 12 coins and 25 fee coins)
+    A=${ARBS:-10}
+    topup w $(python3 -c "print('%.4f' % (0.0015*$A))") $(( A * 5 / 2 )) $(( A + 2 )); for w in caller r1 r3 r4; do topup $w 0.001 6; done
     echo "wallets funded; waiting for the funding to confirm (about 10 minutes, sometimes more)"
     wait_funded
   else
@@ -139,9 +144,6 @@ start)
   export BITAID_INDEX_FROM=${INDEX_FROM:-$(( $($CLI getblockcount) - 1 ))}
   X="--exit-after ${WAIT:-10800}"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
-  # REVIEW=1: the staged review (§10.3) — a captured tier 1 that no one appeals or challenges, drawn for
-  # review (the phone's caller sets REVIEW_PCT=100), three independent panels of 5 drawn from 26 arbitrators
-  if [ "$REVIEW" = 1 ]; then CHALLENGE=0; STALL=0; CAPTURE=1; ARBS=${ARBS:-26}; fi
   BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
   sleep 1
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
@@ -174,11 +176,18 @@ start)
   BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D $R3APPEAL --offer-window 40 --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
   BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
+  # ROGUE=1: a hostile stranger attacks the Core's gossip port ROGUE_WAIT seconds in, while the case
+  # runs (examples/rogue.rs): oversized and malformed messages, stale and future-dated ones, a replay,
+  # a height from the future, a flood and a connection storm; the honest nodes must still finish
+  if [ "${ROGUE:-0}" = 1 ] && [ -x target/release/examples/rogue ]; then
+    nohup target/release/examples/rogue --peer 127.0.0.1:7700 --wait ${ROGUE_WAIT:-7200} >"$L/rogue.out" 2>"$L/rogue.log" </dev/null &
+  fi
   echo "$ONION" > "$L/onion.txt"
   echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE INDEX_FROM=$BITAID_INDEX_FROM"
   [ "$CHAIN" = public ] && echo "RPC_PASS=$PASS"
   ;;
 report)
+  cat "$L"/rogue.out 2>/dev/null; grep -h "refused .* claims height" "$L"/*.log 2>/dev/null | head -3; grep -hc "flooding\|longer than the limit\|malformed" "$L"/core.log 2>/dev/null
   cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
   ;;
 reclaim)

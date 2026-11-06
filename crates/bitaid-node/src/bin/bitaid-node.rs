@@ -320,6 +320,7 @@ fn pool_member(mut n: Node) -> i32 {
     let mut retried: std::collections::HashSet<(String, u32)> = Default::default();
     // messages to look at again later: (when, message)
     let mut deferred: Vec<(Instant, wire::Envelope, bitaid_node::nostr::Event)> = vec![];
+    const MAX_DEFERRED: usize = 5_000;
     // per final case, the forfeitures and distribution inputs its replay calls for (computed once)
     #[allow(clippy::type_complexity)]
     let mut due_arb: HashMap<String, Vec<(bitcoin::Txid, usize, [u8; 32], String)>> =
@@ -471,6 +472,12 @@ fn pool_member(mut n: Node) -> i32 {
         let now_i = Instant::now();
         let (back, keep): (Vec<_>, Vec<_>) = deferred.drain(..).partition(|x: &(Instant, wire::Envelope, bitaid_node::nostr::Event)| x.0 <= now_i);
         deferred = keep;
+        // bounded: a flood of messages that never become placeable (escalations for cases that do
+        // not exist) cannot grow it without end; the oldest are dropped first
+        if deferred.len() > MAX_DEFERRED {
+            let over = deferred.len() - MAX_DEFERRED;
+            deferred.drain(..over);
+        }
         for (_, env, e) in back {
             n.defer(env, e);
         }
