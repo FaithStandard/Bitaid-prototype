@@ -1,0 +1,101 @@
+Arbitration on the PUBLIC signet over Tor, fifth run, 2026-11-06 (blocks from about 329660): same layout as 2026-11-01/02; new build (4bb3c1e) in which pool members hold a message whose prerequisites have not arrived and act on it once they do, and every node waits for its own transactions to confirm before announcing them (a tier's on-chain commitment was announced after the next block, which on public signet need not contain it, and observers failed the check: run of 2026-11-04/05).
+Totals: tablet (r1) 14/0, phone (caller) 13/0, PC 44/0 - 71 passed, 0 failed. The first clean run on the public signet: attending vote split, tier 1 (3 seats, 2 of 3), tier 2 re-roll bought by the dissenter (7 seats, two missed commit deadlines refunded and replaced from the remaining offers), the larger panel agreeing with the dissent, the pool attesting the final outcome, four penalties forfeited into the seizure output and distributed to the vindicated dissenter (3710 sats) after the archivist's own replay, review draw passed over, units released.
+Caller: alert to a funded, fully pre-signed incident 752.5 s; all 3 pots settled (3 payouts confirmed). Logs taken before the 10 h penalty wait ended.
+
+===== PC
+[PASS] arb1-pc dissented on tier 1 and no party appealed: buying the re-roll to tier 2 on a party's terms
+[PASS] arb1-pc tier 2: 7 of 9 offering arbitrators drawn from block 329677, case disclosed only to them — 162.1 s after escalating
+[PASS] arb1-pc tier 2: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 7 of 7
+[PASS] arb1-pc tier 2: 7 × 412 sats paid to the seats — a8c9a215d5af8abb
+[PASS] arb1-pc tier 2: arbitrator b832d31a missed its commit deadline (60 s); its seat forfeiture refunded the 412-sat fee to the payer, co-signed by the pool — f08b0891679f149e
+[PASS] arb1-pc tier 2: replacement 63e12216 drawn from the 2 offers left by block 329681, staked, pre-signed and paid — 0242c62f6cecae2c
+[PASS] arb1-pc tier 2: arbitrator f190e9d6 missed its commit deadline (60 s); its seat forfeiture refunded the 412-sat fee to the payer, co-signed by the pool — d0411172b7e4ded3
+[PASS] arb1-pc tier 2: replacement 52b3b76d drawn from the 1 offers left by block 329684, staked, pre-signed and paid — d66125a314038401
+[PASS] arb1-pc tier 2: 7 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — ebf97c744797daf1cf8a49fb80d985859307cec3159c88800c3056eb8870e714
+[PASS] arb1-pc tier 2: two-thirds verdict (5 of 7); 2 dissenter(s) owe 2.5× the fee each, settled against the final ruling — 9566.2 s from escalation
+[PASS] arb1-pc tier 2: the larger panel agreed with the dissent — I,D
+[PASS] arb1-pc the pool attested the final outcome — 3 members
+[PASS] arb1-pc tier 1 arbitrator 24fd399f: 2.5× the 330-sat fee (825 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 025a261de04ae07c (pool members [1, 2, 4])
+[PASS] arb1-pc tier 1 arbitrator 63e12216: 2.5× the 330-sat fee (825 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — a449bb6eaa24a760 (pool members [1, 2, 4])
+[PASS] arb1-pc tier 2 arbitrator 24fd399f: 2.5× the 412-sat fee (1030 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 1a885411b8db7732 (pool members [1, 2, 4])
+[PASS] arb1-pc tier 2 arbitrator 63e12216: 2.5× the 412-sat fee (1030 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 112a545131797a75 (pool members [1, 2, 4])
+[PASS] arb1-pc seizure distribution signed by 1 of 1 archivist(s) after their own replay
+[PASS] arb1-pc seizure output distributed (§12) by the pool and the archivists: 3710 sats to a vindicated dissenter — a779c28d9867708f
+[arb1-pc] 18 passed, 0 failed
+[PASS] arb1-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb1-pc tier 1 unit of 20000 sats released under the bond's script by the pool's co-signature — 558b4384cfba160c (pool members [1, 2, 3])
+[PASS] arb2-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb2-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — b678c78e278fdf2f (pool members [1, 2, 3])
+[PASS] arb3-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb3-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — e51755ec4c2ad5de (pool members [2, 1, 3])
+[PASS] arb4-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb5-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb5-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — 83facb5634970636 (pool members [2, 1, 3])
+[PASS] arb6-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb6-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — b193818851f77ccc (pool members [2, 1, 3])
+[PASS] arb7-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb7-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — d6b1617a27c68c9c (pool members [1, 2, 3])
+[PASS] arb8-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb9-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] arb10-pc case a7f3b551: review draw at block 329691 (40% for a split final panel): passed over
+[PASS] r3-pc alert a7f3b551 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r3-pc pre-signed set v1 verified (seat 0) — 39 payouts
+[PASS] r3-pc incident transaction on chain: every pot output exists — 0ced49006ddcf913c9fbe20e763bbccddd4d071c6bb153fbcf6ff096cf3f2db4
+[PASS] r3-pc evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[PASS] r3-pc deposit: "returned" completes with the attestation
+[PASS] r3-pc reward: "paid (7, 3)" completes with the attestation
+[PASS] r3-pc bounty: "split (7, 3)" completes with the attestation
+[PASS] r3-pc my shares arrived at my payout address — 6300 sats
+[r3-pc] 8 passed, 0 failed
+[PASS] r4-pc-cheat alert a7f3b551 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r4-pc-cheat dropped from the set after sending a bad partial signature (expected for this test)
+[r4-pc-cheat] 2 passed, 0 failed
+===== tablet (r1)
+[r1    0.00s] responder on 1 link(s), identity ae78b8a14a196044
+[r1  630.14s] bond 86d159696ed4 posted; listening on 7 cells around 886d75db27fffff
+[r1 1219.58s] PASS alert a7f3b551 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r1 1221.92s] ACCEPT sent
+[r1 1261.10s] set v0 failed: signer 2: invalid partial signature on message 0; waiting for a re-roll
+[r1 1262.61s] set v1 complete: 39 payouts + 3 refunds, 3 signers, 1.48 s
+[r1 1262.62s] PASS pre-signed set v1 verified (seat 1) — 39 payouts
+[r1 1972.41s] PASS incident transaction on chain: every pot output exists — 0ced49006ddcf913c9fbe20e763bbccddd4d071c6bb153fbcf6ff096cf3f2db4
+[r1 1975.56s] 2 of 2 commitments in; revealing
+[r1 1976.03s] PASS attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
+[r1 1976.35s] ESCALATE tier 1 (3 seats): seat 0: no 80% agreement on its class
+[r1 3805.06s] PASS tier 1: 3 of 3 offering arbitrators drawn from block 329673, case disclosed only to them — 1828.7 s after escalating
+[r1 4681.30s] PASS tier 1: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[r1 7450.53s] PASS tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 5474.2 s from escalation                                                               [r1 7450.53s] standing verdict after tier 1: D,I — upholds my claim
+[r1 7450.53s] tier 2 opened by another party; following it
+[r1 16024.23s] standing verdict after tier 2: I,D — against my claim
+[r1 17147.24s] PASS deposit: "returned" completed by the attestation and broadcast
+[r1 18722.08s] PASS my shares arrived at my payout address — 2700 sats
+[r1] 14 passed, 0 failed
+===== phone (caller)
+[caller    0.00s] caller on 1 link(s), identity 83c18f5299efbafd
+[caller   18.41s] PASS oracle pool found and checked: 4 members, threshold 3, 60 nonces — 5e7ee198bf1d730a
+[caller   18.41s] pool 5e7ee198bf1d…, 1 archivist(s)
+[caller   18.41s] pool ready; alerting in 15 s so responders can start listening
+[caller  208.45s] PASS 10 arbitrators registered before the alert — 10 registered
+[caller  920.31s] PASS registration: funding output (no key path) and template committed — c7c455cb9968fdd40cd5d3b1cffa2a75935ae33c9238f1767061eb93aa144763:0
+[caller  921.24s] ALERT case a7f3b551 in H3 cell 886d75db27fffff
+[caller  923.19s] accepted by 914aadbc (bond 0e2a36f056a9)
+[caller  924.53s] accepted by cc4e53a1 (bond 4268a314f130)
+[caller  926.84s] accepted by ae78b8a1 (bond 86d159696ed4)
+[caller  950.61s] PASS 3 responder(s) accepted within the joining window, bonds checked on chain — first after 2.58 s
+[caller  953.69s] nonces [26, 42, 34] reserved by 4 of 4 members
+[caller  954.60s] ROSTER v0: 3 seat(s), incident a59b258a
+[caller  963.58s] set v0 failed: signer 2: invalid partial signature on message 0
+[caller  963.58s] PASS signer 2 caught sending an invalid partial signature; its seat is given up and the set re-signed — signer 2: invalid partial signature on message 0
+[caller  963.96s] ROSTER v1: 2 seat(s), incident 0ced4900
+[caller  965.82s] set v1 complete: 39 payouts + 3 refunds, 3 signers, 1.84 s
+[caller  965.84s] PASS pre-signed set v1 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
+[caller  997.46s] pool member 2 committed but did not sign session 1; replaced
+[caller 1001.19s] PASS pool co-signed the incident (FROST, 3 of 4 members) — 2 session(s), signers [1, 3, 4], 35.35 s
+[caller 1006.21s] PASS incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
+[caller 1673.12s] time from alert to a funded, fully pre-signed incident: 752.51 s
+[caller 1678.03s] PASS evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 4.88 s
+[caller 16858.38s] PASS deposit: "returned" completed by the attestation and broadcast — broadcast by another party first
+[caller 16858.93s] PASS reward: "paid (7, 3)" completed by the attestation and broadcast — already broadcast by another party
+[caller 16867.85s] PASS bounty: "split (7, 3)" completed by the attestation and broadcast — broadcast by another party first
+[caller 18362.92s] PASS all 3 pots settled on chain by the attested outcome (3 payouts confirmed) — deposit: returned; reward: paid (7, 3); bounty: split (7, 3)
+[caller] 13 passed, 0 failed
