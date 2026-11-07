@@ -190,6 +190,17 @@ report)
   cat "$L"/rogue.out 2>/dev/null; grep -h "refused .* claims height" "$L"/*.log 2>/dev/null | head -3; grep -hc "flooding\|longer than the limit\|malformed" "$L"/core.log 2>/dev/null
   cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
   ;;
+attack)
+  # the hostile peer against a lone Core on this machine (no chain needed): every attack of
+  # examples/rogue.rs, the connection storm included, on WSL as on the public runs
+  BITAID_RPC=http://u:p@127.0.0.1:1 nohup target/release/bitaid-node --role core --name core-attack --listen-gossip 127.0.0.1:7790 >/dev/null 2>"$L/core_attack.log" </dev/null &
+  sleep 3
+  for i in 1 2; do
+    timeout 900 target/release/examples/rogue --peer 127.0.0.1:7790 2>&1 | tee "$L/rogue_attack_$i.out" | grep -E "PASS|FAIL|passed"
+  done
+  pkill -f "core-attack"
+  echo "ATTACK_DONE"
+  ;;
 reclaim)
   # coins left under this PC's bonds and funding outputs by earlier runs, back to the faucet wallet once
   # their fallback height has passed (a day on the public signet); also the devices' key files if they
