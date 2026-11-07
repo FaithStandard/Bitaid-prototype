@@ -91,6 +91,9 @@ struct Shared {
     store: VecDeque<(Event, Arc<str>)>,
     links: HashMap<u64, Link>,
     next: u64,
+    /// incoming links accepted, counted from the moment of accepting (before the link's thread has
+    /// registered it), so a burst of connections cannot slip past MAX_IN
+    incoming: usize,
 }
 
 /// Why a message was not admitted.
@@ -226,8 +229,9 @@ fn read_line(r: &mut BufReader<TcpStream>, buf: &mut Vec<u8>) -> std::io::Result
 /// room for a stranger, so a connection storm cannot cut honest peers off; it can only fill the
 /// free slots, which costs it the slots and nothing else. False if no slot can be freed.
 fn make_room(shared: &Arc<Mutex<Shared>>) -> bool {
-    let g = shared.lock().unwrap();
-    if g.links.values().filter(|l| l.incoming).count() < MAX_IN {
+    let mut g = shared.lock().unwrap();
+    if g.incoming < MAX_IN {
+        g.incoming += 1;
         return true;
     }
     let victim = g
@@ -237,7 +241,9 @@ fn make_room(shared: &Arc<Mutex<Shared>>) -> bool {
         .min_by_key(|l| l.since);
     match victim.and_then(|l| l.stream.as_ref()) {
         Some(s) => {
+            // the victim's slot passes to the newcomer (its own count is given back when it ends)
             let _ = s.shutdown(std::net::Shutdown::Both);
+            g.incoming += 1;
             true
         }
         None => false,
@@ -291,9 +297,13 @@ fn run_link(
         Ok(w) => w,
         Err(_) => return,
     };
+    // a peer that does not read what it is sent for a minute is cut off rather than waited for
+    let _ = w.set_write_timeout(Some(Duration::from_secs(60)));
     std::thread::spawn(move || {
         for line in orx {
             if w.write_all(line.as_bytes()).is_err() || w.write_all(b"\n").is_err() {
+                // the reader side ends with it, so the peer redials and catches up from the replay
+                let _ = w.shutdown(std::net::Shutdown::Both);
                 break;
             }
         }
@@ -351,7 +361,16 @@ fn run_link(
         drop(g);
         let _ = local.send(e);
     };
-    shared.lock().unwrap().links.remove(&id);
+    {
+        let mut g = shared.lock().unwrap();
+        g.links.remove(&id);
+        if incoming {
+            g.incoming = g.incoming.saturating_sub(1);
+        }
+    }
+    // close the socket outright: the writer thread may be blocked sending to a peer that stopped
+    // reading, and would otherwise hold the socket (and itself) open for ever
+    let _ = r.get_ref().shutdown(std::net::Shutdown::Both);
     eprintln!("gossip: link down ({label}){why}");
 }
 
