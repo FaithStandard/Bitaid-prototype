@@ -1,0 +1,128 @@
+{
+ "capacity 10/day, review 5%, recognition 50%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 24018
+ },
+ "capacity 10/day, review 5%, recognition 50%, void rule on": {
+  "seats held": 101,
+  "windows run": 239,
+  "seats voided": 138,
+  "days": 717,
+  "fee cost (in starting fees)": 56834
+ },
+ "capacity 10/day, review 5%, recognition 90%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 24018
+ },
+ "capacity 10/day, review 5%, recognition 90%, void rule on": {
+  "seats held": 52,
+  "windows run": 244,
+  "seats voided": 192,
+  "days": 732,
+  "fee cost (in starting fees)": 58023
+ },
+ "capacity 10/day, review 10%, recognition 90%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 24018
+ },
+ "capacity 10/day, review 10%, recognition 90%, void rule on": {
+  "seats held": 7,
+  "windows run": 244,
+  "seats voided": 237,
+  "days": 732,
+  "fee cost (in starting fees)": 58023
+ },
+ "capacity 50/day, review 5%, recognition 50%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 120089
+ },
+ "capacity 50/day, review 5%, recognition 50%, void rule on": {
+  "seats held": 2,
+  "windows run": 244,
+  "seats voided": 242,
+  "days": 732,
+  "fee cost (in starting fees)": 290116
+ },
+ "capacity 50/day, review 5%, recognition 90%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 120089
+ },
+ "capacity 50/day, review 5%, recognition 90%, void rule on": {
+  "seats held": 0,
+  "windows run": 244,
+  "seats voided": 244,
+  "days": 732,
+  "fee cost (in starting fees)": 290116
+ },
+ "capacity 50/day, review 10%, recognition 90%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 120089
+ },
+ "capacity 50/day, review 10%, recognition 90%, void rule on": {
+  "seats held": 0,
+  "windows run": 244,
+  "seats voided": 244,
+  "days": 732,
+  "fee cost (in starting fees)": 290116
+ },
+ "capacity 200/day, review 5%, recognition 50%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 480356
+ },
+ "capacity 200/day, review 5%, recognition 50%, void rule on": {
+  "seats held": 0,
+  "windows run": 244,
+  "seats voided": 244,
+  "days": 732,
+  "fee cost (in starting fees)": 1160464
+ },
+ "capacity 200/day, review 5%, recognition 90%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 480356
+ },
+ "capacity 200/day, review 5%, recognition 90%, void rule on": {
+  "seats held": 0,
+  "windows run": 244,
+  "seats voided": 244,
+  "days": 732,
+  "fee cost (in starting fees)": 1160464
+ },
+ "capacity 200/day, review 10%, recognition 90%, void rule off": {
+  "seats held": 101,
+  "windows run": 101,
+  "seats voided": 0,
+  "days": 303,
+  "fee cost (in starting fees)": 480356
+ },
+ "capacity 200/day, review 10%, recognition 90%, void rule on": {
+  "seats held": 0,
+  "windows run": 244,
+  "seats voided": 244,
+  "days": 732,
+  "fee cost (in starting fees)": 1160464
+ }
+}

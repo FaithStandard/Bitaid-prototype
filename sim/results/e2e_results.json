@@ -1,0 +1,98 @@
+{
+ "V=1000 bond\u00d71 split-review None bloc 20%": {
+  "net per targeted case (fees)": 2.1,
+  "review load": 0.0
+ },
+ "V=1000 bond\u00d71 split-review None bloc 33%": {
+  "net per targeted case (fees)": 0.2,
+  "review load": 0.0
+ },
+ "V=1000 bond\u00d71 split-review None bloc 50%": {
+  "net per targeted case (fees)": -6.6,
+  "review load": 0.0
+ },
+ "V=1000 bond\u00d72 split-review None bloc 20%": {
+  "net per targeted case (fees)": 0.3,
+  "review load": 0.0
+ },
+ "V=1000 bond\u00d72 split-review None bloc 33%": {
+  "net per targeted case (fees)": -3.5,
+  "review load": 0.0
+ },
+ "V=1000 bond\u00d72 split-review None bloc 50%": {
+  "net per targeted case (fees)": -15.5,
+  "review load": 0.0
+ },
+ "V=1000 bond\u00d72 split-review 0.4 bloc 20%": {
+  "net per targeted case (fees)": -12.8,
+  "review load": 0.1103
+ },
+ "V=1000 bond\u00d72 split-review 0.4 bloc 33%": {
+  "net per targeted case (fees)": -32.8,
+  "review load": 0.1133
+ },
+ "V=1000 bond\u00d72 split-review 0.4 bloc 50%": {
+  "net per targeted case (fees)": -85.1,
+  "review load": 0.1161
+ },
+ "V=1000 bond\u00d72 split-review 0.6 bloc 20%": {
+  "net per targeted case (fees)": -24.6,
+  "review load": 0.1654
+ },
+ "V=1000 bond\u00d72 split-review 0.6 bloc 33%": {
+  "net per targeted case (fees)": -56.5,
+  "review load": 0.1699
+ },
+ "V=1000 bond\u00d72 split-review 0.6 bloc 50%": {
+  "net per targeted case (fees)": -143.8,
+  "review load": 0.1741
+ },
+ "V=10000 bond\u00d71 split-review None bloc 20%": {
+  "net per targeted case (fees)": 29.4,
+  "review load": 0.0
+ },
+ "V=10000 bond\u00d71 split-review None bloc 33%": {
+  "net per targeted case (fees)": 63.0,
+  "review load": 0.0
+ },
+ "V=10000 bond\u00d71 split-review None bloc 50%": {
+  "net per targeted case (fees)": 136.6,
+  "review load": 0.0
+ },
+ "V=10000 bond\u00d72 split-review None bloc 20%": {
+  "net per targeted case (fees)": -4.1,
+  "review load": 0.0
+ },
+ "V=10000 bond\u00d72 split-review None bloc 33%": {
+  "net per targeted case (fees)": -13.0,
+  "review load": 0.0
+ },
+ "V=10000 bond\u00d72 split-review None bloc 50%": {
+  "net per targeted case (fees)": -37.9,
+  "review load": 0.0
+ },
+ "V=10000 bond\u00d72 split-review 0.4 bloc 20%": {
+  "net per targeted case (fees)": -92.4,
+  "review load": 0.1103
+ },
+ "V=10000 bond\u00d72 split-review 0.4 bloc 33%": {
+  "net per targeted case (fees)": -211.3,
+  "review load": 0.1133
+ },
+ "V=10000 bond\u00d72 split-review 0.4 bloc 50%": {
+  "net per targeted case (fees)": -501.4,
+  "review load": 0.1161
+ },
+ "V=10000 bond\u00d72 split-review 0.6 bloc 20%": {
+  "net per targeted case (fees)": -214.1,
+  "review load": 0.1654
+ },
+ "V=10000 bond\u00d72 split-review 0.6 bloc 33%": {
+  "net per targeted case (fees)": -448.0,
+  "review load": 0.1699
+ },
+ "V=10000 bond\u00d72 split-review 0.6 bloc 50%": {
+  "net per targeted case (fees)": -1073.3,
+  "review load": 0.1741
+ }
+}

@@ -1,0 +1,170 @@
+{
+ "as modelled before (appeal 0.7, restitution only) | V=1000 f=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.043,
+  "coalition profit per targeted case (fees)": 39.81,
+  "of which penalties": -2.6,
+  "restitution": -0.0
+ },
+ "as modelled before (appeal 0.7, restitution only) | V=1000 f=0.33": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0856,
+  "coalition profit per targeted case (fees)": 75.07,
+  "of which penalties": -8.46,
+  "restitution": -0.0
+ },
+ "as modelled before (appeal 0.7, restitution only) | V=1000 f=0.5": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.1931,
+  "coalition profit per targeted case (fees)": 164.97,
+  "of which penalties": -22.4,
+  "restitution": -0.0
+ },
+ "as modelled before (appeal 0.7, restitution only) | V=10000 f=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0329,
+  "coalition profit per targeted case (fees)": 325.83,
+  "of which penalties": -2.64,
+  "restitution": -0.0
+ },
+ "as modelled before (appeal 0.7, restitution only) | V=10000 f=0.33": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0781,
+  "coalition profit per targeted case (fees)": 770.22,
+  "of which penalties": -8.51,
+  "restitution": -0.0
+ },
+ "as modelled before (appeal 0.7, restitution only) | V=10000 f=0.5": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.1708,
+  "coalition profit per targeted case (fees)": 1679.42,
+  "of which penalties": -22.72,
+  "restitution": -0.0
+ },
+ "appeal 0.95 | V=1000 f=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0077,
+  "coalition profit per targeted case (fees)": 3.33,
+  "of which penalties": -3.49,
+  "restitution": -0.0
+ },
+ "appeal 0.95 | V=1000 f=0.33": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0103,
+  "coalition profit per targeted case (fees)": -3.92,
+  "of which penalties": -11.32,
+  "restitution": -0.0
+ },
+ "appeal 0.95 | V=1000 f=0.5": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0307,
+  "coalition profit per targeted case (fees)": -14.76,
+  "of which penalties": -36.02,
+  "restitution": -0.0
+ },
+ "appeal 0.95 | V=10000 f=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0077,
+  "coalition profit per targeted case (fees)": 72.38,
+  "of which penalties": -3.48,
+  "restitution": -0.0
+ },
+ "appeal 0.95 | V=10000 f=0.33": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0103,
+  "coalition profit per targeted case (fees)": 88.63,
+  "of which penalties": -11.31,
+  "restitution": -0.0
+ },
+ "appeal 0.95 | V=10000 f=0.5": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0281,
+  "coalition profit per targeted case (fees)": 235.78,
+  "of which penalties": -36.1,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + full bond seizure on review | V=1000 f=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0077,
+  "coalition profit per targeted case (fees)": 3.33,
+  "of which penalties": -3.49,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + full bond seizure on review | V=1000 f=0.33": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0103,
+  "coalition profit per targeted case (fees)": -3.92,
+  "of which penalties": -11.32,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + full bond seizure on review | V=1000 f=0.5": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0279,
+  "coalition profit per targeted case (fees)": -52.06,
+  "of which penalties": -29.2,
+  "restitution": -43.15
+ },
+ "appeal 0.95 + full bond seizure on review | V=10000 f=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0077,
+  "coalition profit per targeted case (fees)": 72.38,
+  "of which penalties": -3.48,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + full bond seizure on review | V=10000 f=0.33": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0103,
+  "coalition profit per targeted case (fees)": 88.63,
+  "of which penalties": -11.31,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + full bond seizure on review | V=10000 f=0.5": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0228,
+  "coalition profit per targeted case (fees)": -414.79,
+  "of which penalties": -27.0,
+  "restitution": -609.14
+ },
+ "appeal 0.95 + seizure + review cascade | V=1000 f=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0077,
+  "coalition profit per targeted case (fees)": 3.33,
+  "of which penalties": -3.49,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + seizure + review cascade | V=1000 f=0.33": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0103,
+  "coalition profit per targeted case (fees)": -3.92,
+  "of which penalties": -11.32,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + seizure + review cascade | V=1000 f=0.5": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0278,
+  "coalition profit per targeted case (fees)": -69.32,
+  "of which penalties": -26.9,
+  "restitution": -63.29
+ },
+ "appeal 0.95 + seizure + review cascade | V=10000 f=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0077,
+  "coalition profit per targeted case (fees)": 72.38,
+  "of which penalties": -3.48,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + seizure + review cascade | V=10000 f=0.33": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0103,
+  "coalition profit per targeted case (fees)": 88.63,
+  "of which penalties": -11.31,
+  "restitution": -0.0
+ },
+ "appeal 0.95 + seizure + review cascade | V=10000 f=0.5": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0228,
+  "coalition profit per targeted case (fees)": -562.56,
+  "of which penalties": -24.53,
+  "restitution": -759.49
+ }
+}

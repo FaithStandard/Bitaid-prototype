@@ -1,0 +1,94 @@
+{
+ "A": {
+  "N=1 | whole layer": {
+   "break-even premium per unit of counted cover per year": 0.0112,
+   "innocent clients losing cover mid-year, per client-year": 0.0
+  },
+  "N=1 | counted part": {
+   "break-even premium per unit of counted cover per year": 0.0112,
+   "innocent clients losing cover mid-year, per client-year": 0.0
+  },
+  "N=2 | whole layer": {
+   "break-even premium per unit of counted cover per year": 0.0221,
+   "innocent clients losing cover mid-year, per client-year": 0.011
+  },
+  "N=2 | counted part": {
+   "break-even premium per unit of counted cover per year": 0.0111,
+   "innocent clients losing cover mid-year, per client-year": 0.0
+  },
+  "N=5 | whole layer": {
+   "break-even premium per unit of counted cover per year": 0.0495,
+   "innocent clients losing cover mid-year, per client-year": 0.0394
+  },
+  "N=5 | counted part": {
+   "break-even premium per unit of counted cover per year": 0.0101,
+   "innocent clients losing cover mid-year, per client-year": 0.0
+  },
+  "N=10 | whole layer": {
+   "break-even premium per unit of counted cover per year": 0.0956,
+   "innocent clients losing cover mid-year, per client-year": 0.0856
+  },
+  "N=10 | counted part": {
+   "break-even premium per unit of counted cover per year": 0.01,
+   "innocent clients losing cover mid-year, per client-year": 0.0
+  },
+  "N=50 | whole layer": {
+   "break-even premium per unit of counted cover per year": 0.3926,
+   "innocent clients losing cover mid-year, per client-year": 0.3826
+  },
+  "N=50 | counted part": {
+   "break-even premium per unit of counted cover per year": 0.01,
+   "innocent clients losing cover mid-year, per client-year": 0.0
+  }
+ },
+ "B": {
+  "N=100 callers, actuarial leverage 5x": {
+   "1 cells": 0.1108,
+   "3 cells": 0.0167,
+   "10 cells": 0.0001,
+   "50 cells": 0.0
+  },
+  "N=100 callers, actuarial leverage 10x": {
+   "1 cells": 0.1509,
+   "3 cells": 0.1052,
+   "10 cells": 0.0386,
+   "50 cells": 0.0118
+  },
+  "N=100 callers, actuarial leverage 20x": {
+   "1 cells": 0.3055,
+   "3 cells": 0.2881,
+   "10 cells": 0.2729,
+   "50 cells": 0.2455
+  },
+  "N=100 callers, actuarial leverage 50x": {
+   "1 cells": 0.6733,
+   "3 cells": 0.6675,
+   "10 cells": 0.6672,
+   "50 cells": 0.6644
+  },
+  "N=1000 callers, actuarial leverage 5x": {
+   "1 cells": 0.0853,
+   "3 cells": 0.0086,
+   "10 cells": 0.0,
+   "50 cells": 0.0
+  },
+  "N=1000 callers, actuarial leverage 10x": {
+   "1 cells": 0.1137,
+   "3 cells": 0.0947,
+   "10 cells": 0.0148,
+   "50 cells": 0.0001
+  },
+  "N=1000 callers, actuarial leverage 20x": {
+   "1 cells": 0.175,
+   "3 cells": 0.1845,
+   "10 cells": 0.1922,
+   "50 cells": 0.1673
+  },
+  "N=1000 callers, actuarial leverage 50x": {
+   "1 cells": 0.6512,
+   "3 cells": 0.656,
+   "10 cells": 0.6617,
+   "50 cells": 0.6591
+  }
+ }
+}

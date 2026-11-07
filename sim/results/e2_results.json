@@ -1,0 +1,38 @@
+{
+ "0.05": {
+  "targeted cases ending wrong": 0.0163,
+  "bloc penalty per targeted case (fees)": 0.34,
+  "bloc fees per targeted case": 0.01,
+  "mean tiers per case": 1.04
+ },
+ "0.1": {
+  "targeted cases ending wrong": 0.0267,
+  "bloc penalty per targeted case (fees)": 0.74,
+  "bloc fees per targeted case": 0.03,
+  "mean tiers per case": 1.07
+ },
+ "0.2": {
+  "targeted cases ending wrong": 0.0536,
+  "bloc penalty per targeted case (fees)": 1.99,
+  "bloc fees per targeted case": 0.08,
+  "mean tiers per case": 1.18
+ },
+ "0.33": {
+  "targeted cases ending wrong": 0.1016,
+  "bloc penalty per targeted case (fees)": 5.79,
+  "bloc fees per targeted case": 0.22,
+  "mean tiers per case": 1.44
+ },
+ "0.5": {
+  "targeted cases ending wrong": 0.2132,
+  "bloc penalty per targeted case (fees)": 16.18,
+  "bloc fees per targeted case": 1.11,
+  "mean tiers per case": 1.96
+ },
+ "0.67": {
+  "targeted cases ending wrong": 0.4561,
+  "bloc penalty per targeted case (fees)": 21.6,
+  "bloc fees per targeted case": 5.22,
+  "mean tiers per case": 2.33
+ }
+}

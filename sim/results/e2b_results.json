@@ -1,0 +1,254 @@
+{
+ "V=100 f=0.1 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0231,
+  "coalition profit per targeted case (fees)": 1.24,
+  "of which penalties": -0.86,
+  "restitution": -0.0
+ },
+ "V=100 f=0.1 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.027,
+  "coalition profit per targeted case (fees)": 1.2,
+  "of which penalties": -1.27,
+  "restitution": -0.0
+ },
+ "V=100 f=0.1 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.012,
+  "coalition profit per targeted case (fees)": -2.62,
+  "of which penalties": -2.0,
+  "restitution": -1.59
+ },
+ "V=100 f=0.2 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.043,
+  "coalition profit per targeted case (fees)": 1.08,
+  "of which penalties": -2.6,
+  "restitution": -0.0
+ },
+ "V=100 f=0.2 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0556,
+  "coalition profit per targeted case (fees)": 1.85,
+  "of which penalties": -3.06,
+  "restitution": -0.05
+ },
+ "V=100 f=0.2 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0294,
+  "coalition profit per targeted case (fees)": -4.97,
+  "of which penalties": -4.81,
+  "restitution": -2.52
+ },
+ "V=100 f=0.33 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0882,
+  "coalition profit per targeted case (fees)": -1.74,
+  "of which penalties": -8.45,
+  "restitution": -0.0
+ },
+ "V=100 f=0.33 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.1037,
+  "coalition profit per targeted case (fees)": -0.78,
+  "of which penalties": -8.88,
+  "restitution": -0.31
+ },
+ "V=100 f=0.33 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0754,
+  "coalition profit per targeted case (fees)": -9.85,
+  "of which penalties": -13.04,
+  "restitution": -2.4
+ },
+ "V=100 f=0.5 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.2104,
+  "coalition profit per targeted case (fees)": -6.8,
+  "of which penalties": -22.21,
+  "restitution": -0.0
+ },
+ "V=100 f=0.5 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.2279,
+  "coalition profit per targeted case (fees)": -5.36,
+  "of which penalties": -22.55,
+  "restitution": -0.15
+ },
+ "V=100 f=0.5 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.2087,
+  "coalition profit per targeted case (fees)": -11.17,
+  "of which penalties": -25.54,
+  "restitution": -0.98
+ },
+ "V=1000 f=0.1 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0231,
+  "coalition profit per targeted case (fees)": 22.06,
+  "of which penalties": -0.86,
+  "restitution": -0.0
+ },
+ "V=1000 f=0.1 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0265,
+  "coalition profit per targeted case (fees)": 25.0,
+  "of which penalties": -1.27,
+  "restitution": -0.0
+ },
+ "V=1000 f=0.1 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0117,
+  "coalition profit per targeted case (fees)": -5.75,
+  "of which penalties": -2.0,
+  "restitution": -15.22
+ },
+ "V=1000 f=0.2 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.043,
+  "coalition profit per targeted case (fees)": 39.81,
+  "of which penalties": -2.6,
+  "restitution": -0.0
+ },
+ "V=1000 f=0.2 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0536,
+  "coalition profit per targeted case (fees)": 49.41,
+  "of which penalties": -3.09,
+  "restitution": -0.5
+ },
+ "V=1000 f=0.2 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0277,
+  "coalition profit per targeted case (fees)": -1.91,
+  "of which penalties": -4.85,
+  "restitution": -24.14
+ },
+ "V=1000 f=0.33 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0856,
+  "coalition profit per targeted case (fees)": 75.07,
+  "of which penalties": -8.46,
+  "restitution": -0.0
+ },
+ "V=1000 f=0.33 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0991,
+  "coalition profit per targeted case (fees)": 85.11,
+  "of which penalties": -8.93,
+  "restitution": -3.06
+ },
+ "V=1000 f=0.33 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0713,
+  "coalition profit per targeted case (fees)": 33.86,
+  "of which penalties": -13.26,
+  "restitution": -22.23
+ },
+ "V=1000 f=0.5 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.1931,
+  "coalition profit per targeted case (fees)": 164.97,
+  "of which penalties": -22.4,
+  "restitution": -0.0
+ },
+ "V=1000 f=0.5 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.2158,
+  "coalition profit per targeted case (fees)": 186.05,
+  "of which penalties": -22.75,
+  "restitution": -1.51
+ },
+ "V=1000 f=0.5 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.1997,
+  "coalition profit per targeted case (fees)": 159.43,
+  "of which penalties": -25.87,
+  "restitution": -8.87
+ },
+ "V=10000 f=0.1 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.018,
+  "coalition profit per targeted case (fees)": 178.84,
+  "of which penalties": -0.88,
+  "restitution": -0.0
+ },
+ "V=10000 f=0.1 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.022,
+  "coalition profit per targeted case (fees)": 208.44,
+  "of which penalties": -1.33,
+  "restitution": -10.0
+ },
+ "V=10000 f=0.1 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0109,
+  "coalition profit per targeted case (fees)": -28.66,
+  "of which penalties": -2.01,
+  "restitution": -135.88
+ },
+ "V=10000 f=0.2 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0329,
+  "coalition profit per targeted case (fees)": 325.83,
+  "of which penalties": -2.64,
+  "restitution": -0.0
+ },
+ "V=10000 f=0.2 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0471,
+  "coalition profit per targeted case (fees)": 462.15,
+  "of which penalties": -3.17,
+  "restitution": -5.01
+ },
+ "V=10000 f=0.2 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0249,
+  "coalition profit per targeted case (fees)": 23.41,
+  "of which penalties": -4.92,
+  "restitution": -220.07
+ },
+ "V=10000 f=0.33 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0781,
+  "coalition profit per targeted case (fees)": 770.22,
+  "of which penalties": -8.51,
+  "restitution": -0.0
+ },
+ "V=10000 f=0.33 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0904,
+  "coalition profit per targeted case (fees)": 867.38,
+  "of which penalties": -9.07,
+  "restitution": -25.54
+ },
+ "V=10000 f=0.33 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.0629,
+  "coalition profit per targeted case (fees)": 399.21,
+  "of which penalties": -13.44,
+  "restitution": -214.81
+ },
+ "V=10000 f=0.5 tau=0.01": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.1708,
+  "coalition profit per targeted case (fees)": 1679.42,
+  "of which penalties": -22.72,
+  "restitution": -0.0
+ },
+ "V=10000 f=0.5 tau=0.05": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.1886,
+  "coalition profit per targeted case (fees)": 1842.32,
+  "of which penalties": -23.29,
+  "restitution": -15.09
+ },
+ "V=10000 f=0.5 tau=0.2": {
+  "review load (split verdicts reviewed, share of cases)": 0.0,
+  "targeted wrong verdicts that stood": 0.1778,
+  "coalition profit per targeted case (fees)": 1672.34,
+  "of which penalties": -26.82,
+  "restitution": -73.46
+ }
+}

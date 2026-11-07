@@ -17,6 +17,11 @@ never hold real funds.**
 | M5 | Testnet pilot with independent operators, Tor, attack scripts | |
 | M6 | Review package: frozen spec, test vectors, threat model, external review | |
 
+The protocol's **economic simulations** (Specification Appendix B.10) are in [`sim/`](sim/): each
+experiment writes the rules as code and runs them against honest, lazy, random, colluding and
+staging agents over thousands of cases; `sh sim/run_all.sh` reproduces every published number
+(Python 3, standard library, seeded).
+
 ## M1 — `crates/bitaid-core`
 
 | Module | Specification |

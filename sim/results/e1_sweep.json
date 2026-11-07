@@ -1,0 +1,194 @@
+{
+ "easy cases (mean difficulty 0.10) | as written": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -12.635,
+   "error_rate": 0.218,
+   "final_D_mean": 9.5,
+   "share_of_cases_under_D>=3": 0.199
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": -5.941,
+   "error_rate": 0.138,
+   "final_D_mean": 5.81,
+   "share_of_cases_under_D>=3": 0.113
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": -2.03,
+   "error_rate": 0.098,
+   "final_D_mean": 4.02,
+   "share_of_cases_under_D>=3": 0.068
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -20.964,
+   "error_rate": 0.34,
+   "final_D_mean": 13.09,
+   "share_of_cases_under_D>=3": 0.319
+  },
+  "random": {
+   "profit_per_case_in_fees": -30.679,
+   "error_rate": 0.471,
+   "final_D_mean": 20.37,
+   "share_of_cases_under_D>=3": 0.456
+  }
+ },
+ "easy cases (mean difficulty 0.10) | relative momentum": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -0.201,
+   "error_rate": 0.218,
+   "final_D_mean": 0.54,
+   "share_of_cases_under_D>=3": 0.001
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": 0.216,
+   "error_rate": 0.138,
+   "final_D_mean": 0.17,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": 0.374,
+   "error_rate": 0.098,
+   "final_D_mean": 0.11,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -1.425,
+   "error_rate": 0.34,
+   "final_D_mean": 1.64,
+   "share_of_cases_under_D>=3": 0.028
+  },
+  "random": {
+   "profit_per_case_in_fees": -26.406,
+   "error_rate": 0.471,
+   "final_D_mean": 7.91,
+   "share_of_cases_under_D>=3": 0.419
+  }
+ },
+ "as assumed (0.19) | as written": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -15.115,
+   "error_rate": 0.254,
+   "final_D_mean": 9.37,
+   "share_of_cases_under_D>=3": 0.234
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": -9.97,
+   "error_rate": 0.188,
+   "final_D_mean": 7.08,
+   "share_of_cases_under_D>=3": 0.166
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": -5.612,
+   "error_rate": 0.145,
+   "final_D_mean": 5.38,
+   "share_of_cases_under_D>=3": 0.12
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -21.75,
+   "error_rate": 0.355,
+   "final_D_mean": 10.83,
+   "share_of_cases_under_D>=3": 0.334
+  },
+  "random": {
+   "profit_per_case_in_fees": -30.196,
+   "error_rate": 0.467,
+   "final_D_mean": 17.32,
+   "share_of_cases_under_D>=3": 0.451
+  }
+ },
+ "as assumed (0.19) | relative momentum": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -0.34,
+   "error_rate": 0.254,
+   "final_D_mean": 0.5,
+   "share_of_cases_under_D>=3": 0.001
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": 0.033,
+   "error_rate": 0.188,
+   "final_D_mean": 0.25,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": 0.208,
+   "error_rate": 0.145,
+   "final_D_mean": 0.2,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -0.796,
+   "error_rate": 0.355,
+   "final_D_mean": 0.58,
+   "share_of_cases_under_D>=3": 0.006
+  },
+  "random": {
+   "profit_per_case_in_fees": -19.153,
+   "error_rate": 0.467,
+   "final_D_mean": 4.65,
+   "share_of_cases_under_D>=3": 0.374
+  }
+ },
+ "hard (0.30) | as written": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -17.269,
+   "error_rate": 0.286,
+   "final_D_mean": 9.22,
+   "share_of_cases_under_D>=3": 0.267
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": -12.907,
+   "error_rate": 0.233,
+   "final_D_mean": 7.3,
+   "share_of_cases_under_D>=3": 0.209
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": -9.746,
+   "error_rate": 0.197,
+   "final_D_mean": 6.07,
+   "share_of_cases_under_D>=3": 0.171
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -22.104,
+   "error_rate": 0.371,
+   "final_D_mean": 9.71,
+   "share_of_cases_under_D>=3": 0.345
+  },
+  "random": {
+   "profit_per_case_in_fees": -30.546,
+   "error_rate": 0.475,
+   "final_D_mean": 15.69,
+   "share_of_cases_under_D>=3": 0.457
+  }
+ },
+ "hard (0.30) | relative momentum": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -0.438,
+   "error_rate": 0.286,
+   "final_D_mean": 0.51,
+   "share_of_cases_under_D>=3": 0.001
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": -0.13,
+   "error_rate": 0.233,
+   "final_D_mean": 0.18,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": 0.024,
+   "error_rate": 0.197,
+   "final_D_mean": 0.14,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -0.477,
+   "error_rate": 0.371,
+   "final_D_mean": 0.49,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "random": {
+   "profit_per_case_in_fees": -11.418,
+   "error_rate": 0.475,
+   "final_D_mean": 3.02,
+   "share_of_cases_under_D>=3": 0.276
+  }
+ }
+}

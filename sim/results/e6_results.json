@@ -1,0 +1,222 @@
+{
+ "ring": {
+  "as written | R 0.05 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -0.23
+  ],
+  "as written | R 0.05 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -0.08
+  ],
+  "as written | R 0.05 | outside share 0.5 | in-case catch 0.0": [
+   120,
+   3.48
+  ],
+  "as written | R 0.05 | outside share 1.0 | in-case catch 0.0": [
+   120,
+   13.33
+  ],
+  "as written | R 0.1 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -0.54
+  ],
+  "as written | R 0.1 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -0.39
+  ],
+  "as written | R 0.1 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -0.14
+  ],
+  "as written | R 0.1 | outside share 1.0 | in-case catch 0.0": [
+   50,
+   3.91
+  ],
+  "as written | R 0.2 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -1.14
+  ],
+  "as written | R 0.2 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -0.99
+  ],
+  "as written | R 0.2 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -0.74
+  ],
+  "as written | R 0.2 | outside share 1.0 | in-case catch 0.0": [
+   1,
+   -0.24
+  ],
+  "as written | R 0.4 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -2.35
+  ],
+  "as written | R 0.4 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -2.2
+  ],
+  "as written | R 0.4 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -1.95
+  ],
+  "as written | R 0.4 | outside share 1.0 | in-case catch 0.0": [
+   1,
+   -1.45
+  ],
+  "accumulate | R 0.05 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -0.24
+  ],
+  "accumulate | R 0.05 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -0.1
+  ],
+  "accumulate | R 0.05 | outside share 0.5 | in-case catch 0.0": [
+   2,
+   0.22
+  ],
+  "accumulate | R 0.05 | outside share 1.0 | in-case catch 0.0": [
+   5,
+   1.77
+  ],
+  "accumulate | R 0.1 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -0.56
+  ],
+  "accumulate | R 0.1 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -0.44
+  ],
+  "accumulate | R 0.1 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -0.24
+  ],
+  "accumulate | R 0.1 | outside share 1.0 | in-case catch 0.0": [
+   2,
+   0.27
+  ],
+  "accumulate | R 0.2 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -1.18
+  ],
+  "accumulate | R 0.2 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -1.09
+  ],
+  "accumulate | R 0.2 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -0.94
+  ],
+  "accumulate | R 0.2 | outside share 1.0 | in-case catch 0.0": [
+   1,
+   -0.65
+  ],
+  "accumulate | R 0.4 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -2.43
+  ],
+  "accumulate | R 0.4 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -2.4
+  ],
+  "accumulate | R 0.4 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -2.36
+  ],
+  "accumulate | R 0.4 | outside share 1.0 | in-case catch 0.0": [
+   1,
+   -2.26
+  ],
+  "draw review | R 0.05 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -2.98
+  ],
+  "draw review | R 0.05 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -2.83
+  ],
+  "draw review | R 0.05 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -2.58
+  ],
+  "draw review | R 0.05 | outside share 1.0 | in-case catch 0.0": [
+   1,
+   -2.08
+  ],
+  "draw review | R 0.1 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -2.98
+  ],
+  "draw review | R 0.1 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -2.83
+  ],
+  "draw review | R 0.1 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -2.58
+  ],
+  "draw review | R 0.1 | outside share 1.0 | in-case catch 0.0": [
+   1,
+   -2.08
+  ],
+  "draw review | R 0.2 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -2.98
+  ],
+  "draw review | R 0.2 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -2.83
+  ],
+  "draw review | R 0.2 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -2.58
+  ],
+  "draw review | R 0.2 | outside share 1.0 | in-case catch 0.0": [
+   1,
+   -2.08
+  ],
+  "draw review | R 0.4 | outside share 0.1 | in-case catch 0.0": [
+   1,
+   -2.98
+  ],
+  "draw review | R 0.4 | outside share 0.25 | in-case catch 0.0": [
+   1,
+   -2.83
+  ],
+  "draw review | R 0.4 | outside share 0.5 | in-case catch 0.0": [
+   1,
+   -2.58
+  ],
+  "draw review | R 0.4 | outside share 1.0 | in-case catch 0.0": [
+   1,
+   -2.08
+  ],
+  "k=1 | as written": [
+   120,
+   17.32
+  ],
+  "k=1 | draw review 50%": [
+   5,
+   0.02
+  ],
+  "k=1 | draw review 50%, drawn case held": [
+   1,
+   -0.55
+  ],
+  "k=1 | draw review 33%, drawn case held": [
+   50,
+   -0.01
+  ],
+  "k=1 | draw review 25%, drawn case held": [
+   50,
+   0.98
+  ]
+ },
+ "honest_stake": {
+  "20 cases/yr, 10% outside money, lookback 180 d": 4.0,
+  "50 cases/yr, 25% outside money, lookback 180 d": 14.3,
+  "100 cases/yr, 25% outside money, lookback 365 d": 52.0,
+  "100 cases/yr, 100% outside money, lookback 365 d": 202.0
+ }
+}

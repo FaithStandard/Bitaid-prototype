@@ -1,0 +1,66 @@
+{
+ "no selfish, weighted": {
+  "key act wrong after the vote": 0.0173,
+  "escalations per case": 0.0168,
+  "selfish still active": 0,
+  "selfish net (median bounties)": null,
+  "honest mean earned": 150.0,
+  "labor share held by selfish at end": 0
+ },
+ "4 selfish newcomers, weighted": {
+  "key act wrong after the vote": 0.0182,
+  "escalations per case": 0.0168,
+  "selfish still active": 0,
+  "selfish net (median bounties)": 2.5,
+  "honest mean earned": 165.3,
+  "labor share held by selfish at end": 0.009
+ },
+ "4 selfish veterans, weighted": {
+  "key act wrong after the vote": 0.019,
+  "escalations per case": 0.0178,
+  "selfish still active": 0,
+  "selfish net (median bounties)": -8.7,
+  "honest mean earned": 166.5,
+  "labor share held by selfish at end": 0.021
+ },
+ "4 selfish veterans, unweighted (one ballot, one vote)": {
+  "key act wrong after the vote": 0.0187,
+  "escalations per case": 0.017,
+  "selfish still active": 0,
+  "selfish net (median bounties)": -6.6,
+  "honest mean earned": 166.3,
+  "labor share held by selfish at end": 0.023
+ },
+ "4 selfish veterans, weighted, panels rarely judge false ballots blatant (catch 0.2)": {
+  "key act wrong after the vote": 0.0213,
+  "escalations per case": 0.0197,
+  "selfish still active": 0,
+  "selfish net (median bounties)": -7.0,
+  "honest mean earned": 166.3,
+  "labor share held by selfish at end": 0.023
+ },
+ "4 selfish veterans, small bounties: panel fee 0.3 bounty, escalate only if worth it": {
+  "key act wrong after the vote": 0.0247,
+  "escalations per case": 0.0122,
+  "selfish still active": 0,
+  "selfish net (median bounties)": -1.3,
+  "honest mean earned": 165.7,
+  "labor share held by selfish at end": 0.026
+ },
+ "same, unweighted": {
+  "key act wrong after the vote": 0.0192,
+  "escalations per case": 0.013,
+  "selfish still active": 0,
+  "selfish net (median bounties)": -1.4,
+  "honest mean earned": 165.7,
+  "labor share held by selfish at end": 0.026
+ },
+ "same, weighted, fee 0.3 but escalation fee recovered from the false-ballot author (any harmed party escalates)": {
+  "key act wrong after the vote": 0.019,
+  "escalations per case": 0.0178,
+  "selfish still active": 0,
+  "selfish net (median bounties)": -8.7,
+  "honest mean earned": 166.5,
+  "labor share held by selfish at end": 0.021
+ }
+}

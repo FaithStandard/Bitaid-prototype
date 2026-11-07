@@ -1,0 +1,21 @@
+{
+ "honest, 98% uptime, 2% path loss": 0.0,
+ "honest, poor: 90% uptime, 10% loss, 10% regional outage": 5e-05,
+ "honest, 20% of probers lying": 0.00016,
+ "honest, a third of probers lying": 0.00334,
+ "deleted the chunk": 1.0,
+ "deleted, perfect network": 1.0,
+ "serves half of requests": 0.03982,
+ "serves a fifth of requests": 0.55573,
+ "serves only once challenged": 0.0,
+ "spot": {
+  "honest, 98% uptime, 2% loss": 0.0,
+  "honest, poor connection": 0.00163,
+  "honest, 20% of probers lying": 0.00798,
+  "honest, a third lying": 0.13427,
+  "serves half": 0.62118,
+  "serves 30%": 0.9852,
+  "serves only once challenged": 1.0,
+  "deleted": 1.0
+ }
+}

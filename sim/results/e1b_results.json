@@ -1,0 +1,82 @@
+{
+ "10% lazy": {
+  "honest 0.90": {
+   "profit_per_case_in_fees": -0.028,
+   "error_rate": 0.181,
+   "final_D_mean": 0.44,
+   "share_of_cases_under_D>=3": 0.001
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": 0.176,
+   "error_rate": 0.144,
+   "final_D_mean": 0.17,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -4.371,
+   "error_rate": 0.317,
+   "final_D_mean": 3.22,
+   "share_of_cases_under_D>=3": 0.129
+  }
+ },
+ "30% lazy": {
+  "honest 0.90": {
+   "profit_per_case_in_fees": -0.014,
+   "error_rate": 0.185,
+   "final_D_mean": 0.33,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": 0.187,
+   "error_rate": 0.146,
+   "final_D_mean": 0.18,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -2.664,
+   "error_rate": 0.39,
+   "final_D_mean": 1.61,
+   "share_of_cases_under_D>=3": 0.06
+  }
+ },
+ "50% lazy": {
+  "honest 0.90": {
+   "profit_per_case_in_fees": 0.022,
+   "error_rate": 0.186,
+   "final_D_mean": 0.3,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": 0.189,
+   "error_rate": 0.148,
+   "final_D_mean": 0.18,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -1.829,
+   "error_rate": 0.471,
+   "final_D_mean": 0.85,
+   "share_of_cases_under_D>=3": 0.021
+  }
+ },
+ "70% lazy": {
+  "honest 0.90": {
+   "profit_per_case_in_fees": -0.006,
+   "error_rate": 0.191,
+   "final_D_mean": 0.31,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": 0.181,
+   "error_rate": 0.152,
+   "final_D_mean": 0.13,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -1.478,
+   "error_rate": 0.574,
+   "final_D_mean": 0.74,
+   "share_of_cases_under_D>=3": 0.004
+  }
+ }
+}

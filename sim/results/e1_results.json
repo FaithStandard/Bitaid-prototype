@@ -1,0 +1,162 @@
+{
+ "As written (\u03bb 0.99, cap 32\u00d7, 3-panel error weight 0.5)": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -15.115,
+   "error_rate": 0.254,
+   "final_D_mean": 9.37,
+   "share_of_cases_under_D>=3": 0.234
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": -9.97,
+   "error_rate": 0.188,
+   "final_D_mean": 7.08,
+   "share_of_cases_under_D>=3": 0.166
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": -5.612,
+   "error_rate": 0.145,
+   "final_D_mean": 5.38,
+   "share_of_cases_under_D>=3": 0.12
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -21.75,
+   "error_rate": 0.355,
+   "final_D_mean": 10.83,
+   "share_of_cases_under_D>=3": 0.334
+  },
+  "random": {
+   "profit_per_case_in_fees": -30.196,
+   "error_rate": 0.467,
+   "final_D_mean": 17.32,
+   "share_of_cases_under_D>=3": 0.451
+  }
+ },
+ "No momentum (penalty 2\u20134\u00d7 only)": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -0.103,
+   "error_rate": 0.254,
+   "final_D_mean": 9.37,
+   "share_of_cases_under_D>=3": 0.234
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": 0.105,
+   "error_rate": 0.188,
+   "final_D_mean": 7.08,
+   "share_of_cases_under_D>=3": 0.166
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": 0.243,
+   "error_rate": 0.145,
+   "final_D_mean": 5.38,
+   "share_of_cases_under_D>=3": 0.12
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -0.121,
+   "error_rate": 0.355,
+   "final_D_mean": 10.83,
+   "share_of_cases_under_D>=3": 0.334
+  },
+  "random": {
+   "profit_per_case_in_fees": -0.479,
+   "error_rate": 0.467,
+   "final_D_mean": 17.32,
+   "share_of_cases_under_D>=3": 0.451
+  }
+ },
+ "Faster decay \u03bb 0.95": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -1.612,
+   "error_rate": 0.254,
+   "final_D_mean": 1.87,
+   "share_of_cases_under_D>=3": 0.028
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": -0.561,
+   "error_rate": 0.188,
+   "final_D_mean": 1.45,
+   "share_of_cases_under_D>=3": 0.004
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": -0.1,
+   "error_rate": 0.145,
+   "final_D_mean": 1.11,
+   "share_of_cases_under_D>=3": 0.001
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -3.066,
+   "error_rate": 0.355,
+   "final_D_mean": 2.03,
+   "share_of_cases_under_D>=3": 0.077
+  },
+  "random": {
+   "profit_per_case_in_fees": -11.497,
+   "error_rate": 0.467,
+   "final_D_mean": 3.29,
+   "share_of_cases_under_D>=3": 0.384
+  }
+ },
+ "\u03bb 0.95 and cap 4\u00d7": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -1.28,
+   "error_rate": 0.254,
+   "final_D_mean": 1.87,
+   "share_of_cases_under_D>=3": 0.028
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": -0.511,
+   "error_rate": 0.188,
+   "final_D_mean": 1.45,
+   "share_of_cases_under_D>=3": 0.004
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": -0.089,
+   "error_rate": 0.145,
+   "final_D_mean": 1.11,
+   "share_of_cases_under_D>=3": 0.001
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -2.024,
+   "error_rate": 0.355,
+   "final_D_mean": 2.03,
+   "share_of_cases_under_D>=3": 0.077
+  },
+  "random": {
+   "profit_per_case_in_fees": -3.424,
+   "error_rate": 0.467,
+   "final_D_mean": 3.29,
+   "share_of_cases_under_D>=3": 0.384
+  }
+ },
+ "\u03bb 0.97, cap 8\u00d7, 3-panel errors weigh 0.25": {
+  "honest 0.80": {
+   "profit_per_case_in_fees": -1.578,
+   "error_rate": 0.254,
+   "final_D_mean": 1.91,
+   "share_of_cases_under_D>=3": 0.017
+  },
+  "honest 0.90": {
+   "profit_per_case_in_fees": -0.549,
+   "error_rate": 0.188,
+   "final_D_mean": 1.48,
+   "share_of_cases_under_D>=3": 0.002
+  },
+  "honest 0.95": {
+   "profit_per_case_in_fees": -0.092,
+   "error_rate": 0.145,
+   "final_D_mean": 1.13,
+   "share_of_cases_under_D>=3": 0.0
+  },
+  "lazy": {
+   "profit_per_case_in_fees": -2.983,
+   "error_rate": 0.355,
+   "final_D_mean": 2.11,
+   "share_of_cases_under_D>=3": 0.065
+  },
+  "random": {
+   "profit_per_case_in_fees": -6.783,
+   "error_rate": 0.467,
+   "final_D_mean": 3.38,
+   "share_of_cases_under_D>=3": 0.368
+  }
+ }
+}

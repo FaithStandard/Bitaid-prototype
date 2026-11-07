@@ -1,0 +1,62 @@
+{
+ "3 full copies": {
+  "storage x": 3.0,
+  "pieces to suppress": 3,
+  "pieces to read": 1,
+  "read succeeds, nodes 90% online": 0.999,
+  "read succeeds, nodes 70% online": 0.973,
+  "loss per year, 5%/month churn, monthly repair": 0.00164,
+  "loss in a 40% correlated burst": 0.063425,
+  "pieces moved per repair": 1
+ },
+ "5 full copies": {
+  "storage x": 5.0,
+  "pieces to suppress": 5,
+  "pieces to read": 1,
+  "read succeeds, nodes 90% online": 0.99999,
+  "read succeeds, nodes 70% online": 0.99757,
+  "loss per year, 5%/month churn, monthly repair": 0.0,
+  "loss in a 40% correlated burst": 0.00999,
+  "pieces moved per repair": 1
+ },
+ "RS 4-of-8": {
+  "storage x": 2.0,
+  "pieces to suppress": 5,
+  "pieces to read": 4,
+  "read succeeds, nodes 90% online": 0.99957,
+  "read succeeds, nodes 70% online": 0.94203,
+  "loss per year, 5%/month churn, monthly repair": 0.0002,
+  "loss in a 40% correlated burst": 0.17272,
+  "pieces moved per repair": 4
+ },
+ "RS 10-of-20": {
+  "storage x": 2.0,
+  "pieces to suppress": 11,
+  "pieces to read": 10,
+  "read succeeds, nodes 90% online": 1.0,
+  "read succeeds, nodes 70% online": 0.98286,
+  "loss per year, 5%/month churn, monthly repair": 0.0,
+  "loss in a 40% correlated burst": 0.12823,
+  "pieces moved per repair": 10
+ },
+ "RS 10-of-30": {
+  "storage x": 3.0,
+  "pieces to suppress": 21,
+  "pieces to read": 10,
+  "read succeeds, nodes 90% online": 1.0,
+  "read succeeds, nodes 70% online": 0.99999,
+  "loss per year, 5%/month churn, monthly repair": 0.0,
+  "loss in a 40% correlated burst": 0.00096,
+  "pieces moved per repair": 10
+ },
+ "RS 6-of-12": {
+  "storage x": 2.0,
+  "pieces to suppress": 7,
+  "pieces to read": 6,
+  "read succeeds, nodes 90% online": 0.99995,
+  "read succeeds, nodes 70% online": 0.9614,
+  "loss per year, 5%/month churn, monthly repair": 5e-06,
+  "loss in a 40% correlated burst": 0.15835,
+  "pieces moved per repair": 6
+ }
+}
