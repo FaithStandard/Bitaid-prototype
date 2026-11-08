@@ -121,7 +121,7 @@ fresh-wallet)
   echo "--- the old wallet still will not open:"; echo "$R" | tail -2
   cli stop >/dev/null 2>&1
   i=0; while pgrep -x elementsd >/dev/null && [ $i -lt 120 ]; do sleep 2; i=$((i+1)); done
-  OLD="w_old_$(date +%Y%m%d_%H%M)"
+  OLD="w_old_$(date +%Y%m%d_%H%M%S)"
   [ -d "$DD/liquidtestnet/wallets/w" ] && mv "$DD/liquidtestnet/wallets/w" "$DD/liquidtestnet/wallets/$OLD" && echo "old wallet kept as $OLD"
   rm -f "$DD/faucet_address"
   sed -i '/^wallet=w$/d' "$CONF"
