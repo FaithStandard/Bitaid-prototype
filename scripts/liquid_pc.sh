@@ -21,7 +21,10 @@ LOG="$WIN/pc_logs"
 case "$1" in
 setup)
   if [ ! -x "$BIN/elementsd" ]; then
-    tar -xzf "$WIN/$V-x86_64-linux-gnu.tar.gz" -C "$HOME" || { echo "SETUP_FAILED: cannot unpack $V"; exit 1; }
+    # unpacked with Python: the tar of recent Ubuntu uses a system call WSL1 lacks ("Function not implemented")
+    python3 -c "import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2])" \
+      "$WIN/$V-x86_64-linux-gnu.tar.gz" "$HOME" || { echo "SETUP_FAILED: cannot unpack $V"; exit 1; }
+    [ -x "$BIN/elementsd" ] || { echo "SETUP_FAILED: $BIN/elementsd missing after unpacking"; exit 1; }
   fi
   mkdir -p "$DD"
   if [ ! -f "$CONF" ]; then
