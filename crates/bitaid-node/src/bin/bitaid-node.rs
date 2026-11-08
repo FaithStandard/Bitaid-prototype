@@ -134,14 +134,27 @@ fn reclaim() -> i32 {
         eprintln!("no key file {path}");
         return 1;
     };
-    let tip = rpc.height();
-    let to = match rpc.new_spk() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("cannot reach the chain node's wallet ({e}); is the PC side up?");
-            return 1;
+    // over Tor a freshly published onion can take a few minutes to answer: keep trying for ten
+    let mut tries = 0;
+    let to = loop {
+        match rpc.new_spk() {
+            Ok(s) => break s,
+            Err(e) if tries < 20 => {
+                tries += 1;
+                eprintln!("the chain node's wallet does not answer yet ({e}); trying again in 30 s ({tries}/20)");
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+            Err(e) => {
+                eprintln!("cannot reach the chain node's wallet ({e}); is the PC side up, with DEVICES_MAY_RECLAIM_NOW shown?");
+                return 1;
+            }
         }
     };
+    let tip = rpc.height();
+    if tip == 0 {
+        eprintln!("the chain node gives no height; try again");
+        return 1;
+    }
     let rate = rpc.fee_rate(6).unwrap_or(2.0).max(1.0);
     let (mut back, mut waiting) = (0u64, 0u64);
     for line in text.lines() {

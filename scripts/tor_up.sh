@@ -14,6 +14,8 @@ mkdir -p $D/hs $D/data; chmod 700 $D/hs
   if [ $# -gt 0 ]; then echo "HiddenServiceDir $D/hs"; for p in "$@"; do echo "HiddenServicePort ${p%%:*} 127.0.0.1:${p##*:}"; done; fi
 } > $D/torrc
 pkill -f "tor -f $D/torrc" 2>/dev/null; sleep 1
+# a fresh log: an old "Bootstrapped 100" from the last run must not count as this one ready
+: > $D/tor.log
 tor -f $D/torrc >/dev/null 2>&1
 for i in $(seq 1 90); do grep -q "Bootstrapped 100" $D/tor.log 2>/dev/null && break; sleep 2; done
 grep -q "Bootstrapped 100" $D/tor.log || { echo "TOR_NOT_BOOTSTRAPPED"; tail -5 $D/tor.log; exit 1; }
