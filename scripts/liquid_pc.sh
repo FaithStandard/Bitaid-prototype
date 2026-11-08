@@ -87,10 +87,27 @@ run)
     python3 "$HOME/bitaid-prototype/tools/liquid/t18_liquid.py" 2>&1 | tee "$LOG/liquid_t18.txt"
   echo "LIQUID_DONE (output in pc_logs/liquid_t18.txt)"
   ;;
+check)
+  # what Claude needs to see when the wallet will not open; saved to pc_logs/liquid_check.txt
+  mkdir -p "$LOG"
+  {
+    date
+    echo "--- conf"; grep -v rpcpassword "$CONF"
+    echo "--- blocks"; cli getblockcount 2>&1
+    echo "--- listwallets"; cli listwallets 2>&1
+    echo "--- listwalletdir"; cli listwalletdir 2>&1
+    echo "--- wallet files"; ls -la "$DD/liquidtestnet/wallets/" "$DD/liquidtestnet/wallets/w" 2>&1
+    echo "--- loadwallet w"; cli loadwallet w 2>&1
+    echo "--- getwalletinfo"; cli -rpcwallet=w getwalletinfo 2>&1
+    echo "--- balances"; cli -rpcwallet=w getbalances 2>&1
+    echo "--- debug.log, wallet and error lines"; grep -i "wallet\|error" "$DD/liquidtestnet/debug.log" | tail -30
+  } > "$LOG/liquid_check.txt" 2>&1
+  cat "$LOG/liquid_check.txt"
+  ;;
 stop)
   cli stop
   ;;
 *)
-  echo "usage: sh scripts/liquid_pc.sh setup|status|run|stop"; exit 1
+  echo "usage: sh scripts/liquid_pc.sh setup|status|run|check|stop"; exit 1
   ;;
 esac
