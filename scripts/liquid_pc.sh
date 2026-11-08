@@ -17,6 +17,8 @@ DD="$HOME/.elements-testnet"
 CONF="$DD/elements.conf"
 cli() { "$BIN/elements-cli" -datadir="$DD" "$@"; }
 LOG="$WIN/pc_logs"
+# one faucet address, kept (any address of the wallet works; showing the same one avoids confusion)
+addr() { [ -s "$DD/faucet_address" ] || cli -rpcwallet=w getnewaddress > "$DD/faucet_address"; cat "$DD/faucet_address"; }
 
 case "$1" in
 setup)
@@ -51,14 +53,14 @@ EOF
   cli createwallet w >/dev/null 2>&1 || cli loadwallet w >/dev/null 2>&1
   echo "LIQUID_NODE_STARTED"
   echo "Faucet address (paste at https://liquidtestnet.com/faucet, L-BTC, two or three times):"
-  cli -rpcwallet=w getnewaddress
+  addr
   echo "Sync: sh scripts/liquid_pc.sh status   (wait for 'synced: yes')"
   ;;
 status)
   cli getblockchaininfo | python3 -c "import json,sys; d=json.load(sys.stdin); print('blocks', d['blocks'], 'headers', d['headers'], 'progress %.4f' % d['verificationprogress'], 'synced:', 'yes' if not d['initialblockdownload'] and d['blocks'] >= d['headers'] - 2 else 'no')"
   echo "balance: $(cli -rpcwallet=w getbalance | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("bitcoin", d) if isinstance(d, dict) else d)') L-BTC (confirmed)"
   echo "unconfirmed: $(cli -rpcwallet=w getunconfirmedbalance | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("bitcoin", d) if isinstance(d, dict) else d)')"
-  echo "faucet address: $(cli -rpcwallet=w getnewaddress)"
+  echo "faucet address: $(addr)"
   ;;
 run)
   IBD=$(cli getblockchaininfo | python3 -c "import json,sys; print(json.load(sys.stdin)['initialblockdownload'])")
