@@ -1,0 +1,68 @@
+The escrows on the real Liquid testnet, and the hostile peer's full set of attacks, 2026-11-08.
+
+1. Liquid testnet (tools/liquid/t18_liquid.py, run from the PC with scripts/liquid_pc.sh run): an Elements 23.3.4
+node on liquidtestnet in WSL, pruned, its wallet funded from the public faucet (0.003 L-BTC); pots divided by
+SCALE=10. Each step is a real transaction sent to the node and checked by its own script engine: the funding output
+(the scoped key alone cannot move it; the wallet-alone fallback refused before its height, accepted after it), the
+incident transaction (scoped key + an 11-of-21 FROST co-signature, three MuSig2 pot outputs, an explicit fee
+output), the pre-signed set with Liquid's explicit fee outputs (14 payouts + the bounty fan-out), a payout completed
+with another outcome's attestation rejected by the node, the deposit and reward paid by the threshold attestation,
+bounty slices paid by their own attestations, and a bond: the cold key alone cannot withdraw, the pre-signed
+forfeiture completes with the pool's co-signature once the outcome is final. 15 passed, 0 failed.
+Liquid mainnet is refused by tools/liquid/el.py. Only the escrows run on Liquid here; the daemon still runs on
+Bitcoin (signet).
+
+2. Hostile peer (examples/rogue.rs, build 3c8cea0, run with sh scripts/net_pc.sh attack: a lone Core on 7790, two
+rounds). The 2026-11-07 run stopped at the flood: on WSL1 a write blocked on a link the Core had cut was never woken.
+The rogue now gives up a write after 15 s. Every attack ran, the connection storm included: 9 passed, 0 failed in
+each round (18/0). The Core's own log names the reasons it cut each link: 'message longer than the limit', 'too many
+malformed lines', 'flooding (new messages above the rate limit)'.
+
+===== Liquid testnet
+[PASS] Funding output: the scoped key alone cannot move it
+[PASS] Funding output: the wallet-alone fallback is refused before its height
+[PASS] Incident transaction: scoped key + 11-of-21 FROST co-signature, three MuSig2 pot outputs, fee output — accepted
+[PASS] Pre-signed set built with explicit fee outputs — 14 payouts + fan-out
+[PASS] A payout completed with another outcome's attestation is rejected by the node's script check — mempool-script-verify-flag-failed (Invalid Schnorr signature)
+[PASS] deposit: "returned" completed by the threshold attestation and accepted — accepted
+[PASS] reward: "paid 60/30/10" completed by the threshold attestation and accepted — accepted
+[PASS] Bounty fan-out into slices accepted without the oracle — accepted
+[PASS] Slice 0 paid to seat 0 by its own attestation — accepted
+[PASS] Slice 1 paid to seat 0 by its own attestation — accepted
+[PASS] Slice 2 paid to seat 1 by its own attestation — accepted
+[PASS] Deposit and reward pots spent on-chain
+[PASS] Bond: the cold wallet key alone cannot withdraw before the fallback
+[PASS] Bond: the pre-signed forfeiture completes with the pool's co-signature once the outcome is final — accepted
+[PASS] Funding output: the wallet-alone fallback works after its height — accepted
+
+===== rogue, round 1
+[PASS] rogue control: a fresh, validly signed message is forwarded
+[PASS] rogue a message dated two days ago and one dated tomorrow: neither forwarded
+[PASS] rogue replay of a message already seen (b4a903ac…): not forwarded again
+[PASS] rogue an escalation claiming block 10,000,000 relayed for the nodes to judge (they should log 'refused Escalate')
+[PASS] rogue a 2176 KiB message with no end: link closed
+[PASS] rogue 1050 lines of garbage: link closed
+[PASS] rogue flood of validly signed messages: link closed after 22008 sent in 16.9 s (limit: a burst of 20000, then 100/s)
+[PASS] rogue 80 connections at once: 44 closed by the Core (it keeps at most 64 incoming)
+[PASS] rogue after the storm: a new peer accepted and its message forwarded
+[rogue] 9 passed, 0 failed
+
+===== rogue, round 2
+[PASS] rogue control: a fresh, validly signed message is forwarded
+[PASS] rogue a message dated two days ago and one dated tomorrow: neither forwarded
+[PASS] rogue replay of a message already seen (b4a903ac…): not forwarded again
+[PASS] rogue an escalation claiming block 10,000,000 relayed for the nodes to judge (they should log 'refused Escalate')
+[PASS] rogue a 2176 KiB message with no end: link closed
+[PASS] rogue 1050 lines of garbage: link closed
+[PASS] rogue flood of validly signed messages: link closed after 22007 sent in 16.8 s (limit: a burst of 20000, then 100/s)
+[PASS] rogue 80 connections at once: 24 closed by the Core (it keeps at most 64 incoming)
+[PASS] rogue after the storm: a new peer accepted and its message forwarded
+[rogue] 9 passed, 0 failed
+
+===== the Core's reasons for cutting links (core_attack.log)
+gossip: link down (incoming 127.0.0.1:57537): message longer than the limit
+gossip: link down (incoming 127.0.0.1:57538): too many malformed lines
+gossip: link down (incoming 127.0.0.1:57539): flooding (new messages above the rate limit)
+gossip: link down (incoming 127.0.0.1:50563): message longer than the limit
+gossip: link down (incoming 127.0.0.1:50564): too many malformed lines
+gossip: link down (incoming 127.0.0.1:50565): flooding (new messages above the rate limit)
