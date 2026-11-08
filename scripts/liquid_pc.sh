@@ -100,14 +100,42 @@ check)
     echo "--- loadwallet w"; cli loadwallet w 2>&1
     echo "--- getwalletinfo"; cli -rpcwallet=w getwalletinfo 2>&1
     echo "--- balances"; cli -rpcwallet=w getbalances 2>&1
-    echo "--- debug.log, wallet and error lines"; grep -i "wallet\|error" "$DD/liquidtestnet/debug.log" | tail -30
+    echo "--- debug.log, wallet and error lines"; grep -a -i "wallet\|error\|prune" "$DD/liquidtestnet/debug.log" | tail -30
   } > "$LOG/liquid_check.txt" 2>&1
   cat "$LOG/liquid_check.txt"
+  ;;
+fresh-wallet)
+  # a new, empty wallet when the old one can no longer be opened (after a power cut, a pruned node may
+  # have dropped the blocks the old wallet would need to catch up on). The old wallet is kept, renamed,
+  # never deleted.
+  # first, a clean restart: a wallet stuck as "already loaded" often opens after one
+  cli stop >/dev/null 2>&1
+  i=0; while pgrep -x elementsd >/dev/null && [ $i -lt 120 ]; do sleep 2; i=$((i+1)); done
+  "$BIN/elementsd" -datadir="$DD" -nowallet || { echo "FAILED: elementsd did not start"; exit 1; }
+  "$BIN/elements-cli" -datadir="$DD" -rpcwait -rpcwaittimeout=1800 getblockcount >/dev/null 2>&1
+  if R=$(cli loadwallet w 2>&1); then
+    echo "OLD_WALLET_OPENED: the old wallet opened after a clean restart; no new wallet needed"
+    echo "balance: $(cli -rpcwallet=w getbalance | num) L-BTC"
+    exit 0
+  fi
+  echo "--- the old wallet still will not open:"; echo "$R" | tail -2
+  cli stop >/dev/null 2>&1
+  i=0; while pgrep -x elementsd >/dev/null && [ $i -lt 120 ]; do sleep 2; i=$((i+1)); done
+  OLD="w_old_$(date +%Y%m%d_%H%M)"
+  [ -d "$DD/liquidtestnet/wallets/w" ] && mv "$DD/liquidtestnet/wallets/w" "$DD/liquidtestnet/wallets/$OLD" && echo "old wallet kept as $OLD"
+  rm -f "$DD/faucet_address"
+  sed -i '/^wallet=w$/d' "$CONF"
+  "$BIN/elementsd" -datadir="$DD" || { echo "FAILED: elementsd did not start"; exit 1; }
+  "$BIN/elements-cli" -datadir="$DD" -rpcwait -rpcwaittimeout=1800 getblockcount >/dev/null 2>&1
+  cli createwallet w >/dev/null && echo "wallet=w" >> "$CONF"
+  echo "NEW_WALLET_READY"
+  echo "Faucet address for the new wallet (https://liquidtestnet.com/faucet, L-BTC, twice):"
+  addr
   ;;
 stop)
   cli stop
   ;;
 *)
-  echo "usage: sh scripts/liquid_pc.sh setup|status|run|check|stop"; exit 1
+  echo "usage: sh scripts/liquid_pc.sh setup|status|run|check|fresh-wallet|stop"; exit 1
   ;;
 esac
