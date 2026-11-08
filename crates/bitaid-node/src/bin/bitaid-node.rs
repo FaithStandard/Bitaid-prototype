@@ -327,7 +327,9 @@ fn pool_member(mut n: Node) -> i32 {
         HashMap::new();
     let mut commits: HashMap<String, BTreeMap<String, String>> = HashMap::new();
     let mut reveals: HashMap<String, BTreeMap<String, Ballot>> = HashMap::new();
-    let mut ready_at: HashMap<String, Instant> = HashMap::new();
+    // per case, the block height at which its outcome is final unless escalated (deemed consent or
+    // a tier's verdict): protocol deadlines are block heights, judged by this member's chain tip
+    let mut ready_at: HashMap<String, u32> = HashMap::new();
     let mut done: std::collections::HashSet<String> = Default::default();
     let mut stalled_once = false;
     let mut retried: std::collections::HashSet<(String, u32)> = Default::default();
@@ -355,9 +357,11 @@ fn pool_member(mut n: Node) -> i32 {
     let mut offers: HashMap<(String, u32), HashMap<String, (bool, String, u32)>> = HashMap::new(); // sender -> (bond ok, payout, its height when offering)
     let mut panels: HashMap<(String, u32), Vec<String>> = HashMap::new();
     let mut fees_ok: std::collections::HashSet<(String, u32)> = Default::default();
-    let mut fee_at: HashMap<(String, u32, String), Instant> = HashMap::new();
-    let mut all_committed_at: HashMap<(String, u32), Instant> = HashMap::new();
-    let mut deadlock_at: HashMap<String, Instant> = HashMap::new();
+    // the height at which each seat's fee confirmed: its commit deadline runs from there (§10.4)
+    let mut fee_at: HashMap<(String, u32, String), u32> = HashMap::new();
+    // the height at which this member saw a tier's last commit: the reveal deadline runs from there
+    let mut all_committed_at: HashMap<(String, u32), u32> = HashMap::new();
+    let mut deadlock_at: HashMap<String, u32> = HashMap::new();
     let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
     let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut verdicts: HashMap<String, Ballot> = HashMap::new();
@@ -369,9 +373,10 @@ fn pool_member(mut n: Node) -> i32 {
         if last.elapsed() > secs(idle) {
             return 0;
         }
+        let tip = n.tip();
         let dead: Vec<String> = deadlock_at
             .iter()
-            .filter(|(_, t)| Instant::now() >= **t)
+            .filter(|(_, h)| tip >= **h)
             .map(|(c, _)| c.clone())
             .collect();
         for c in dead {
@@ -398,7 +403,7 @@ fn pool_member(mut n: Node) -> i32 {
                     "case {}: the escalation was never seated and lapses; the last verdict stands",
                     &c[..8]
                 ));
-                ready_at.insert(c.clone(), Instant::now());
+                ready_at.insert(c.clone(), 0);
             } else {
                 n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", &c[..8]));
             }
@@ -407,7 +412,7 @@ fn pool_member(mut n: Node) -> i32 {
         // the outcome from the ballots itself and releases its own share
         let due: Vec<String> = ready_at
             .iter()
-            .filter(|(_, t)| Instant::now() >= **t)
+            .filter(|(_, h)| tip >= **h)
             .map(|(c, _)| c.clone())
             .collect();
         for c in due {
@@ -633,7 +638,7 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log(&format!("co-signing again for {} (checked before)", &case_id[..8]));
                     *d
                 } else if let Some((d, what)) = (!done.contains(case_id))
-                    .then(|| seat_forfeit_due(&n, a, r, &t, *input, &vcommits, &fee_at))
+                    .then(|| seat_forfeit_due(&n, a, r, &t, *input, &vcommits, &fee_at, n.rpc.height()))
                     .flatten()
                 {
                     // a seat that missed its commit deadline: its seat forfeiture refunds the fee
@@ -989,10 +994,12 @@ fn pool_member(mut n: Node) -> i32 {
                         .map(|spk| n.rpc.paid_to(txid, &spk) >= fee)
                         .unwrap_or(false);
                     if ok {
-                        // the seat's commit deadline runs from when this member saw it paid
-                        fee_at
-                            .entry((case_id.clone(), *tier, sid))
-                            .or_insert(Instant::now());
+                        // the seat's commit deadline runs from the block that confirmed its fee: the
+                        // same height for every member, whenever it saw the payment
+                        let Some(h) = n.rpc.tx_height(txid) else {
+                            later!();
+                        };
+                        fee_at.entry((case_id.clone(), *tier, sid)).or_insert(h);
                     }
                 }
                 if seats
@@ -1012,11 +1019,24 @@ fn pool_member(mut n: Node) -> i32 {
                     later!();
                 }
                 if panels.get(&key).map(|p| p.contains(&s)).unwrap_or(false) {
+                    // a commit seen after the seat's deadline does not count: the seat is forfeit
+                    let late = fee_at
+                        .get(&(case_id.clone(), *tier, s.clone()))
+                        .zip(alerts.get(case_id))
+                        .is_some_and(|(h, a)| n.tip() >= h + a.template.commit_blocks);
+                    if late {
+                        n.log(&format!(
+                            "tier {tier}: the commit of {} came after its deadline; not counted",
+                            &s[..8]
+                        ));
+                        continue;
+                    }
                     let m = vcommits.entry(key.clone()).or_default();
                     m.insert(s.clone(), commitment.clone());
                     // every seat committed: the reveal deadline runs from here (§10.4)
                     if m.len() >= panels[&key].len() {
-                        all_committed_at.entry(key).or_insert(Instant::now());
+                        let h = n.tip();
+                        all_committed_at.entry(key).or_insert(h);
                     }
                 }
             }
@@ -1055,8 +1075,7 @@ fn pool_member(mut n: Node) -> i32 {
                 };
                 let deadline_passed = all_committed_at
                     .get(&key)
-                    .map(|t| t.elapsed() >= secs(alerts[case_id].template.commit_deadline as u64))
-                    .unwrap_or(false);
+                    .is_some_and(|h| n.tip() >= h + alerts[case_id].template.reveal_blocks);
                 if (rv.len() < seats.len() && !deadline_passed)
                     || !fees_ok.contains(&key)
                     || esc.get(case_id).map(|x| x.0) != Some(*tier)
@@ -1078,6 +1097,11 @@ fn pool_member(mut n: Node) -> i32 {
                     }
                     later!();
                 }
+                // the window to appeal runs from the block that confirmed the tier's commitment
+                let Some(ch) = n.rpc.tx_height(txid) else {
+                    later!();
+                };
+                let w = alerts[case_id].template.dispute_blocks;
                 let votes: Vec<Ballot> = rv.iter().map(|x| x.1.clone()).collect();
                 match bitaid_node::arb::supermajority(seats.len(), &votes) {
                     Some(v) => {
@@ -1091,23 +1115,20 @@ fn pool_member(mut n: Node) -> i32 {
                             n.log(&format!("tier {tier}: dissenter {} owes {:.1}× the fee (provisional until the final ruling)", &d[..8], bitaid_node::arb::penalty_factor(seats.len(), dissenters.len())));
                         }
                         verdicts.insert(case_id.clone(), v.clone());
-                        let w = alerts[case_id].template.dispute_window as u64;
-                        n.log(&format!("tier {tier} verdict {} committed on chain; final in {w} s unless appealed", verdict_classes(&v)));
-                        ready_at.insert(case_id.clone(), Instant::now() + secs(w));
+                        n.log(&format!("tier {tier} verdict {} committed on chain in block {ch}; final at block {} unless appealed", verdict_classes(&v), ch + w));
+                        ready_at.insert(case_id.clone(), ch + w);
                     }
                     // a hung tier decides nothing: the last verdict stands and the window to re-roll
                     // it reopens; a hung first tier leaves the attending deadlock, which only a re-roll
                     // or the refund path closes
                     None => match verdicts.get(case_id) {
                         Some(prev) => {
-                            let w = alerts[case_id].template.dispute_window as u64;
-                            n.log(&format!("tier {tier}: no two-thirds verdict; the tier {} verdict {} stands, final in {w} s unless re-rolled", tier - 1, verdict_classes(prev)));
-                            ready_at.insert(case_id.clone(), Instant::now() + secs(w));
+                            n.log(&format!("tier {tier}: no two-thirds verdict; the tier {} verdict {} stands, final at block {} unless re-rolled", tier - 1, verdict_classes(prev), ch + w));
+                            ready_at.insert(case_id.clone(), ch + w);
                         }
                         None => {
-                            n.log(&format!("tier {tier}: no two-thirds verdict; the deadlock stands until a party re-rolls it, else the refund path"));
-                            let w = alerts[case_id].template.dispute_window as u64;
-                            deadlock_at.insert(case_id.clone(), Instant::now() + secs(w + 10));
+                            n.log(&format!("tier {tier}: no two-thirds verdict; the deadlock stands at block {} unless a party re-rolls it, else the refund path", ch + w));
+                            deadlock_at.insert(case_id.clone(), ch + w);
                         }
                     },
                 }
@@ -1145,13 +1166,13 @@ fn pool_member(mut n: Node) -> i32 {
                 let rv = reveals.entry(case_id.clone()).or_default();
                 rv.insert(s.clone(), ballot.clone());
                 if rv.len() == r.seats.len() && !done.contains(case_id) {
-                    let w = alerts[case_id].template.dispute_window as u64;
+                    let h = n.tip() + alerts[case_id].template.dispute_blocks;
                     n.log(&format!(
-                        "all {} ballots revealed for {}; deemed consent in {w} s unless escalated",
+                        "all {} ballots revealed for {}; deemed consent at block {h} unless escalated",
                         rv.len(),
                         &case_id[..8]
                     ));
-                    ready_at.insert(case_id.clone(), Instant::now() + secs(w));
+                    ready_at.insert(case_id.clone(), h);
                 }
             }
             _ => {}
@@ -2542,8 +2563,9 @@ fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, start: Duration) -> Option<O
     Some(bitaid_node::arb::supermajority(seats.len(), &votes))
 }
 
-/// A seat forfeiture this member's own records call for: the seat was paid at least the template's
-/// commit deadline ago (by this member's clock), has not committed a vote, and the transaction is its
+/// A seat forfeiture this member's own records call for: the chain has reached the seat's commit
+/// deadline (its fee's confirmation height plus the template's commit blocks), it has not committed
+/// a vote in time, and the transaction is its
 /// pre-signed seat forfeiture refunding the fee to the payer (§10.4).
 #[allow(clippy::type_complexity)]
 fn seat_forfeit_due(
@@ -2553,7 +2575,8 @@ fn seat_forfeit_due(
     t: &Transaction,
     input: u32,
     vcommits: &HashMap<(String, u32), HashMap<String, String>>,
-    fee_at: &HashMap<(String, u32, String), Instant>,
+    fee_at: &HashMap<(String, u32, String), u32>,
+    tip: u32,
 ) -> Option<([u8; 32], String)> {
     if input != 0 {
         return None;
@@ -2573,7 +2596,7 @@ fn seat_forfeit_due(
                 .get(&(a.case_hex.clone(), *k))
                 .map(|m| m.contains_key(seat))
                 .unwrap_or(false);
-            if voted || paid.elapsed() < secs(a.template.commit_deadline as u64) {
+            if voted || tip < paid + a.template.commit_blocks {
                 return None;
             }
             return Some((

@@ -32,18 +32,21 @@ pub struct Template {
     pub max_signers: u8,
     /// seconds from the alert during which responders may accept
     pub joining_window: u32,
-    /// seconds after the last ballot reveal before deemed consent (§9; 48 h in production), and
-    /// after each arbitration tier's verdict before it is final (§10.5; 48 h in production)
-    pub dispute_window: u32,
+    /// blocks after the last ballot reveal before deemed consent (§9), and after each arbitration
+    /// tier's commitment confirms before its verdict is final (§10.5); 288 (about 48 h) in production
+    pub dispute_blocks: u32,
     /// first-instance arbitration fee per seat in sats; +25% per tier above (§10.5)
     pub arb_fee: u64,
     /// blocks after acceptance before the per-pot refunds are valid
     pub refund_delay: u32,
     /// account xpub from which the per-case refund address is derived (§3, no address reuse)
     pub refund_xpub: String,
-    /// seconds a seated arbitrator has to commit its vote before its seat is forfeit (§10.4: 1,008
-    /// blocks in production)
-    pub commit_deadline: u32,
+    /// blocks from the confirmation of a seat's fee in which the seat must commit its vote, or its
+    /// seat is forfeit (§10.4: 1,008 in production); a review seat counts from its draw
+    pub commit_blocks: u32,
+    /// blocks from the last commit in which the seats reveal; a missing reveal is charged as an
+    /// incoherent vote (§10.4: 144 in production)
+    pub reveal_blocks: u32,
     /// blocks after the final tier's commitment whose hash seeds the review draw (§10.3; in
     /// production the first block after the escalation window closes)
     #[serde(default)]
