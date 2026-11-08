@@ -16,6 +16,16 @@ BIN="$HOME/$V/bin"
 DD="$HOME/.elements-testnet"
 CONF="$DD/elements.conf"
 cli() { "$BIN/elements-cli" -datadir="$DD" "$@"; }
+# waits for the node to answer (it can take minutes to reload its block index after a restart),
+# then makes sure the wallet is open; quiet when it already is
+ready() {
+  "$BIN/elements-cli" -datadir="$DD" -rpcwait -rpcwaittimeout=1800 getblockcount >/dev/null 2>&1 || { echo "NOT_READY: the node does not answer"; exit 1; }
+  cli -rpcwallet=w getwalletinfo >/dev/null 2>&1 || cli loadwallet w >/dev/null 2>&1 || cli createwallet w >/dev/null 2>&1
+}
+num() { python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin); print(d.get('bitcoin', d) if isinstance(d, dict) else d)
+except Exception: print('?')"; }
 LOG="$WIN/pc_logs"
 # one faucet address, kept (any address of the wallet works; showing the same one avoids confusion)
 addr() { [ -s "$DD/faucet_address" ] || cli -rpcwallet=w getnewaddress > "$DD/faucet_address"; cat "$DD/faucet_address"; }
@@ -46,23 +56,30 @@ rpcallowip=127.0.0.1
 rpcport=18892
 rpcuser=bitaid
 rpcpassword=$P
+# open the wallet whenever the node starts (after a power cut too)
+wallet=w
 EOF
   fi
-  "$BIN/elementsd" -datadir="$DD" || { echo "SETUP_FAILED: elementsd did not start"; exit 1; }
-  sleep 10
-  cli createwallet w >/dev/null 2>&1 || cli loadwallet w >/dev/null 2>&1
+  grep -q '^wallet=w' "$CONF" || echo "wallet=w" >> "$CONF"
+  if cli getblockcount >/dev/null 2>&1 || cli getblockcount 2>&1 | grep -q "Loading"; then
+    echo "(the node is already running)"
+  else
+    "$BIN/elementsd" -datadir="$DD" || { echo "SETUP_FAILED: elementsd did not start"; exit 1; }
+  fi
+  ready
   echo "LIQUID_NODE_STARTED"
   echo "Faucet address (paste at https://liquidtestnet.com/faucet, L-BTC, two or three times):"
   addr
   echo "Sync: sh scripts/liquid_pc.sh status   (wait for 'synced: yes')"
   ;;
 status)
+  ready
   cli getblockchaininfo | python3 -c "import json,sys; d=json.load(sys.stdin); print('blocks', d['blocks'], 'headers', d['headers'], 'progress %.4f' % d['verificationprogress'], 'synced:', 'yes' if not d['initialblockdownload'] and d['blocks'] >= d['headers'] - 2 else 'no')"
-  echo "balance: $(cli -rpcwallet=w getbalance | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("bitcoin", d) if isinstance(d, dict) else d)') L-BTC (confirmed)"
-  echo "unconfirmed: $(cli -rpcwallet=w getunconfirmedbalance | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("bitcoin", d) if isinstance(d, dict) else d)')"
+  echo "balance: $(cli -rpcwallet=w getbalance | num) L-BTC (confirmed), $(cli -rpcwallet=w getunconfirmedbalance | num) unconfirmed (coins show once the sync passes their block)"
   echo "faucet address: $(addr)"
   ;;
 run)
+  ready
   IBD=$(cli getblockchaininfo | python3 -c "import json,sys; print(json.load(sys.stdin)['initialblockdownload'])")
   [ "$IBD" = False ] || { echo "NOT_READY: the node is still syncing (sh scripts/liquid_pc.sh status)"; exit 1; }
   mkdir -p "$LOG" && cd "$LOG" || exit 1
