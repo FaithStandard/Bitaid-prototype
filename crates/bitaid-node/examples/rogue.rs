@@ -133,7 +133,14 @@ fn main() {
     let storm: usize = arg("--storm")
         .and_then(|v| v.parse().ok())
         .unwrap_or(MAX_IN + 16);
-    let dial = || gossip::dial(&peer, socks);
+    // every attacking socket gives up a write after 15 s: a peer that has cut the link must not leave
+    // this tool blocked in a write (seen on WSL1, where a blocked writer is not woken by the close)
+    let dial = || {
+        gossip::dial(&peer, socks).map(|s| {
+            let _ = s.set_write_timeout(Some(Duration::from_secs(15)));
+            s
+        })
+    };
     if wait > 0 {
         println!("rogue: waiting {wait} s, so the attacks land while a case runs");
         std::thread::sleep(Duration::from_secs(wait));
