@@ -1654,7 +1654,7 @@ fn settle(
                             Err(e) => {
                                 // (an hour at public-signet scale: a phone on Tor can take that long to come back)
                                 let mut k = false;
-                                let end = Instant::now() + slow(120);
+                                let end = Instant::now() + secs(bitaid_node::slow(120));
                                 while Instant::now() < end {
                                     if known(n) {
                                         k = true;
