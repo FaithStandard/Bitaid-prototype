@@ -156,7 +156,7 @@ fn reclaim() -> i32 {
         return 1;
     }
     let rate = rpc.fee_rate(6).unwrap_or(2.0).max(1.0);
-    let (mut back, mut waiting) = (0u64, 0u64);
+    let (mut back, mut waiting, mut checked, mut empty) = (0u64, 0u64, 0u32, 0u32);
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -181,7 +181,10 @@ fn reclaim() -> i32 {
         };
         let spk = tree.script_pubkey();
         let coins = rpc.unspent_at(&spk);
+        checked += 1;
         if coins.is_empty() {
+            // already spent by the protocol (returned, released or forfeited), or never funded
+            empty += 1;
             continue;
         }
         let total: u64 = coins.iter().map(|c| c.1).sum();
@@ -226,7 +229,7 @@ fn reclaim() -> i32 {
             Err(e) => println!("{who} {}: {total} sats not sent: {e}", v["kind"].as_str().unwrap_or("?")),
         }
     }
-    println!("reclaimed {back} sats; {waiting} sats still waiting for their fallback height");
+    println!("{path}: {checked} outputs checked, {empty} already empty; reclaimed {back} sats; {waiting} sats still waiting for their fallback height");
     0
 }
 
