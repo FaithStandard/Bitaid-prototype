@@ -3,7 +3,7 @@
 # the archivist, nine arbitrators (two corrupt), responders r3 (intervened) and r4 (sends a bad partial
 # signature). One onion address carries
 # the Core (7700), the archive (7480) and the chain's RPC (18443); nothing is opened on the router.
-#   sh scripts/net_pc.sh start | report | stop
+#   sh scripts/net_pc.sh start | report | stop | balances | sweep (CHAIN=public: where the test coins are, and back to the faucet)
 # Logs also go to LOGDIR (default: the Windows "Files for Claude\pc_logs" folder) so they can be read there.
 cd "$(dirname "$0")/.."
 . "$HOME/.cargo/env" 2>/dev/null
@@ -211,6 +211,28 @@ reclaim)
   # the devices reclaim their own through this PC's onion address: the chain's RPC published again
   OUT=$(sh scripts/tor_up.sh 7700 7480 18443:$RPCPORT) || { echo "$OUT"; exit 1; }
   echo; echo "DEVICES_MAY_RECLAIM_NOW (onion: $(echo "$OUT" | sed -n 's/^ONION=//p')) - keep this window open until they finish"
+  ;;
+balances|sweep)
+  # where the test coins are: every test wallet on the Windows node (payouts, returned bonds and released
+  # units go back to these, not to the faucet wallet; each run only tops them up), the coins still under
+  # the key files' bonds and funding outputs (from the reclaim, which also takes back what is due), and,
+  # with "sweep", everything in the test wallets sent back to the faucet wallet
+  export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_WALLET=bitaid
+  $CLI loadwallet bitaid >/dev/null 2>&1
+  bal() { $CLI -rpcwallet=$1 getbalances 2>/dev/null | python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin)['mine']; print('%.8f confirmed, %.8f unconfirmed, %.8f immature' % (d['trusted'], d['untrusted_pending'], d['immature']))
+except Exception: print('not loaded')"; }
+  echo "faucet wallet (bitaid): $(bal bitaid)"
+  for w in w caller r1 r3 r4; do $CLI loadwallet $w >/dev/null 2>&1; echo "test wallet $w: $(bal $w)"; done
+  for f in "$WIN"/keys/*.jsonl; do [ -f "$f" ] && target/release/bitaid-node --role reclaim --keys "$f" ; done
+  if [ "$1" = sweep ]; then
+    A=$($CLI -rpcwallet=bitaid getnewaddress)
+    for w in w caller r1 r3 r4; do
+      R=$($CLI -rpcwallet=$w sendall "[\"$A\"]" 2>&1) && echo "swept $w: $(echo "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("txid","?"))' 2>/dev/null)" || echo "$w: nothing to sweep ($(echo "$R" | tail -1))"
+    done
+    echo "SWEPT: the coins reach the faucet wallet once the next block confirms them (about 10 minutes)"
+  fi
   ;;
 stop)
   pkill -x bitaid-node; pkill -f block_producer.sh 2>/dev/null; [ "$CHAIN" = public ] || $CLI stop >/dev/null 2>&1; pkill -f "tor -f $HOME/bitaid-tor/torrc"; echo stopped
