@@ -118,10 +118,11 @@ start)
   $CLI createwallet w >/dev/null 2>&1 || $CLI loadwallet w >/dev/null 2>&1
   # (on signet each block needs real proof of work, a few seconds each: hence the high maxtries)
   H=$($CLI getblockcount); [ "$H" -lt 110 ] && { echo "mining the first $((110-H)) blocks (signet: several minutes, once)"; $CLI -rpcwallet=w generatetoaddress $((110-H)) $($CLI -rpcwallet=w getnewaddress) 1000000000 >/dev/null; }
-  if [ "$CHAIN" = signet ]; then
-    pkill -f block_producer.sh 2>/dev/null
-    CLI="$CLI" nohup sh scripts/block_producer.sh >/dev/null 2>&1 </dev/null &
-  fi
+  # protocol deadlines are block heights, so blocks come on a clock: every BLOCK seconds (signet: 20,
+  # with real proof of work; regtest: 15, besides the blocks nodes mine on demand)
+  pkill -f block_producer.sh 2>/dev/null
+  [ "$CHAIN" = signet ] || BLOCK=${BLOCK:-15}
+  CLI="$CLI" BLOCK=$BLOCK nohup sh scripts/block_producer.sh >/dev/null 2>&1 </dev/null &
   for w in caller r1 r3 r4; do
     $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1
     if [ "$SMALL" = 1 ]; then SRC=w; fund_small $w 0.002 12

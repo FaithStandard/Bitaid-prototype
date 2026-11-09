@@ -412,6 +412,38 @@ impl Node {
         out
     }
 
+    /// Everything `f` accepts until the chain reaches `height` (a protocol deadline, judged by this
+    /// node's own chain tip) or until `enough` returns true. `cap` bounds the wait on a chain that
+    /// stops producing blocks.
+    pub fn collect_until<T>(
+        &mut self,
+        height: u32,
+        cap: Duration,
+        mut f: impl FnMut(&Envelope, &Event) -> Option<T>,
+        mut enough: impl FnMut(&[T]) -> bool,
+    ) -> Vec<T> {
+        let mut out = Vec::new();
+        let end = Instant::now() + cap;
+        while !enough(&out) && self.tip() < height && Instant::now() < end {
+            if let Some(t) = self.wait(Duration::from_secs(2), &mut f) {
+                out.push(t);
+            }
+        }
+        out
+    }
+
+    /// The chain height for judging deadlines: as `height`, but refreshed every 2 s.
+    pub fn tip(&mut self) -> u32 {
+        if self
+            .height_at
+            .map(|t| t.elapsed() > Duration::from_secs(2))
+            .unwrap_or(true)
+        {
+            self.height_at = None;
+        }
+        self.height()
+    }
+
     /// Waits for the first announcement of `role`; returns (identity, key, url).
     pub fn find_service(
         &mut self,
