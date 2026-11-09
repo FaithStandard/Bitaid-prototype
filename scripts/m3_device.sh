@@ -20,7 +20,7 @@ responder)
   ;;
 caller)
   BITAID_WALLET=w $BIN --role pool-member --name pool4-phone-liar --id 4 --n 4 --t 3 --liar --setup-wait 3600 $R --exit-after 3600 2>pool.log & PM=$!
-  BITAID_WALLET=caller $BIN --role caller --name caller-phone $R --archivists ${ARCHIVISTS:-1} --mine --window 20 --dispute-window 10
+  BITAID_WALLET=caller $BIN --role caller --name caller-phone $R --archivists ${ARCHIVISTS:-1} --mine --window 20 --dispute-blocks 5
   sleep 5; kill $PM 2>/dev/null
   ;;
 esac

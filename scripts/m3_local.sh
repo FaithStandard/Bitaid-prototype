@@ -21,6 +21,9 @@ else
   BITAID_WALLET=w $BIN/bitaid-node --role core --name core --listen-gossip 127.0.0.1:7700 2>m3logs/core.log & PIDS="$!"
 fi
 sleep 0.5
+# protocol deadlines are block heights: on regtest a block clock makes a block every BLOCK seconds
+# (default 2), as a real chain would, beside the blocks nodes mine on demand
+[ "$CHAIN" = signet ] || { CLI="$CLI" BLOCK=${BLOCK:-2} sh scripts/block_producer.sh & PIDS="$PIDS $!"; }
 # oracle pool: 4 members, threshold 3; member 3 stalls on co-signing, member 4 attests a different outcome
 for i in 1 2 3 4; do
   extra=""; [ $i = 3 ] && extra="--stall"; [ $i = 4 ] && extra="--liar"
@@ -35,7 +38,7 @@ BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1 $COMMON --ballot I,
 BITAID_WALLET=r2 $BIN/bitaid-node --role responder --name r2 $COMMON --ballot I,D --lat 13.6920 --lon -89.2170 > m3logs/r2.out 2>m3logs/r2.log & RP="$RP $!"
 BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --ballot I,D --bad-partial --accept-delay-ms 300 > m3logs/r3.out 2>m3logs/r3.log & RP="$RP $!"
 sleep 2
-BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --alert-delay 3 --window 6 --dispute-window 3 > m3logs/caller.out 2>m3logs/caller.log
+BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --alert-delay 3 --window 6 --dispute-blocks 3 > m3logs/caller.out 2>m3logs/caller.log
 for p in $RP; do wait $p; done
 kill $PIDS 2>/dev/null
 cat m3logs/caller.out m3logs/r1.out m3logs/r2.out m3logs/r3.out | tee m3_result.txt

@@ -15,7 +15,10 @@ for w in caller r1 r3; do
 done
 mine1
 P="--peer 127.0.0.1:7700 --pool arb"
-BITAID_WALLET=w $BIN/bitaid-node --role core --name core --listen-gossip 127.0.0.1:7700 2>$L/core.log & PIDS="$!"
+# protocol deadlines are block heights: on regtest a block clock makes a block every BLOCK seconds
+# (default 2), as a real chain would, beside the blocks nodes mine on demand
+[ "$CHAIN" = signet ] || { CLI="$CLI" BLOCK=${BLOCK:-2} sh scripts/block_producer.sh & PIDS="$!"; }
+BITAID_WALLET=w $BIN/bitaid-node --role core --name core --listen-gossip 127.0.0.1:7700 2>$L/core.log & PIDS="$PIDS $!"
 sleep 0.5
 for i in 1 2 3 4; do
   BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $P --exit-after 300 2>$L/pool$i.log & PIDS="$PIDS $!"
@@ -62,7 +65,7 @@ for c in $(seq 1 ${CASES:-1}); do
 BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
 BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
-BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-window 8 --alert-delay 4 --commit-deadline 20 ${REVIEW_PCT:+--review-pct $REVIEW_PCT} ${ARB_FEE:+--arb-fee $ARB_FEE} > $L/caller.out 2>$L/caller.log
+BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-blocks ${DISPUTE_BLOCKS:-6} --alert-delay 4 --commit-blocks ${COMMIT_BLOCKS:-30} --reveal-blocks ${REVEAL_BLOCKS:-6} ${REVIEW_PCT:+--review-pct $REVIEW_PCT} ${ARB_FEE:+--arb-fee $ARB_FEE} > $L/caller.out 2>$L/caller.log
 for p in $RP; do wait $p; done
 # §10.2-10.3: every seated arbitrator waits for the case's review draw and, if passed over, releases its
 # units with the pool's co-signature; give them time before stopping the network
