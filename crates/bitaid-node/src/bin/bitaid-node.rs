@@ -1652,13 +1652,15 @@ fn settle(
                             Ok(_) => (true, String::new()),
                             // if this node cannot pay the fee, another party's broadcast still settles it
                             Err(e) => {
+                                // (an hour at public-signet scale: a phone on Tor can take that long to come back)
                                 let mut k = false;
-                                for _ in 0..20 {
+                                let end = Instant::now() + slow(120);
+                                while Instant::now() < end {
                                     if known(n) {
                                         k = true;
                                         break;
                                     }
-                                    std::thread::sleep(Duration::from_millis(500));
+                                    std::thread::sleep(Duration::from_secs(5));
                                 }
                                 (
                                     k,

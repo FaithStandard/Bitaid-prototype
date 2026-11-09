@@ -102,7 +102,7 @@ start)
     # coins left in the test wallets by earlier runs count: each is only topped up to what it needs
     # the arbitrators' wallet scales with their number (ten: 0.015 in 12 coins and 25 fee coins)
     A=${ARBS:-10}
-    topup w $(python3 -c "print('%.4f' % (0.0015*$A))") $(( A * 5 / 2 )) $(( A + 2 )); for w in caller r1 r3 r4; do topup $w 0.001 6; done
+    topup w $(python3 -c "print('%.4f' % (0.0015*$A))") $(( A * 5 / 2 )) $(( A + 2 )); for w in caller r3 r4; do topup $w 0.001 6; done; topup r1 0.001 12  # r1 escalates: tier fees and units take fee coins too
     echo "wallets funded; waiting for the funding to confirm (about 10 minutes, sometimes more)"
     wait_funded
   else
