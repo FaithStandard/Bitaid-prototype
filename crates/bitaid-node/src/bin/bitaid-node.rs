@@ -1013,7 +1013,7 @@ fn pool_member(mut n: Node) -> i32 {
                 // the draw must be reproducible and leave the escalator no choice: the block the
                 // escalation fixed (draw_blocks() after it), and exactly the offers with valid bonds
                 // stated from the escalation to two blocks before that block, none left out
-                let in_window = |oh: u32| oh >= h0 && oh + 2 <= *height;
+                let in_window = |oh: u32| oh + 2 <= *height;
                 let block_ok = *height == h0 + bitaid_node::draw_blocks()
                     && n.rpc.block_hash(*height).as_deref() == Some(block_hash.as_str());
                 let offers_ok = listed
@@ -2125,6 +2125,7 @@ fn escalate_tier(
     let okey = view.key_hex();
     // the escalation's height (its envelope states it): the panel is drawn from the block draw_blocks()
     // later, from every offer stated up to two blocks before it
+    n.refresh_height();
     let h_esc = n.height();
     let draw_h = h_esc + bitaid_node::draw_blocks();
     n.send_case(
@@ -2156,8 +2157,9 @@ fn escalate_tier(
         }) else {
             continue;
         };
-        // stated after the escalation and at least two blocks before the draw, as every member checks
-        if oh < h_esc || oh + 2 > draw_h {
+        // stated at least two blocks before the draw, as every member checks (no lower bound: an offer
+        // whose stated height is a little stale gains nothing, as every offer in the window counts)
+        if oh + 2 > draw_h {
             continue;
         }
         if offers.iter().any(|o| o.0 == who) {
