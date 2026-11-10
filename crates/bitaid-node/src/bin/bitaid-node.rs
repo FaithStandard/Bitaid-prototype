@@ -28,6 +28,8 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 const BOND_FLOOR: u64 = 1_000_000; // 0.01 BTC, §2
+/// a responder's default bond: covers the default template's exposure (twice reward and bounty)
+const RESPONDER_BOND: u64 = 2_000_000;
 
 fn args() -> Vec<String> {
     std::env::args().collect()
@@ -344,6 +346,16 @@ fn pool_member(mut n: Node) -> i32 {
     // per case, the block height at which its outcome is final unless escalated (deemed consent or
     // a tier's verdict): protocol deadlines are block heights, judged by this member's chain tip
     let mut ready_at: HashMap<String, u32> = HashMap::new();
+    // the height of each case's first ballot reveal: the reveal window runs from it, so a seat that
+    // never reveals cannot hold deemed consent back (review finding D-8)
+    let mut first_reveal: HashMap<String, u32> = HashMap::new();
+    // archivists announced on the log: only these may be named in a roster
+    let mut archivists_known: std::collections::HashSet<String> = Default::default();
+    // nonce indices of cases whose incident was never co-signed go back to the batch after
+    // RELEASE_BLOCKS; such a case is never served again (no attestation was ever made under them)
+    let mut reserved_at: HashMap<String, u32> = HashMap::new();
+    let mut released: std::collections::HashSet<String> = Default::default();
+    const RELEASE_BLOCKS: u32 = 144;
     let mut done: std::collections::HashSet<String> = Default::default();
     let mut stalled_once = false;
     let mut retried: std::collections::HashSet<(String, u32)> = Default::default();
@@ -433,6 +445,48 @@ fn pool_member(mut n: Node) -> i32 {
                 n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", bitaid_node::pre(&c, 8)));
             }
         }
+        let tip_r = n.tip();
+        let stale: Vec<String> = reserved_at
+            .iter()
+            .filter(|(c, h)| !cosigned.contains(*c) && tip_r > **h + RELEASE_BLOCKS)
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in stale {
+            reserved_at.remove(&c);
+            if let Some(ix) = assigned.remove(&c) {
+                for j in ix {
+                    if taken.get(&j) == Some(&c) {
+                        taken.remove(&j);
+                    }
+                }
+            }
+            released.insert(c.clone());
+            n.log(&format!("case {}: no incident co-signed in {RELEASE_BLOCKS} blocks; its nonces go back to the batch", bitaid_node::pre(&c, 8)));
+        }
+        // the reveal window closed with seats still silent: the dispute window starts all the same,
+        // and the silent seats count as no agreement (settle::decide takes 80% of the seats)
+        let tip_now = n.tip();
+        let closed: Vec<String> = first_reveal
+            .iter()
+            .filter(|(c, h)| {
+                !ready_at.contains_key(*c)
+                    && !done.contains(*c)
+                    && !esc.contains_key(*c)
+                    && alerts.get(*c).is_some_and(|a| tip_now >= **h + a.template.reveal_blocks)
+            })
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in closed {
+            let h = tip_now + alerts[&c].template.dispute_blocks;
+            n.log(&format!(
+                "case {}: the reveal window closed with {} of {} ballots; deemed consent at block {h} unless escalated",
+                bitaid_node::pre(&c, 8),
+                reveals.get(&c).map_or(0, |v| v.len()),
+                rosters.get(&c).map_or(0, |r| r.seats.len())
+            ));
+            ready_at.insert(c.clone(), h);
+            first_reveal.remove(&c);
+        }
         // deemed consent: every seat revealed and the dispute window has passed; each member reads
         // the outcome from the ballots itself and releases its own share
         let due: Vec<String> = ready_at
@@ -444,6 +498,7 @@ fn pool_member(mut n: Node) -> i32 {
             ready_at.remove(&c);
             let (a, r) = (&alerts[&c], &rosters[&c]);
             // an arbitrated case settles on its last tier's verdict; otherwise on the ballots
+            let mut ruled = verdicts.contains_key(&c);
             let mut ballots: Vec<Ballot> = match verdicts.get(&c) {
                 Some(v) => vec![v.clone()],
                 None => reveals[&c].values().cloned().collect(),
@@ -463,9 +518,17 @@ fn pool_member(mut n: Node) -> i32 {
                         ));
                     }
                     ballots = vec![v];
+                    ruled = true;
                 }
             }
-            match decide(r.seats.len(), a.template.pots, &a.template, &ballots) {
+            // a panel's ruling settles by the panel rules (a misuse ruling seizes); ballots by §9
+            let decision = if ruled && ballots.len() == 1 {
+                bitaid_node::settle::decide_panel(r.seats.len(), a.template.pots, &a.template, &ballots[0])
+            } else {
+                // the window closed and no one paid a panel: an unpaid dissent is dropped (§9)
+                bitaid_node::settle::decide_unpaid_dissent(r.seats.len(), a.template.pots, &a.template, &ballots)
+            };
+            match decision {
                 Decision::Settled(ends) => {
                     for e in ends {
                         // built on the set-bound case id: it completes only this roster's payouts
@@ -564,8 +627,17 @@ fn pool_member(mut n: Node) -> i32 {
                 let Some(a) = alerts.get(case_id) else {
                     continue;
                 };
-                if a.caller != s || indices.len() != 3 || assigned.contains_key(case_id) {
+                if a.caller != s
+                    || indices.len() != 3
+                    || assigned.contains_key(case_id)
+                    || released.contains(case_id)
+                {
                     continue;
+                }
+                // nonces are reserved for a case someone accepted, not for any alert: alerts cost
+                // nothing, so reserving on an alert alone would let anyone drain the batch (finding 13)
+                if accepted.get(case_id).is_none_or(|m| m.is_empty()) {
+                    later!();
                 }
                 // the funding output must stay locked well past the case: a caller whose wallet-alone
                 // fallback is near could race the incident with it (review finding: fallback heights)
@@ -592,6 +664,7 @@ fn pool_member(mut n: Node) -> i32 {
                     taken.insert(*j, case_id.clone());
                 }
                 assigned.insert(case_id.clone(), indices.clone());
+                reserved_at.insert(case_id.clone(), n.tip());
                 let nonces = indices
                     .iter()
                     .map(|j| point_hex(&m.batch.r[*j as usize]))
@@ -633,6 +706,9 @@ fn pool_member(mut n: Node) -> i32 {
                     },
                 );
             }
+            Msg::Announce { role, .. } if role == "archivist" => {
+                archivists_known.insert(s.clone());
+            }
             Msg::Roster { case_id, .. } => {
                 let (Some(a), Some(r)) = (alerts.get(case_id), Rostered::from_msg(&env.msg)) else {
                     continue;
@@ -650,6 +726,16 @@ fn pool_member(mut n: Node) -> i32 {
                     ));
                     continue;
                 }
+                // the case's archivists convene its review and hold its seizure output: each must be
+                // an archivist the log knows, never a key the caller made up (review finding 12)
+                let known = |k: &String| archivists_known.contains(k);
+                if r.archivists.is_empty() || !r.archivists.iter().all(known) {
+                    if r.archivists.iter().all(known) {
+                        n.log(&format!("roster v{} for {} refused: no archivists", r.set_version, bitaid_node::pre(&case_id, 8)));
+                        continue;
+                    }
+                    later!();
+                }
                 let empty = HashMap::new();
                 let acc = accepted.get(case_id).unwrap_or(&empty);
                 if r.seats.iter().any(|x| !acc.contains_key(x)) {
@@ -662,7 +748,7 @@ fn pool_member(mut n: Node) -> i32 {
                     acc,
                     |op| n.rpc.utxo(op),
                     n.rpc.height(),
-                    bitaid_node::sats(BOND_FLOOR),
+                    case::exposure_bond(a, bitaid_node::sats(BOND_FLOOR)),
                     fallback_blocks() / 2,
                 ) {
                     n.log(&format!("roster v{} for {} refused: {e}", r.set_version, bitaid_node::pre(&case_id, 8)));
@@ -726,7 +812,7 @@ fn pool_member(mut n: Node) -> i32 {
                         accepted.get(case_id).unwrap_or(&empty),
                         |op| n.rpc.utxo(op),
                         tip,
-                        bitaid_node::sats(BOND_FLOOR),
+                        case::exposure_bond(a, bitaid_node::sats(BOND_FLOOR)),
                         fallback_blocks() / 2,
                     )
                     .and_then(|_| {
@@ -983,10 +1069,9 @@ fn pool_member(mut n: Node) -> i32 {
                 bond_value,
                 payout_spk,
             } => {
-                let Some(a) = alerts.get(case_id) else {
+                if !alerts.contains_key(case_id) {
                     continue;
                 };
-                let value: u64 = a.template.pots.iter().sum();
                 let secp = Secp256k1::verification_only();
                 let ok = (|| {
                     let op = OutPoint::from_str(bond).ok()?;
@@ -1002,7 +1087,9 @@ fn pool_member(mut n: Node) -> i32 {
                     // is ruled backs nothing (review finding: fallback heights unchecked)
                     (u.script_pubkey == t.script_pubkey()
                         && u.value.to_sat() == *bond_value
-                        && u.value.to_sat() >= bitaid_node::sats(ARB_BOND_FLOOR).max(2 * value)
+                        // the entry bond's floor, as the escalator checks it: the case itself is covered
+                        // by the seat's case unit (review finding D-13)
+                        && u.value.to_sat() >= bitaid_node::sats(ARB_BOND_FLOOR)
                         && *bond_fallback >= n.rpc.height() + fallback_blocks() / 2)
                     .then_some(())
                 })()
@@ -1315,9 +1402,11 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log("reveal ignored: does not match its commitment");
                     continue;
                 }
+                first_reveal.entry(case_id.clone()).or_insert(n.tip());
                 let rv = reveals.entry(case_id.clone()).or_default();
                 rv.insert(s.clone(), ballot.clone());
                 if rv.len() == r.seats.len() && !done.contains(case_id) {
+                    first_reveal.remove(case_id);
                     let h = n.tip() + alerts[case_id].template.dispute_blocks;
                     n.log(&format!(
                         "all {} ballots revealed for {}; deemed consent at block {h} unless escalated",
@@ -1393,7 +1482,7 @@ fn archivist(mut n: Node) -> i32 {
                 let due: Vec<String> = rosters
                     .iter()
                     .filter(|(c, r)| {
-                        r.archivists.first() == Some(&me)
+                        r.archivists.contains(&me)
                             && !settled.contains(*c)
                             && looked.get(*c).is_none_or(|t| t.elapsed() > secs(5))
                     })
@@ -1962,11 +2051,21 @@ fn upload_evidence(
     for (_, _, url) in archivists {
         let mut all = true;
         for b in &blobs {
-            // one retry: a first connection to an onion service can time out while its circuit builds
-            let r = blossom::upload(url, &n.keys, &c, b).or_else(|e| {
-                n.log(&format!("upload to {url} failed ({e}); retrying"));
-                blossom::upload(url, &n.keys, &c, b)
-            });
+            // retried: a first connection to an onion service can time out while its circuit builds,
+            // and an archivist busy convening a review may not have read the roster yet (401); a
+            // refusal is retried with backoff for up to two minutes
+            let mut r = blossom::upload(url, &n.keys, &c, b);
+            let t_up = Instant::now();
+            let mut wait = 1u64;
+            while let Err(e) = &r {
+                if t_up.elapsed() > secs(bitaid_node::slow(120)) {
+                    break;
+                }
+                n.log(&format!("upload to {url} failed ({e}); retrying in {wait} s"));
+                std::thread::sleep(Duration::from_secs(wait));
+                wait = (wait * 2).min(15);
+                r = blossom::upload(url, &n.keys, &c, b);
+            }
             if let Err(e) = &r {
                 n.log(&format!("upload to {url} failed: {e}"));
             }
@@ -2081,7 +2180,7 @@ fn collect_reveals(n: &mut Node, a: &Alerted, r: &Rostered) -> Vec<Ballot> {
 /// Evidence as announced: recorder, blobs (hash, size), archivists.
 type EvidenceItem = (String, Vec<(String, u64)>, Vec<String>);
 
-const ARB_BOND_FLOOR: u64 = 10_000_000; // the entry bond, 0.1 BTC provisional (§2.2, §10.2)
+use bitaid_node::arb::ENTRY_BOND as ARB_BOND_FLOOR; // the entry bond, 0.1 BTC provisional (§2.2, §10.2)
 
 /// Waits for the pre-signed forfeitures of `who` and keeps those that verify: per seat, its stake and its
 /// seat forfeiture's pre-signature.
@@ -2150,7 +2249,7 @@ fn escalate_tier(
     let c = a.case_hex.clone();
     let value: u64 = a.template.pots.iter().sum();
     let size = bitaid_node::arb::panel_size(tier);
-    // a stage of the staged review (§10.3): seats unpaid and unstaked, an 80% finding
+    // a stage of the staged review (§10.3): seats unpaid and unstaked, a two-thirds finding
     let review = arb::is_review(tier);
     let okey = view.key_hex();
     // the escalation's height (its envelope states it): the panel is drawn from the block draw_blocks()
@@ -2289,20 +2388,13 @@ fn escalate_tier(
     n.check(&format!("tier {tier}: {size} of {} offering arbitrators drawn from block {h}, case disclosed only to them", ids.len()), true, &format!("{:.1} s after escalating", t0.elapsed().as_secs_f64()));
     // each seat pre-signs its bond's forfeitures before it is paid (§10.4, §12)
     let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
-    let r_arch = n
-        .history
-        .iter()
-        .rev()
-        .find_map(|e| match &e.msg {
-            Msg::Roster {
-                case_id,
-                archivists,
-                ..
-            } if *case_id == c && e.sender == a.caller => Some(archivists.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let seizure = arb::seizure_tree(&r_arch, &oxo).map(|t| t.0.script_pubkey());
+    let r_last = n.history.iter().rev().find_map(|e| match &e.msg {
+        Msg::Roster { case_id, .. } if *case_id == c && e.sender == a.caller => Rostered::from_msg(&e.msg),
+        _ => None,
+    });
+    let seizure = r_last.as_ref().and_then(|r| {
+        arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r)).map(|t| t.0.script_pubkey())
+    });
     let mut stakes: HashMap<String, (arb::Bond, String)> = HashMap::new();
     // per seat, the height its commit deadline counts from: the block that confirmed its fee (a
     // review seat, which this escalator does not pay, from its draw)
@@ -2675,15 +2767,15 @@ fn escalate_tier(
     n.check(&format!("tier {tier}: {} of {size} verdicts revealed; roster and answers committed on chain (OP_RETURN)", reveals.len()), on_chain, &committed.unwrap_or_default());
     let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
     if review {
-        let v = arb::supermajority_of(size, &votes, 4, 5);
+        let v = arb::supermajority(size, &votes);
         n.check(
             &format!(
                 "review stage {}: {} of {size} findings revealed; {}",
                 tier - arb::REVIEW_BASE,
                 votes.len(),
                 match &v {
-                    Some(v) => format!("80% found {}", verdict_classes(v)),
-                    None => "no 80% finding".into(),
+                    Some(v) => format!("two thirds found {}", verdict_classes(v)),
+                    None => "no two-thirds finding".into(),
                 }
             ),
             true,
@@ -2936,7 +3028,7 @@ fn take_seat(
         fallback: k.bf,
         payout: k.payout.clone(),
     };
-    let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo) else {
+    let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r)) else {
         n.log("case names no archivists; no seizure output to forfeit to");
         return None;
     };
@@ -3199,6 +3291,21 @@ fn convene_review(
                 // convened already; its panel has not committed yet
                 return false;
             }
+            // the first archivist convenes; each later one only once the stage has been due for a
+            // grace period per place ahead of it, so a first archivist that never convenes holds
+            // nothing back (any registered arbitrator may also open it)
+            let place = r.archivists.iter().position(|x| *x == n.me()).unwrap_or(0) as u32;
+            if place > 0 {
+                let due = *first_seen.entry(format!("due:{c}:{k}")).or_insert_with(Instant::now);
+                if due.elapsed() < secs(place as u64 * num("--convene-grace", 120u64)) {
+                    return false;
+                }
+                n.log(&format!(
+                    "case {}: review stage {st} due and not convened; convening it as archivist {}",
+                    bitaid_node::pre(&c, 8),
+                    place + 1
+                ));
+            }
             if st == 1 {
                 // the review takes up a closed case: its penalties taken and distributed first, unless
                 // nobody collects them within --review-wait of the case's attestation
@@ -3260,7 +3367,7 @@ fn convene_review(
         arb::ReviewState::Confirmed(v) => {
             n.check(
                 &format!(
-                    "case {}: three review panels in turn found {} at 80%: the verdict is overturned",
+                    "case {}: three review panels in turn found {} by two thirds: the verdict is overturned",
                     bitaid_node::pre(&c, 8),
                     verdict_classes(&v)
                 ),
@@ -3277,7 +3384,8 @@ fn convene_review(
 /// the whole pool (everyone registered who sat on neither the case nor an earlier stage); each drawn
 /// reviewer accepts, and gets the case key, or posts a replacement fee, and the seat goes to one drawn
 /// blind from those who offer for it once the leaver has paid; a reviewer silent past the window is
-/// counted as declining and its seat drawn again. Then the findings, by commit-reveal, at 80%.
+/// counted as declining and its seat drawn again. Then the findings, by commit-reveal, at two thirds
+/// (80% at every stage is needed only to take an entry bond or expel).
 fn review_stage(
     n: &mut Node,
     a: &Alerted,
@@ -3291,6 +3399,9 @@ fn review_stage(
     let size = arb::panel_size(k);
     let oxo = wire::xonly(&view.key_hex()).unwrap();
     let t0 = Instant::now();
+    // the opening fixes the draw block, draw_blocks() later; the list is the whole eligible pool
+    n.refresh_height();
+    let draw_h = n.height() + bitaid_node::draw_blocks();
     n.send_case(
         &c,
         &[],
@@ -3301,10 +3412,14 @@ fn review_stage(
         },
         false,
     );
+    while n.rpc.height() < draw_h {
+        n.rpc.mine(1).ok();
+        std::thread::sleep(Duration::from_millis(200));
+    }
     let excluded = arb::Replay::build_core(&n.history, a, r, &n.rpc)?.review_excluded();
-    let reg = arb::registry(&n.history);
+    let reg = arb::registry_at(&n.history, draw_h - 2);
     // suspended for inactivity (§10.3): no review draws
-    let off = arb::inactive(&n.history, n.rpc.height() + 1);
+    let off = arb::inactive(&n.history, draw_h);
     for w in &off {
         if reg.contains_key(w) {
             n.log(&format!(
@@ -3335,8 +3450,7 @@ fn review_stage(
         );
         return None;
     }
-    n.rpc.mine(1).ok();
-    let h = n.rpc.height();
+    let h = draw_h;
     let bh = n.rpc.block_hash(h).unwrap_or_default();
     let mut seats = arb::draw(&bh, &c, k, &eligible, size);
     n.send_case(
@@ -3728,14 +3842,14 @@ fn review_stage(
             "",
         );
     }
-    let v = arb::supermajority_of(size, &votes, 4, 5);
+    let v = arb::supermajority(size, &votes);
     n.check(
         &format!(
             "review stage {st}: {} of {size} findings revealed and committed on chain; {}",
             votes.len(),
             match &v {
-                Some(v) => format!("80% found {}", verdict_classes(v)),
-                None => "no 80% finding".into(),
+                Some(v) => format!("two thirds found {}", verdict_classes(v)),
+                None => "no two-thirds finding".into(),
             }
         ),
         on_chain,
@@ -5237,7 +5351,7 @@ fn caller(mut n: Node) -> i32 {
                 &wire::xonly(&okey)?,
                 bf,
             );
-            (utxo.value.to_sat() >= bitaid_node::sats(BOND_FLOOR)
+            (utxo.value.to_sat() >= case::exposure_bond(&a, bitaid_node::sats(BOND_FLOOR))
                 && utxo.script_pubkey == t.script_pubkey()
                 && bf >= n.rpc.height() + fallback_blocks() / 2)
                 .then_some(())
@@ -5286,6 +5400,8 @@ fn caller(mut n: Node) -> i32 {
     let mut seated = accepts.clone();
     let mut version = 0u32;
     let refund_height = n.rpc.height() + template.refund_delay;
+    // the caller's pot key: fresh for this case, never the scoped key (review finding 16)
+    let pot_k = random_scalar();
     let (set, roster) = loop {
         let mut r = Rostered {
             set_version: version,
@@ -5304,6 +5420,7 @@ fn caller(mut n: Node) -> i32 {
             incident_txid: bitcoin::Txid::from_str(&"00".repeat(32)).unwrap(),
             sealed_keys: vec![],
             archivists: archivists.iter().map(|x| x.0.clone()).collect(),
+            caller_musig: Some(pot_k * G),
         };
         r.incident_txid = case::incident_tx(&a, &r).compute_txid();
         let mut sealed: Vec<String> = r
@@ -5338,6 +5455,7 @@ fn caller(mut n: Node) -> i32 {
             incident_txid: r.incident_txid.to_string(),
             sealed_keys: sealed.clone(),
             archivists: r.archivists.clone(),
+            caller_musig: point_hex(&(pot_k * G)),
         };
         r.sealed_keys = sealed;
         n.send_case(&c, &r.seats.clone(), msg, false);
@@ -5350,7 +5468,7 @@ fn caller(mut n: Node) -> i32 {
             n.check("the pool confirmed the roster", false, &e);
             return n.summary();
         }
-        match sign_set(&mut n, &a, &r, 0, &k, false) {
+        match sign_set(&mut n, &a, &r, 0, &pot_k, false) {
             Ok(s) => break (s, r),
             Err(e) => {
                 n.log(&format!("set v{version} failed: {e}"));
@@ -5518,7 +5636,7 @@ fn responder(mut n: Node) -> i32 {
     );
     let bond = match n
         .rpc
-        .fund(&btree.script_pubkey(), amt("--bond", BOND_FLOOR))
+        .fund(&btree.script_pubkey(), amt("--bond", RESPONDER_BOND))
     {
         Ok(op) => op,
         Err(e) => {
@@ -5560,10 +5678,16 @@ fn responder(mut n: Node) -> i32 {
             Ok(a) if a.fallback_height < n.rpc.height() + funding_margin() => {
                 n.log("alert whose funding fallback is too near; ignored")
             }
+            Ok(a) if a.template.pots[2] >= min_bounty
+                && amt("--bond", RESPONDER_BOND) < case::exposure_bond(&a, bitaid_node::sats(BOND_FLOOR)) =>
+            {
+                n.log("alert above what my bond backs (twice the reward and bounty); ignored")
+            }
             Ok(a) if a.template.pots[2] >= min_bounty => break a,
             Ok(_) => n.log("alert below my price; ignored"),
-            // an earlier case, replayed from the log: its funding is already spent
-            Err(e) if e.contains("missing or spent") => {}
+            // an earlier case, replayed from the log: its funding is already spent, or it names a
+            // pool from an earlier run
+            Err(e) if e.contains("missing or spent") || e.contains("another oracle") => {}
             Err(e) => n.check("alert checked", false, &e),
         }
     };

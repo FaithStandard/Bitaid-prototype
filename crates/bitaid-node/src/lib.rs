@@ -16,6 +16,11 @@ pub fn pre(s: &str, n: usize) -> &str {
     &s[..i]
 }
 
+/// Production rules (BITAID_PRODUCTION=1): the spec's windows and no test settings in templates.
+pub fn production() -> bool {
+    std::env::var("BITAID_PRODUCTION").is_ok_and(|v| v == "1")
+}
+
 pub fn draw_blocks() -> u32 {
     std::env::var("BITAID_DRAW_BLOCKS")
         .ok()

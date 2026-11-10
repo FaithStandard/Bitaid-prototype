@@ -37,6 +37,12 @@ pub struct Alerted {
     pub fallback_height: u32,
 }
 
+/// The bond a responder needs to accept this case: twice the most it could capture (the reward and
+/// the bounty, all to one seat), and never below `floor` (§2.3, review finding D-12).
+pub fn exposure_bond(a: &Alerted, floor: u64) -> u64 {
+    floor.max(2 * (a.template.pots[1] + a.template.pots[2]))
+}
+
 /// How a registration names its pool: the co-signing key, then the attestation key.
 pub fn pool_id(cosign: &str, attest: &str) -> String {
     format!("{cosign}{attest}")
@@ -82,6 +88,7 @@ impl Alerted {
         if &rt != template {
             return Err("alert economics differ from the registered template".into());
         }
+        rt.check()?;
         // `oracle_expected` is the pool's id: both its keys, which must be distinct (or, for a replay
         // of the log that relies on no attestation, the co-signing key alone)
         let named = pool_id(&oracle_key, &attest_key) == oracle_expected
@@ -164,6 +171,8 @@ pub struct Rostered {
     pub incident_txid: Txid,
     pub sealed_keys: Vec<String>,
     pub archivists: Vec<String>,
+    /// the caller's fresh pot key for this case (None: an older roster, the scoped key)
+    pub caller_musig: Option<Point>,
 }
 
 impl Rostered {
@@ -178,6 +187,7 @@ impl Rostered {
             incident_txid,
             sealed_keys,
             archivists,
+            caller_musig,
             ..
         } = m
         else {
@@ -197,6 +207,7 @@ impl Rostered {
             incident_txid: Txid::from_str(incident_txid).ok()?,
             sealed_keys: sealed_keys.clone(),
             archivists: archivists.clone(),
+            caller_musig: point_from(caller_musig),
         })
     }
 }
@@ -285,9 +296,17 @@ pub fn bound_id(a: &Alerted, r: &Rostered) -> [u8; 32] {
 
 /// The signers in order: the caller's scoped key, then the seats.
 pub fn signers(a: &Alerted, r: &Rostered) -> Vec<Point> {
-    let mut v = vec![a.caller_point()];
+    let mut v = vec![r.caller_musig.unwrap_or_else(|| a.caller_point())];
     v.extend(r.musig_keys.iter().copied());
     v
+}
+
+/// The parties' aggregate key (the caller's pot key and every seat's, MuSig2, untweaked): the
+/// seizure output's fallback after a year pays them together, not an archivist (review finding 12).
+pub fn parties_key(a: &Alerted, r: &Rostered) -> bitcoin::XOnlyPublicKey {
+    let ctx = musig2::KeyAggContext::new(signers(a, r)).expect("valid key set");
+    let p: Point = ctx.aggregated_pubkey();
+    bitcoin::XOnlyPublicKey::from_slice(&p.serialize_xonly()).expect("x-only")
 }
 
 pub fn pot_spk(a: &Alerted, r: &Rostered) -> ScriptBuf {

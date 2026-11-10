@@ -71,10 +71,20 @@ pub fn draw(block_hash: &str, case: &str, tier: u32, offers: &[String], n: usize
     ranked.into_iter().take(n).map(|x| x.1).collect()
 }
 
-/// A verdict's identity for counting: two arbitrators agree when their answers are identical.
+/// A verdict's identity for counting: two arbitrators agree when they give the same answers — each
+/// seat's class, the outcome and misuse — whatever order they list the acts in and whichever second of
+/// the footage they cite (review finding D-7).
 pub fn verdict_key(v: &Ballot) -> Vec<u8> {
+    let mut c = v.clone();
+    for a in &mut c.acts {
+        a.footage = None;
+    }
+    c.acts.sort_by(|x, y| {
+        (x.seat, format!("{:?}", x.class)).cmp(&(y.seat, format!("{:?}", y.class)))
+    });
+    c.acts.dedup_by(|x, y| x.seat == y.seat && x.class == y.class);
     let mut b = Vec::new();
-    ciborium::into_writer(v, &mut b).unwrap();
+    ciborium::into_writer(&c, &mut b).unwrap();
     b
 }
 
@@ -215,15 +225,19 @@ pub const SEIZURE_LOCK: u32 = 52_560;
 pub fn seizure_tree(
     archivists: &[String],
     oracle: &XOnlyPublicKey,
+    parties: &XOnlyPublicKey,
 ) -> Option<(ScriptTree, KeyPolicy)> {
     let mut ks: Vec<XOnlyPublicKey> = archivists.iter().filter_map(|a| wire::xonly(a)).collect();
     ks.sort();
     ks.dedup();
-    let first = *ks.first()?;
+    if ks.is_empty() {
+        return None;
+    }
     let pol = KeyPolicy::of(ks.len() / 2 + 1, ks);
     let secp = Secp256k1::verification_only();
+    // after the lock, the case's parties together (their aggregate key), never one archivist
     Some((
-        outputs::seizure(&secp, &pol, oracle, &first, SEIZURE_LOCK),
+        outputs::seizure(&secp, &pol, oracle, parties, SEIZURE_LOCK),
         pol,
     ))
 }
@@ -397,7 +411,8 @@ impl Bond {
         seizure: &ScriptBuf,
     ) -> (Transaction, [u8; 32]) {
         let t = self.tree(oracle);
-        let outs = if amount >= self.value {
+        // a remainder too small to relay is not re-bonded: it goes to the seizure output too
+        let outs = if amount + bitaid_core::payouts::DUST > self.value {
             vec![(self.value, seizure.clone())]
         } else {
             vec![
@@ -586,12 +601,9 @@ impl Tier {
             return None;
         }
         let v: Vec<Ballot> = self.reveals.iter().map(|x| x.1.clone()).collect();
-        if self.review {
-            // each review panel decides at 80% (§10.3)
-            supermajority_of(self.seats.len(), &v, 4, 5)
-        } else {
-            supermajority(self.seats.len(), &v)
-        }
+        // every panel decides at two thirds, review panels too: three in turn overturn a verdict
+        // (§10.3); the entry bond and expulsion need 80% at each stage (`Replay::review_strong`)
+        supermajority(self.seats.len(), &v)
     }
 }
 
@@ -639,6 +651,8 @@ pub struct Replay {
     pub base_fee: u64,
     pub oracle: XOnlyPublicKey,
     pub archivists: Vec<String>,
+    /// the case's parties' aggregate key: the seizure output's fallback
+    pub parties_key: XOnlyPublicKey,
     /// the parties: caller and seats, with the seats' payout scripts
     pub parties: Vec<(String, Option<ScriptBuf>)>,
     pub tiers: BTreeMap<u32, Tier>,
@@ -758,6 +772,7 @@ impl Replay {
             base_fee: a.template.arb_fee,
             oracle,
             archivists: r.archivists.clone(),
+            parties_key: crate::case::parties_key(a, r),
             parties,
             tiers: BTreeMap::new(),
             reviews: BTreeMap::new(),
@@ -826,6 +841,7 @@ impl Replay {
                 rpc,
                 None,
                 None,
+                a.template.commit_blocks,
             );
             rp.tiers.insert(k, t);
         }
@@ -841,19 +857,20 @@ impl Replay {
         }
         let seated = rp.review_excluded();
         rp.review_pool = reg_all.keys().filter(|w| !seated.contains(*w)).count();
-        let conv = rp.convener.clone();
         for st in 1..=REVIEW_STAGES {
             let k = REVIEW_BASE + st;
             if rp.review_state(a, rpc) != ReviewState::Pending(st) {
                 break;
             }
-            let Some(conv) = conv.as_ref() else { break };
-            let opened = mine.iter().any(|e| {
-                matches!(&e.msg, Msg::Escalate { tier, .. } if *tier == k) && &e.sender == conv
+            // any of the case's archivists or any registered arbitrator may convene a stage that is
+            // due, the first to open it counting: the draw leaves the convener no choice (below), so a
+            // caller's own archivist that never convenes cannot hold a case's review back
+            let opener = mine.iter().find(|e| {
+                matches!(&e.msg, Msg::Escalate { tier, .. } if *tier == k)
+                    && (r.archivists.contains(&e.sender) || reg_all.contains_key(&e.sender))
             });
-            if !opened {
-                break;
-            }
+            let Some(opener) = opener else { break };
+            let (conv, h_open) = (&opener.sender, opener.height);
             let reg = registry(hist);
             let payer = rp.flagger.clone();
             let mut t = read_tier(
@@ -866,6 +883,7 @@ impl Replay {
                 rpc,
                 Some(&reg),
                 payer.as_deref(),
+                a.template.commit_blocks,
             );
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
@@ -878,6 +896,28 @@ impl Replay {
             let off = inactive(hist, h);
             if t.listed.iter().any(|x| off.contains(x)) {
                 break;
+            }
+            // the block is fixed by the opening (draw_blocks() after it), and the list is the whole
+            // eligible pool: everyone registered at least two blocks before the draw who sat on neither
+            // the case nor an earlier stage and is not suspended; one may be left out only if its bond
+            // is not a live entry bond
+            if !t.seats.is_empty() {
+                let at = registry_at(hist, h.saturating_sub(2));
+                let listed: std::collections::HashSet<&String> = t.listed.iter().collect();
+                let live = |b: &Bond| {
+                    b.value >= crate::sats(ENTRY_BOND)
+                        && rpc
+                            .utxo(&b.op)
+                            .is_some_and(|u| u.script_pubkey == b.tree(&oracle).script_pubkey())
+                };
+                let complete = at
+                    .iter()
+                    .filter(|(w, _)| !excluded.contains(*w) && !off.contains(*w))
+                    .all(|(w, b)| listed.contains(w) || !live(b));
+                let inside = t.listed.iter().all(|w| at.contains_key(w));
+                if h != h_open + crate::draw_blocks() || !complete || !inside {
+                    break;
+                }
             }
             rp.reviews.insert(k, t);
         }
@@ -903,7 +943,7 @@ impl Replay {
     }
 
     pub fn seizure_spk(&self) -> Option<ScriptBuf> {
-        seizure_tree(&self.archivists, &self.oracle).map(|t| t.0.script_pubkey())
+        seizure_tree(&self.archivists, &self.oracle, &self.parties_key).map(|t| t.0.script_pubkey())
     }
 
     /// The review draw of a closed case (§10.3): the block whose hash seeds it, and whether it selected
@@ -1311,6 +1351,22 @@ impl Replay {
             .collect()
     }
 
+    /// A confirmed review whose every stage found its verdict at 80%: only such a review takes an
+    /// entry bond or expels (§10.3, two bars). Two thirds at each stage overturns and pays restitution
+    /// from the units; the higher bar guards the livelihood.
+    pub fn review_strong(&self) -> bool {
+        let ReviewState::Confirmed(cv) = &self.review else {
+            return false;
+        };
+        let ck = verdict_key(cv);
+        (1..=REVIEW_STAGES).all(|st| {
+            self.reviews.get(&(REVIEW_BASE + st)).is_some_and(|t| {
+                let v: Vec<Ballot> = t.reveals.iter().map(|x| x.1.clone()).collect();
+                supermajority_of(t.seats.len(), &v, 4, 5).is_some_and(|b| verdict_key(&b) == ck)
+            })
+        })
+    }
+
     /// Who voted, on any arbitration tier, for the verdict a confirmed review overturned (§12).
     pub fn overturned_voters(&self) -> Vec<(u32, String)> {
         let (ReviewState::Confirmed(_), Some((_, fv))) = (&self.review, self.final_ruling()) else {
@@ -1390,8 +1446,9 @@ impl Replay {
         let due = self.due_before_excess(a, r);
         let mut who: Vec<(String, Option<u64>)> = vec![];
         for (k, w) in &voters {
-            if self.prior_overturns.get(w).copied().unwrap_or(0) >= 1 {
-                // a second confirmed overturn: the whole entry bond, and the arbitrator is out (§12)
+            if self.prior_overturns.get(w).copied().unwrap_or(0) >= 1 && self.review_strong() {
+                // a second confirmed overturn, this one at 80% at every stage: the whole entry bond,
+                // and the arbitrator is out (§12)
                 who.push((w.clone(), None));
             } else if self.released.iter().any(|x| x.0 == *k && x.1 == *w) {
                 // a first offense found after the unit was released: the entry bond pays what the
@@ -1490,12 +1547,9 @@ impl Replay {
     /// What each payout script receives under `v` (the attending-vote payout rules, §9).
     fn paid_under(a: &Alerted, r: &Rostered, v: &Ballot) -> Vec<(u64, ScriptBuf)> {
         let parties = crate::case::terms(a, r).parties;
-        let crate::settle::Decision::Settled(ends) = crate::settle::decide(
-            r.seats.len(),
-            a.template.pots,
-            &a.template,
-            std::slice::from_ref(v),
-        ) else {
+        let crate::settle::Decision::Settled(ends) =
+            crate::settle::decide_panel(r.seats.len(), a.template.pots, &a.template, v)
+        else {
             return vec![];
         };
         let mut m: Vec<(u64, ScriptBuf)> = vec![];
@@ -1698,7 +1752,7 @@ impl Replay {
         prev: &[TxOut],
         i: usize,
     ) -> Option<[u8; 32]> {
-        let (t, _) = seizure_tree(&self.archivists, &self.oracle)?;
+        let (t, _) = seizure_tree(&self.archivists, &self.oracle, &self.parties_key)?;
         Some(txbuild::scriptspend_digest(
             tx,
             i,
@@ -1715,7 +1769,7 @@ impl Replay {
         osig: &[u8; 64],
         arch: &HashMap<XOnlyPublicKey, Vec<u8>>,
     ) -> Option<()> {
-        let (t, pol) = seizure_tree(&self.archivists, &self.oracle)?;
+        let (t, pol) = seizure_tree(&self.archivists, &self.oracle, &self.parties_key)?;
         let mut items: Vec<Vec<u8>> = vec![osig.to_vec()];
         if pol.devices.len() == 1 {
             items.push(arch.get(&pol.devices[0])?.clone());
@@ -1756,6 +1810,7 @@ fn read_tier(
     rpc: &Rpc,
     registry: Option<&HashMap<String, Bond>>,
     payer: Option<&str>,
+    commit_blocks: u32,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -1767,6 +1822,7 @@ fn read_tier(
         t.offers = reg.clone();
     }
     let mut vcommits: HashMap<String, String> = HashMap::new();
+    let mut commit_h: HashMap<String, u32> = HashMap::new();
     for e in mine {
         let s = &e.sender;
         match &e.msg {
@@ -1780,6 +1836,7 @@ fn read_tier(
             } if *tier == k => {
                 if !vcommits.iter().any(|(w, c)| *c == *commitment && w != s) {
                     vcommits.entry(s.clone()).or_insert(commitment.clone());
+                    commit_h.entry(s.clone()).or_insert(e.height);
                 }
             }
             _ => {}
@@ -1813,7 +1870,53 @@ fn read_tier(
             }
         }
     }
-    // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4)
+    // each seat's deadline runs from the block confirming its fee, as live members judge it (§10.4)
+    let fee_amt = if payer.is_some() {
+        base_fee
+    } else {
+        seat_fee(base_fee, k)
+    };
+    let fee_payer = payer.unwrap_or(escalator);
+    let fee_tx_list: Vec<String> = mine
+        .iter()
+        .filter_map(|e| match &e.msg {
+            Msg::FeePaid { tier, txid, .. } if *tier == k && e.sender == fee_payer => Some(txid.clone()),
+            _ => None,
+        })
+        .collect();
+    let offers_now = t.offers.clone();
+    let is_review = registry.is_some();
+    let deadline = |w: &str, seated_at: u32| -> u32 {
+        // a review seat counts from its draw
+        if is_review {
+            return seated_at.saturating_add(commit_blocks);
+        }
+        let paid_at = offers_now.get(w).and_then(|o| {
+            fee_tx_list
+                .iter()
+                .filter(|txid| rpc.paid_to(txid, &o.payout) >= fee_amt)
+                .filter_map(|txid| rpc.tx_height(txid))
+                .min()
+        });
+        paid_at.unwrap_or(seated_at).saturating_add(commit_blocks)
+    };
+    // a commitment stated at or after its seat's deadline does not count, live or in the replay
+    // (review finding D-5)
+    let late: Vec<String> = vcommits
+        .keys()
+        .filter(|w| match (t.seat_height.get(*w), commit_h.get(*w)) {
+            // the fee confirms at or after the draw, so a commit before draw + commit_blocks is in
+            // time without looking the fee up (the lookup is costly in a replay)
+            (Some(sh), Some(ch)) => *ch >= sh + commit_blocks && *ch >= deadline(w, *sh),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    for w in late {
+        vcommits.remove(&w);
+    }
+    // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4); never
+    // before the deadline has passed
     for e in mine {
         if let Msg::Reseated {
             tier,
@@ -1856,7 +1959,14 @@ fn read_tier(
                 }
                 from.clone()
             };
+            // a seat that missed its deadline only; a reviewer that paid its way out leaves at once
+            let due = if from.is_empty() {
+                t.seat_height.get(replaced).map_or(u32::MAX, |h| deadline(replaced, *h))
+            } else {
+                0
+            };
             if !vcommits.contains_key(replaced)
+                && *height >= due
                 && draw(block_hash, case, k, &left, 1) == vec![seat.clone()]
                 && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
             {
@@ -2063,6 +2173,24 @@ pub fn registry_case() -> String {
     hex::encode(tagged("Bitaid/arbitrator-registry", b""))
 }
 
+/// The arbitrators registered by `height`: their first seat offer stated at or before it.
+pub fn registry_at(hist: &[Envelope], height: u32) -> HashMap<String, Bond> {
+    let mut m: HashMap<String, Bond> = HashMap::new();
+    for e in hist {
+        if let Msg::SeatOffer { .. } = &e.msg {
+            if e.height <= height {
+                if let Some(b) = Bond::from_offer(&e.msg) {
+                    m.entry(e.sender.clone()).or_insert(b);
+                }
+            }
+        }
+    }
+    m
+}
+
+/// The entry bond's floor, 0.1 BTC provisional (§2.2, §10.2).
+pub const ENTRY_BOND: u64 = 10_000_000;
+
 /// Every arbitrator the log knows, by its first seat offer (registration or any case): the pool review
 /// panels are drawn from.
 pub fn registry(hist: &[Envelope]) -> HashMap<String, Bond> {
@@ -2203,9 +2331,14 @@ pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
 pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
     let before: Vec<&TierLog> = logs.iter().filter(|l| l.height < height).collect();
     let mut standing: HashMap<&str, (&TierLog, Ballot)> = HashMap::new();
+    // the verdict a confirmed review overturned, per case
+    let mut kept: HashMap<&str, Vec<u8>> = HashMap::new();
     for l in &before {
         // a confirmed review overturns the standing verdict from its last stage on (§10.3)
         if let Some(b) = &l.overturn {
+            if let Some((_, old)) = standing.get(l.case.as_str()) {
+                kept.insert(l.case.as_str(), verdict_key(old));
+            }
             let fin = standing.get(l.case.as_str()).map(|x| x.0).unwrap_or(l);
             standing.insert(l.case.as_str(), (fin, b.clone()));
             continue;
@@ -2228,7 +2361,22 @@ pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
         let hung = !l.review && supermajority(l.seats.len(), &l.reveals.iter().map(|x| x.1.clone()).collect::<Vec<_>>()).is_none();
         for seat in &l.seats {
             if l.review {
-                // a review seat is charged only for a finding it owed and never revealed
+                // a review seat is charged for a finding it owed and never revealed, and, once the
+                // three stages confirm an overturn, for a vote to keep the overturned verdict; a vote
+                // to overturn that was not confirmed is never charged, so a blocking bloc cannot mark
+                // honest reviewers (§10.3, two bars)
+                let kept_vote = kept.get(l.case.as_str()).is_some_and(|ok| {
+                    l.reveals.iter().any(|x| &x.0 == seat && verdict_key(&x.1) == *ok)
+                });
+                if kept_vote {
+                    let mean = if votes > 0 { sum / votes as f64 } else { 0.0 };
+                    if seat == arbitrator {
+                        d = (LAMBDA * d + 1.0 - MARGIN * mean).max(0.0);
+                    }
+                    sum += 1.0;
+                    votes += 1;
+                    continue;
+                }
                 if l.reveals.iter().any(|x| &x.0 == seat) || !l.committers.contains(seat) {
                     continue;
                 }

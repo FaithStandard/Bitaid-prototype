@@ -608,6 +608,15 @@ fn dkg(
     })
 }
 
+/// Where a member records the nonce indices it has attested under (one file per attestation key).
+fn spent_path(key: &MemberKey) -> String {
+    let dir = std::env::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
+        format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into()))
+    });
+    let _ = std::fs::create_dir_all(&dir);
+    format!("{dir}/spent_{}_{}.txt", &hex::encode(key.xonly())[..16], key.id)
+}
+
 impl Member {
     /// This member's FROST commitment for a co-signing session, after checking what it will sign.
     pub fn commit(&self) -> (frost::round1::SigningNonces, String) {
@@ -648,6 +657,29 @@ impl Member {
         let mut msg = *m;
         if self.cfg.liar {
             msg[31] ^= 1;
+        }
+        // the (index, message) record is written to disk before the share leaves: a member that
+        // restarts with its shares must never attest a second message under a used index, which
+        // would reveal its key share (review finding 14)
+        let path = spent_path(&self.key);
+        let line = format!("{index} {}\n", hex::encode(msg));
+        if let Ok(old) = std::fs::read_to_string(&path) {
+            for l in old.lines() {
+                let mut it = l.split(' ');
+                if it.next() == Some(&index.to_string()) && it.next() != Some(&hex::encode(msg)) {
+                    return Err("nonce index already spent on another outcome (on disk)");
+                }
+            }
+        }
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|_| "cannot record the spent nonce")?;
+            f.write_all(line.as_bytes()).map_err(|_| "cannot record the spent nonce")?;
+            f.sync_all().map_err(|_| "cannot record the spent nonce")?;
         }
         let sh = attest::share(&self.key, &mut self.batch, index, &msg)?;
         Ok(serde_json::to_string(&sh).unwrap())

@@ -58,6 +58,48 @@ pub struct Template {
 }
 
 impl Template {
+    /// The protocol's bounds on a caller's template (review finding D-9): a template outside them is
+    /// refused by every checker, so no caller can set a parameter that empties a mechanism. Production
+    /// floors (BITAID_PRODUCTION=1) add the spec's windows and forbid a set review rate.
+    pub fn check(&self) -> Result<(), String> {
+        let dust = bitaid_core::payouts::DUST;
+        if self.pots.iter().any(|p| *p != 0 && *p < dust) {
+            return Err(format!("a non-empty pot below {dust} sats"));
+        }
+        if self.pots.iter().all(|p| *p == 0) {
+            return Err("no pot".into());
+        }
+        if self.intervener_pct > 100 || self.good_faith_pct > 100 {
+            return Err("a share above 100%".into());
+        }
+        if !(1..=12).contains(&self.max_signers) {
+            return Err(format!("{} signers (1 to 12)", self.max_signers));
+        }
+        if self.arb_fee < dust {
+            return Err(format!("arbitration fee below {dust} sats"));
+        }
+        if self.dispute_blocks == 0 || self.commit_blocks == 0 || self.reveal_blocks == 0 {
+            return Err("a window of zero blocks".into());
+        }
+        if self.review_pct.is_some_and(|p| p > 100) {
+            return Err("review rate above 100%".into());
+        }
+        if (self.refund_delay as u64)
+            <= 4 * (self.dispute_blocks as u64 + self.commit_blocks as u64 + self.reveal_blocks as u64)
+        {
+            return Err("refund delay too short for a dispute to finish before it".into());
+        }
+        if crate::production() {
+            if self.dispute_blocks < 288 || self.commit_blocks < 1_008 || self.reveal_blocks < 144 {
+                return Err("windows below the protocol's (288 / 1,008 / 144 blocks)".into());
+            }
+            if self.review_pct.is_some() {
+                return Err("a review rate set by the caller".into());
+            }
+        }
+        Ok(())
+    }
+
     pub fn hash(&self) -> [u8; 32] {
         let mut b = Vec::new();
         ciborium::into_writer(self, &mut b).unwrap();
@@ -178,6 +220,10 @@ pub enum Msg {
         sealed_keys: Vec<String>,
         /// identity keys of the case's archivists: they co-sign the seizure output's distribution (§12)
         archivists: Vec<Hex32>,
+        /// the caller's pot key for this case (MuSig2), fresh per case: not its scoped key, which
+        /// signs only the incident transaction (review finding 16)
+        #[serde(default)]
+        caller_musig: String,
     },
     /// A pool member's confirmation that it checked a roster (every seat accepted with these keys and
     /// payout scripts, bonds on chain, refund height, its own reserved nonces) and will attest under it:
