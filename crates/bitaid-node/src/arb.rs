@@ -407,7 +407,8 @@ impl Bond {
         seizure: &ScriptBuf,
     ) -> (Transaction, [u8; 32]) {
         let t = self.tree(oracle);
-        let outs = if amount >= self.value {
+        // a remainder too small to relay is not re-bonded: it goes to the seizure output too
+        let outs = if amount + bitaid_core::payouts::DUST > self.value {
             vec![(self.value, seizure.clone())]
         } else {
             vec![

@@ -21,7 +21,10 @@ pub struct Parties {
 
 fn by_weights(value: u64, weights: &[u32], to: &[ScriptBuf]) -> Vec<(u64, ScriptBuf)> {
     let total: u64 = weights.iter().map(|&w| w as u64).sum();
-    assert!(total > 0, "weights must not all be zero");
+    if total == 0 {
+        // no weight to pay by (a merit vector of zeros): equal shares, never a panic
+        return by_weights(value, &vec![1; to.len().max(1)], to);
+    }
     let mut shares: Vec<(u64, usize)> = weights
         .iter()
         .enumerate()
@@ -59,8 +62,14 @@ pub fn outputs(ending: &Ending, value: u64, p: &Parties) -> Vec<(u64, ScriptBuf)
         EndingKind::SeizedToHarmed(i) => vec![(value, p.responders[*i].clone())],
         EndingKind::Split(v) => by_weights(value, v, &p.responders),
         EndingKind::GoodFaith(v) => {
-            let paid = value * p.good_faith_pct / 100;
-            let mut o = by_weights(paid, v, &p.responders);
+            let mut paid = value * p.good_faith_pct / 100;
+            // the caller's remainder, or the responders' part, too small to relay is folded into the other
+            if value - paid < DUST {
+                paid = value;
+            } else if paid < DUST {
+                paid = 0;
+            }
+            let mut o = if paid > 0 { by_weights(paid, v, &p.responders) } else { vec![] };
             if value - paid > 0 {
                 o.push((value - paid, p.caller.clone()));
             }
