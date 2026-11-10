@@ -1,0 +1,56 @@
+Bonded links on Bitcoin's public signet, 2026-11-10: the hostile peer (examples/rogue.rs) against a lone Core on
+the PC (WSL), the Core checking every stake against the Windows signet node; two rounds (sh scripts/net_pc.sh
+attack, CHAIN=public). The rogue locked its stakes (1,000 sats each) in one transaction and waited one block.
+
+Round 1: 14 passed, 0 failed. Every attack ran as written.
+Round 2: 14 passed, 0 failed, but against the same Core: the keys round 1 had abused were still banned, so the
+oversized message, the garbage and the flood in round 2 were refused at the proof (the ban working) rather than
+cut by their own limits. The Core's log counts the reasons below.
+
+===== round 1
+gossip: locking 5 link stakes of 1000 sats in one transaction (once; reused while unspent)
+[PASS] rogue a stranger with no stake: its message dropped, the link closed after the proof window
+[PASS] rogue a proof signed over another challenge: refused, link closed
+[PASS] rogue another key's stake claimed: refused, link closed
+[PASS] rogue a proof signed for another Core's address: refused, link closed
+[PASS] rogue control: a staked peer's fresh, validly signed message is forwarded
+[PASS] rogue a message dated two days ago and one dated tomorrow: neither forwarded
+[PASS] rogue replay of a message already seen (72f2c2ed…): not forwarded again
+[PASS] rogue an escalation claiming block 10,000,000 relayed for the nodes to judge (they should log 'refused Escalate')
+[PASS] rogue a 2176 KiB message with no end: link closed
+[PASS] rogue the same key back after its abuse: banned, its link refused at the proof
+[PASS] rogue 1050 lines of garbage: link closed, key banned
+[PASS] rogue flood of validly signed messages: link closed after 21942 sent in 16.4 s (limit: a burst of 20000, then 100/s), key banned
+[PASS] rogue one staked key opening 8 links: 2 kept (at most 2 per key)
+[PASS] rogue 80 connections without a proof (the Core keeps at most 64 incoming): a staked newcomer still accepted and its message forwarded
+[rogue] 14 passed, 0 failed
+
+===== round 2
+[PASS] rogue a stranger with no stake: its message dropped, the link closed after the proof window
+[PASS] rogue a proof signed over another challenge: refused, link closed
+[PASS] rogue another key's stake claimed: refused, link closed
+[PASS] rogue a proof signed for another Core's address: refused, link closed
+[PASS] rogue control: a staked peer's fresh, validly signed message is forwarded
+[PASS] rogue a message dated two days ago and one dated tomorrow: neither forwarded
+[PASS] rogue replay of a message already seen (72f2c2ed…): not forwarded again
+[PASS] rogue an escalation claiming block 10,000,000 relayed for the nodes to judge (they should log 'refused Escalate')
+[PASS] rogue a 1024 KiB message with no end: link closed
+[PASS] rogue the same key back after its abuse: banned, its link refused at the proof
+[PASS] rogue 1050 lines of garbage: link closed, key banned
+[PASS] rogue flood of validly signed messages: link closed after 704 sent in 15.0 s (limit: a burst of 20000, then 100/s), key banned
+[PASS] rogue one staked key opening 8 links: 2 kept (at most 2 per key)
+[PASS] rogue 80 connections without a proof (the Core keeps at most 64 incoming): a staked newcomer still accepted and its message forwarded
+[rogue] 14 passed, 0 failed
+
+===== the Core's reasons for closing links
+      1 gossip: link down (incoming): flooding (new messages above the rate limit); key K banned for 60 min
+      1 gossip: link down (incoming): message longer than the limit; key K banned for 60 min
+      2 gossip: link down (incoming): no proof of stake in time
+     12 gossip: link down (incoming): no valid proof of stake (key K already holds 2 links)
+      5 gossip: link down (incoming): no valid proof of stake (key K banned)
+      2 gossip: link down (incoming): no valid proof of stake (proof signed for another address (elsewhere.onion:7700))
+      2 gossip: link down (incoming): no valid proof of stake (signature does not match the challenge)
+      2 gossip: link down (incoming): no valid proof of stake (stake S: does not pay the key)
+      1 gossip: link down (incoming): too many malformed lines; key K banned for 60 min
+      1 gossip: making room: closing Some(127.0.0.1:64304), still without a proof
+      1 gossip: making room: closing Some(127.0.0.1:64409), still without a proof
