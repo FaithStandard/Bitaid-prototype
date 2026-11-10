@@ -351,6 +351,11 @@ fn pool_member(mut n: Node) -> i32 {
     let mut first_reveal: HashMap<String, u32> = HashMap::new();
     // archivists announced on the log: only these may be named in a roster
     let mut archivists_known: std::collections::HashSet<String> = Default::default();
+    // nonce indices of cases whose incident was never co-signed go back to the batch after
+    // RELEASE_BLOCKS; such a case is never served again (no attestation was ever made under them)
+    let mut reserved_at: HashMap<String, u32> = HashMap::new();
+    let mut released: std::collections::HashSet<String> = Default::default();
+    const RELEASE_BLOCKS: u32 = 144;
     let mut done: std::collections::HashSet<String> = Default::default();
     let mut stalled_once = false;
     let mut retried: std::collections::HashSet<(String, u32)> = Default::default();
@@ -439,6 +444,24 @@ fn pool_member(mut n: Node) -> i32 {
             } else {
                 n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", bitaid_node::pre(&c, 8)));
             }
+        }
+        let tip_r = n.tip();
+        let stale: Vec<String> = reserved_at
+            .iter()
+            .filter(|(c, h)| !cosigned.contains(*c) && tip_r > **h + RELEASE_BLOCKS)
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in stale {
+            reserved_at.remove(&c);
+            if let Some(ix) = assigned.remove(&c) {
+                for j in ix {
+                    if taken.get(&j) == Some(&c) {
+                        taken.remove(&j);
+                    }
+                }
+            }
+            released.insert(c.clone());
+            n.log(&format!("case {}: no incident co-signed in {RELEASE_BLOCKS} blocks; its nonces go back to the batch", bitaid_node::pre(&c, 8)));
         }
         // the reveal window closed with seats still silent: the dispute window starts all the same,
         // and the silent seats count as no agreement (settle::decide takes 80% of the seats)
@@ -603,8 +626,17 @@ fn pool_member(mut n: Node) -> i32 {
                 let Some(a) = alerts.get(case_id) else {
                     continue;
                 };
-                if a.caller != s || indices.len() != 3 || assigned.contains_key(case_id) {
+                if a.caller != s
+                    || indices.len() != 3
+                    || assigned.contains_key(case_id)
+                    || released.contains(case_id)
+                {
                     continue;
+                }
+                // nonces are reserved for a case someone accepted, not for any alert: alerts cost
+                // nothing, so reserving on an alert alone would let anyone drain the batch (finding 13)
+                if accepted.get(case_id).is_none_or(|m| m.is_empty()) {
+                    later!();
                 }
                 // the funding output must stay locked well past the case: a caller whose wallet-alone
                 // fallback is near could race the incident with it (review finding: fallback heights)
@@ -631,6 +663,7 @@ fn pool_member(mut n: Node) -> i32 {
                     taken.insert(*j, case_id.clone());
                 }
                 assigned.insert(case_id.clone(), indices.clone());
+                reserved_at.insert(case_id.clone(), n.tip());
                 let nonces = indices
                     .iter()
                     .map(|j| point_hex(&m.batch.r[*j as usize]))
