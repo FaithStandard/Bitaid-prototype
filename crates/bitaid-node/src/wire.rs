@@ -256,6 +256,15 @@ pub enum Msg {
         member: u16,
         bad: Vec<u16>,
     },
+    /// A dealer's answer to complaints against it: the disputed shares, in the clear, one per member
+    /// that complained (JSON `Shares`). Everyone checks them against the dealer's commitments; a dealer
+    /// is disqualified only if it does not answer or its answer fails. Revealing a complainer's shares
+    /// leaks nothing beyond what that complainer could already reveal itself.
+    PoolNonceReveal {
+        pool: String,
+        dealer: u16,
+        shares: Vec<String>,
+    },
     PoolReady {
         pool: String,
         member: u16,
@@ -451,6 +460,7 @@ impl Msg {
             Msg::PoolNonceCommit { .. } => "pool-nonce-commit",
             Msg::PoolNonceShare { .. } => "pool-nonce-share",
             Msg::PoolNonceStatus { .. } => "pool-nonce-status",
+            Msg::PoolNonceReveal { .. } => "pool-nonce-reveal",
             Msg::PoolReady { .. } => "pool-ready",
             Msg::Incident { .. } => "incident",
             Msg::Evidence { .. } => "evidence",
@@ -485,6 +495,7 @@ impl Msg {
             | Msg::PoolNonceCommit { .. }
             | Msg::PoolNonceShare { .. }
             | Msg::PoolNonceStatus { .. }
+            | Msg::PoolNonceReveal { .. }
             | Msg::PoolReady { .. } => None,
             Msg::Alert { case_id, .. }
             | Msg::Accept { case_id, .. }

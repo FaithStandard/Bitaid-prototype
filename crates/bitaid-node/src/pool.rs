@@ -431,13 +431,19 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
             _ => bad.push(*m),
         }
     }
+    // test only: accuse every other dealer falsely (they must answer, and stay qualified)
+    let accusation = if std::env::var("BITAID_TEST_ACCUSE_ALL").is_ok() {
+        members.iter().copied().filter(|m| *m != me).collect()
+    } else {
+        bad.clone()
+    };
     send_pool(
         n,
         &name,
         Msg::PoolNonceStatus {
             pool: name.clone(),
             member: me,
-            bad: bad.clone(),
+            bad: accusation,
         },
     );
     let statuses = collect_pool(n, &name, cfg.n as usize - 1, cfg.wait, |env| {
@@ -450,9 +456,79 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
             _ => None,
         }
     });
+    // complaints: (complainer, dealer). A dealer is not disqualified on anyone's word: it answers each
+    // complaint by publishing the disputed shares, and only a missing or failing answer disqualifies it
+    // (review finding: one member accusing every other dealer would otherwise be left the only dealer,
+    // knowing every nonce, and the first attestation would give it the pool key)
+    let mut complaints: Vec<(u16, u16)> = bad.iter().map(|d| (me, *d)).collect();
+    for (who, list) in &statuses {
+        for d in list {
+            if d != who && members.contains(d) {
+                complaints.push((*who, *d));
+            }
+        }
+    }
+    let against_me: Vec<u16> = complaints.iter().filter(|c| c.1 == me).map(|c| c.0).collect();
+    if !against_me.is_empty() {
+        let shares = against_me
+            .iter()
+            .map(|to| serde_json::to_string(&dealer.shares_for(*to, 1)).unwrap())
+            .collect();
+        send_pool(
+            n,
+            &name,
+            Msg::PoolNonceReveal {
+                pool: name.clone(),
+                dealer: me,
+                shares,
+            },
+        );
+    }
+    let accused: BTreeSet<u16> = complaints.iter().map(|c| c.1).filter(|d| *d != me).collect();
+    let reveals = if accused.is_empty() {
+        BTreeMap::new()
+    } else {
+        collect_pool(n, &name, accused.len(), cfg.wait, |env| match &env.msg {
+            Msg::PoolNonceReveal { dealer, shares, .. }
+                if accused.contains(dealer) && ids.get(dealer) == Some(&env.sender) =>
+            {
+                let v: Vec<nonces::Shares> =
+                    shares.iter().filter_map(|x| serde_json::from_str(x).ok()).collect();
+                Some((*dealer, v))
+            }
+            _ => None,
+        })
+    };
     let mut qualified: BTreeSet<u16> = members.iter().copied().collect();
-    for b in bad.iter().chain(statuses.values().flatten()) {
-        qualified.remove(b);
+    for (who, d) in &complaints {
+        if *d == me {
+            continue;
+        }
+        let answer = reveals
+            .get(d)
+            .and_then(|v| v.iter().find(|x| x.to == *who && x.dealer == *d))
+            .filter(|x| commits.get(d).map(|c| nonces::verify_share(c, x)).unwrap_or(false));
+        match answer {
+            Some(x) => {
+                // the complaint is answered: the dealer stays; a complainer that is this member now has
+                // its share
+                if *who == me {
+                    received.insert(*d, x.clone());
+                }
+            }
+            None => {
+                qualified.remove(d);
+            }
+        }
+    }
+    // a dealer this member never got valid commitments from cannot count either
+    qualified.retain(|d| commits.contains_key(d));
+    if qualified.len() < cfg.t as usize {
+        return Err(format!(
+            "only {} qualified nonce dealers (at least {} needed); the batch is dealt again",
+            qualified.len(),
+            cfg.t
+        ));
     }
     let batch = nonces::finish(me, &members, &commits, &received, &qualified);
     let public_hex = hex::encode(key.public.serialize().unwrap());
