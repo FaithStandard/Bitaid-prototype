@@ -7,6 +7,15 @@
 /// block is fixed by the escalation, so no one can try blocks until one suits them, and its hash is
 /// unknown when the escalation is published. Offers stated up to two blocks before it are all drawn
 /// from. BITAID_DRAW_BLOCKS sets it (default 3).
+/// A prefix of a peer-supplied string for logs: never panics on short or non-ASCII input.
+pub fn pre(s: &str, n: usize) -> &str {
+    let mut i = n.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    &s[..i]
+}
+
 pub fn draw_blocks() -> u32 {
     std::env::var("BITAID_DRAW_BLOCKS")
         .ok()

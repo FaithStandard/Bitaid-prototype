@@ -100,6 +100,9 @@ impl Alerted {
         if spk != tree.script_pubkey() {
             return Err("funding output's script is not the registered one".into());
         }
+        if bitcoin::bip32::Xpub::from_str(&rt.refund_xpub).is_err() {
+            return Err("template's refund xpub does not parse".into());
+        }
         let total: u64 = rt.pots.iter().sum();
         if v != total || v != funding_value {
             return Err(format!(

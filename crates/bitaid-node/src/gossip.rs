@@ -39,8 +39,14 @@ pub const KEEP_SECS: u64 = 86_400;
 pub const MAX_LINE: usize = 2 << 20;
 /// Message ids remembered for de-duplication (oldest forgotten first).
 pub const MAX_SEEN: usize = 200_000;
-/// Messages kept to replay to peers that connect later (oldest dropped first).
+/// Messages kept to replay to peers that connect later.
 pub const MAX_STORE: usize = 50_000;
+/// Bytes those messages may take in all.
+pub const MAX_STORE_BYTES: usize = 256 << 20;
+/// Bytes of the log one source (the link that first brought a message, or this node) may hold.
+/// When the log is full, the source holding the most loses its oldest first: a peer flooding its
+/// own messages pushes out its own, never the cases and history other links brought.
+pub const MAX_SOURCE_BYTES: usize = 32 << 20;
 /// Incoming links at once; when full, the least useful established one makes room.
 pub const MAX_IN: usize = 64;
 /// A message dated further than this in the future is refused.
@@ -56,6 +62,8 @@ pub const PROOF_SECS: u64 = 30;
 pub const PER_KEY: usize = 2;
 /// How long a key cut for abuse is refused.
 pub const BAN_SECS: u64 = 3_600;
+/// How often a proven link's stake is checked again: a stake spent after the proof ends the link.
+pub const RECHECK_SECS: u64 = 600;
 
 /// What a dialling node proves with: its link key and the outpoint (`txid:vout`) of its stake.
 #[derive(Clone)]
@@ -144,10 +152,96 @@ struct Link {
     authed: bool,
 }
 
+/// The log of recent messages, accounted per source.
+#[derive(Default)]
+pub struct Store {
+    items: HashMap<String, (Event, Arc<str>, String)>,
+    /// ids in arrival order (entries already dropped are skipped and compacted away)
+    order: VecDeque<String>,
+    by_src: HashMap<String, VecDeque<String>>,
+    src_bytes: HashMap<String, usize>,
+    bytes: usize,
+    last_sweep: u64,
+}
+
+impl Store {
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+    /// The kept messages, oldest first.
+    pub fn iter(&self) -> impl Iterator<Item = (&Event, &Arc<str>)> {
+        self.order.iter().filter_map(|id| self.items.get(id).map(|x| (&x.0, &x.1)))
+    }
+    fn remove(&mut self, id: &str) {
+        if let Some((_, l, src)) = self.items.remove(id) {
+            self.bytes -= l.len();
+            if let Some(b) = self.src_bytes.get_mut(&src) {
+                *b -= l.len();
+                if *b == 0 {
+                    self.src_bytes.remove(&src);
+                    self.by_src.remove(&src);
+                }
+            }
+        }
+    }
+    /// Drops the oldest message of `src`.
+    fn drop_oldest(&mut self, src: &str) {
+        while let Some(id) = self.by_src.get_mut(src).and_then(|q| q.pop_front()) {
+            if self.items.contains_key(&id) {
+                self.remove(&id);
+                return;
+            }
+        }
+        self.src_bytes.remove(src);
+        self.by_src.remove(src);
+    }
+    pub fn insert(&mut self, e: Event, line: Arc<str>, src: &str, t: u64) {
+        let n = line.len();
+        self.order.push_back(e.id.clone());
+        self.by_src.entry(src.into()).or_default().push_back(e.id.clone());
+        *self.src_bytes.entry(src.into()).or_default() += n;
+        self.bytes += n;
+        self.items.insert(e.id.clone(), (e, line, src.into()));
+        while self.src_bytes.get(src).copied().unwrap_or(0) > MAX_SOURCE_BYTES {
+            self.drop_oldest(src);
+        }
+        while self.bytes > MAX_STORE_BYTES || self.items.len() > MAX_STORE {
+            let Some(big) = self.src_bytes.iter().max_by_key(|x| *x.1).map(|x| x.0.clone()) else {
+                break;
+            };
+            self.drop_oldest(&big);
+        }
+        // messages past the replay window go, swept at most once a minute
+        if t >= self.last_sweep + 60 {
+            self.last_sweep = t;
+            let cutoff = t.saturating_sub(KEEP_SECS);
+            let old: Vec<String> = self
+                .items
+                .iter()
+                .filter(|x| x.1 .0.created_at < cutoff)
+                .map(|x| x.0.clone())
+                .collect();
+            for id in old {
+                self.remove(&id);
+            }
+        }
+        if self.order.len() > 2 * self.items.len() + 1_000 {
+            let items = &self.items;
+            self.order.retain(|id| items.contains_key(id));
+            for q in self.by_src.values_mut() {
+                q.retain(|id| items.contains_key(id));
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     seen: Bounded,
-    store: VecDeque<(Event, Arc<str>)>,
+    store: Store,
     links: HashMap<u64, Link>,
     next: u64,
     /// incoming links accepted, counted from the moment of accepting (before the link's thread has
@@ -243,7 +337,7 @@ pub fn dial(addr: &str, socks: Option<&str>) -> std::io::Result<TcpStream> {
     }
 }
 
-fn admit(shared: &Arc<Mutex<Shared>>, e: &Event) -> Admit {
+fn admit(shared: &Arc<Mutex<Shared>>, e: &Event, src: &str) -> Admit {
     let mut g = shared.lock().unwrap();
     if g.seen.contains(&e.id) {
         return Admit::Seen;
@@ -256,17 +350,7 @@ fn admit(shared: &Arc<Mutex<Shared>>, e: &Event) -> Admit {
     }
     g.seen.insert(e.id.clone());
     let line: Arc<str> = serde_json::to_string(e).unwrap().into();
-    g.store.push_back((e.clone(), line.clone()));
-    let cutoff = t.saturating_sub(KEEP_SECS);
-    while g
-        .store
-        .front()
-        .map(|x| x.0.created_at < cutoff)
-        .unwrap_or(false)
-        || g.store.len() > MAX_STORE
-    {
-        g.store.pop_front();
-    }
+    g.store.insert(e.clone(), line.clone(), src, t);
     Admit::New(line)
 }
 
@@ -336,7 +420,7 @@ fn check_proof(
     d: &Demand,
     challenge: &[u8; 32],
     line: &[u8],
-) -> Result<String, String> {
+) -> Result<(String, XOnlyPublicKey, String), String> {
     let v: serde_json::Value = serde_json::from_slice(line).map_err(|_| "not a proof".to_string())?;
     let p = v.get("proof").ok_or("not a proof")?;
     let field = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -360,11 +444,11 @@ fn check_proof(
         let g = shared.lock().unwrap();
         if let Some(t) = g.banned.get(&key) {
             if Instant::now() < *t {
-                return Err(format!("key {} banned", &key[..8]));
+                return Err(format!("key {} banned", crate::pre(&key, 8)));
             }
         }
         if g.per_key.get(&key).copied().unwrap_or(0) >= PER_KEY {
-            return Err(format!("key {} already holds {PER_KEY} links", &key[..8]));
+            return Err(format!("key {} already holds {PER_KEY} links", crate::pre(&key, 8)));
         }
     }
     (d.verify)(&xk, &stake).map_err(|e| format!("stake {stake}: {e}"))?;
@@ -372,10 +456,10 @@ fn check_proof(
     // checked again under the lock: two links of one key proving at once
     let n = g.per_key.entry(key.clone()).or_insert(0);
     if *n >= PER_KEY {
-        return Err(format!("key {} already holds {PER_KEY} links", &key[..8]));
+        return Err(format!("key {} already holds {PER_KEY} links", crate::pre(&key, 8)));
     }
     *n += 1;
-    Ok(key)
+    Ok((key, xk, stake))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -434,7 +518,7 @@ fn run_link(
     let (otx, orx) = sync_channel::<Arc<str>>(MAX_STORE + 10_000);
     let replay = |g: &Shared, tx: &SyncSender<Arc<str>>| {
         // the recent log first, so a peer that connects late catches up
-        for (_, l) in &g.store {
+        for (_, l) in g.store.iter() {
             let _ = tx.try_send(l.clone());
         }
     };
@@ -497,8 +581,28 @@ fn run_link(
                 continue;
             }
             match check_proof(&shared, d, &challenge, &buf) {
-                Ok(k) => {
+                Ok((k, xk, stake)) => {
                     key = Some(k);
+                    // the stake is checked again while the link lasts: spending it ends the link
+                    if let Ok(st) = s.try_clone() {
+                        let (sh, verify) = (shared.clone(), d.verify.clone());
+                        std::thread::spawn(move || loop {
+                            std::thread::sleep(Duration::from_secs(RECHECK_SECS));
+                            if !sh.lock().unwrap().links.contains_key(&id) {
+                                return;
+                            }
+                            // twice, a minute apart: a passing hiccup of the chain backend is not a spend
+                            let failed = verify(&xk, &stake).is_err() && {
+                                std::thread::sleep(Duration::from_secs(60));
+                                verify(&xk, &stake).is_err()
+                            };
+                            if let (true, Err(e)) = (failed, verify(&xk, &stake)) {
+                                eprintln!("gossip: link {id}: stake {stake} no longer holds ({e}); closing");
+                                let _ = st.shutdown(std::net::Shutdown::Both);
+                                return;
+                            }
+                        });
+                    }
                     break String::new();
                 }
                 Err(e) => break format!(": no valid proof of stake ({e})"),
@@ -513,7 +617,7 @@ fn run_link(
                 l.authed = true;
             }
             drop(g);
-            eprintln!("gossip: link up ({label}), key {}", &key.as_ref().unwrap()[..16]);
+            eprintln!("gossip: link up ({label}), key {}", crate::pre(key.as_deref().unwrap_or(""), 16));
         }
     } else {
         eprintln!("gossip: link up ({label})");
@@ -547,7 +651,7 @@ fn run_link(
                     continue;
                 }
             };
-            let line = match admit(&shared, &e) {
+            let line = match admit(&shared, &e, key.as_deref().unwrap_or(&label)) {
                 Admit::Seen => continue,
                 Admit::Invalid => {
                     junk += 1;
@@ -600,7 +704,7 @@ fn run_link(
     // reading, and would otherwise hold the socket (and itself) open for ever
     let _ = s.shutdown(std::net::Shutdown::Both);
     let banned = match (&key, abuse) {
-        (Some(k), true) => format!("; key {} banned for {} min", &k[..16], BAN_SECS / 60),
+        (Some(k), true) => format!("; key {} banned for {} min", crate::pre(&k, 16), BAN_SECS / 60),
         _ => String::new(),
     };
     eprintln!("gossip: link down ({label}){why}{banned}");
@@ -702,7 +806,7 @@ impl Gossip {
 
     /// Sends to every link, and to this node's own subscriptions (as a relay echoes).
     pub fn publish(&self, e: &Event) {
-        if let Admit::New(line) = admit(&self.shared, e) {
+        if let Admit::New(line) = admit(&self.shared, e, "self") {
             forward(&self.shared.lock().unwrap(), &line, None);
             let _ = self.tx.send(e.clone());
         }
@@ -751,5 +855,64 @@ impl Gossip {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(id: usize, t: u64, size: usize) -> (Event, Arc<str>) {
+        let e = Event {
+            id: format!("{id:064x}"),
+            pubkey: String::new(),
+            created_at: t,
+            kind: 1,
+            tags: vec![],
+            content: "x".repeat(size),
+            sig: String::new(),
+        };
+        let l: Arc<str> = serde_json::to_string(&e).unwrap().into();
+        (e, l)
+    }
+
+    #[test]
+    fn a_flooding_source_pushes_out_only_its_own() {
+        let t = now();
+        let mut s = Store::default();
+        for i in 0..100 {
+            let (e, l) = ev(i, t, 1_000);
+            s.insert(e, l, "honest", t);
+        }
+        // one source sends far past the log's whole byte budget, in big messages
+        for i in 100..(100 + (MAX_STORE_BYTES / (1 << 20)) * 3) {
+            let (e, l) = ev(i, t, 1 << 20);
+            s.insert(e, l, "flooder", t);
+        }
+        assert!(s.bytes <= MAX_STORE_BYTES);
+        assert!(s.src_bytes["flooder"] <= MAX_SOURCE_BYTES);
+        assert_eq!(s.src_bytes["honest"], s.by_src["honest"].len() * s.iter().next().unwrap().1.len());
+        assert_eq!(s.by_src["honest"].len(), 100, "the honest history stays");
+        // many sources at once: the log stays within budget and the honest one still keeps its own
+        for k in 0..20 {
+            for i in 0..40 {
+                let (e, l) = ev(10_000 + k * 100 + i, t, 1 << 20);
+                s.insert(e, l, &format!("flood{k}"), t);
+            }
+        }
+        assert!(s.bytes <= MAX_STORE_BYTES);
+        assert_eq!(s.by_src["honest"].len(), 100);
+    }
+
+    #[test]
+    fn old_messages_leave_the_log() {
+        let t = now();
+        let mut s = Store::default();
+        let (e, l) = ev(1, t - KEEP_SECS - 10, 10);
+        s.insert(e, l, "a", t - 120);
+        let (e, l) = ev(2, t, 10);
+        s.insert(e, l, "a", t);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.iter().next().unwrap().0.id, format!("{:064x}", 2));
     }
 }

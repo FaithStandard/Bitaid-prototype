@@ -48,6 +48,16 @@ impl Net {
 /// Bounds on what a hostile peer can make a node hold (see `gossip` for the link-level limits).
 pub const MAX_BACKLOG: usize = 20_000;
 pub const MAX_LOCKED: usize = 5_000;
+
+/// The position of the oldest entry of the author holding the most entries.
+fn oldest_of_busiest<'a>(mut authors: impl Iterator<Item = &'a str> + Clone) -> usize {
+    let mut count: HashMap<&str, usize> = HashMap::new();
+    for a in authors.clone() {
+        *count.entry(a).or_default() += 1;
+    }
+    let busiest = count.into_iter().max_by_key(|x| x.1).map(|x| x.0).unwrap_or("");
+    authors.position(|a| a == busiest).unwrap_or(0)
+}
 pub const MAX_HISTORY: usize = 100_000;
 /// Blocks a sender's claimed height may run ahead of this node's chain.
 pub const MAX_AHEAD: u32 = 6;
@@ -454,7 +464,8 @@ impl Node {
                     // a case this node holds no key for (yet): kept, within a bound, in case the key arrives
                     self.locked.push(e.clone());
                     if self.locked.len() > MAX_LOCKED {
-                        self.locked.remove(0);
+                        let i = oldest_of_busiest(self.locked.iter().map(|x| x.pubkey.as_str()));
+                        self.locked.remove(i);
                     }
                     return None;
                 }
@@ -492,7 +503,11 @@ impl Node {
         Some(env)
     }
 
-    pub fn add_case_key(&mut self, case: &str, key: [u8; 32]) {
+    pub fn add_case_key(&mut self, case: &str, key: impl AsRef<[u8]>) {
+        let Ok(key) = <[u8; 32]>::try_from(key.as_ref()) else {
+            self.log(&format!("case {}: unsealed key has the wrong length; ignored", crate::pre(case, 8)));
+            return;
+        };
         self.case_keys.insert(case.into(), key);
         let locked = std::mem::take(&mut self.locked);
         for e in locked {
@@ -522,12 +537,14 @@ impl Node {
         self.push_backlog(env, e);
     }
 
-    /// The mailbox is bounded: past MAX_BACKLOG the oldest unhandled message is dropped, so a flood
-    /// of well-formed messages nobody acts on cannot grow it without end.
+    /// The mailbox is bounded: past MAX_BACKLOG the oldest unhandled message of the sender holding
+    /// the most is dropped, so a flood of well-formed messages nobody acts on cannot grow it without
+    /// end, nor push out what other senders sent.
     fn push_backlog(&mut self, env: Envelope, e: Event) {
         self.backlog.push_back((env, e));
         while self.backlog.len() > MAX_BACKLOG {
-            self.backlog.pop_front();
+            let i = oldest_of_busiest(self.backlog.iter().map(|x| x.1.pubkey.as_str()));
+            self.backlog.remove(i);
         }
     }
 

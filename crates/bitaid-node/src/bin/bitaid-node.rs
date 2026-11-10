@@ -273,7 +273,7 @@ fn main() {
         "{} on {} link(s), identity {}",
         role,
         node.client.relay_count(),
-        &node.me()[..16]
+        bitaid_node::pre(&node.me(), 16)
     ));
     let code = match role.as_str() {
         // a Core that only carries gossip: the hub other Cores and apps dial
@@ -400,7 +400,7 @@ fn pool_member(mut n: Node) -> i32 {
             deadlock_at.remove(&c);
             n.log(&format!(
                 "case {}: no party re-rolled the hung tier; the deadlock stands (refund path)",
-                &c[..8]
+                bitaid_node::pre(&c, 8)
             ));
             n.send_case(&c, &[], Msg::Deadlock { case_id: c.clone() }, false);
         }
@@ -418,18 +418,18 @@ fn pool_member(mut n: Node) -> i32 {
             if verdicts.contains_key(&c) {
                 n.log(&format!(
                     "case {}: the escalation was never seated and lapses; the last verdict stands",
-                    &c[..8]
+                    bitaid_node::pre(&c, 8)
                 ));
                 ready_at.insert(c.clone(), 0);
             } else if let Some(h) = consent {
                 // the ballots had settled it: deemed consent comes back, at the height it had
                 n.log(&format!(
                     "case {}: the escalation was never seated and lapses; deemed consent stands (block {h})",
-                    &c[..8]
+                    bitaid_node::pre(&c, 8)
                 ));
                 ready_at.insert(c.clone(), h);
             } else {
-                n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", &c[..8]));
+                n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", bitaid_node::pre(&c, 8)));
             }
         }
         // deemed consent: every seat revealed and the dispute window has passed; each member reads
@@ -457,7 +457,7 @@ fn pool_member(mut n: Node) -> i32 {
                     if verdicts.get(&c).map(arb::verdict_key) != Some(arb::verdict_key(&v)) {
                         n.log(&format!(
                             "case {}: the record's final ruling is tier {ft}'s {}; attesting that",
-                            &c[..8],
+                            bitaid_node::pre(&c, 8),
                             verdict_classes(&v)
                         ));
                     }
@@ -501,13 +501,13 @@ fn pool_member(mut n: Node) -> i32 {
                     // an arbitrated case: replay it now, so co-signing its penalties later is immediate
                     if verdicts.contains_key(&c) {
                         let list = arb_due(&n, a, r);
-                        n.log(&format!("case {}: the final ruling calls for {} co-signature(s) on forfeitures and the seizure distribution", &c[..8], list.len()));
+                        n.log(&format!("case {}: the final ruling calls for {} co-signature(s) on forfeitures and the seizure distribution", bitaid_node::pre(&c, 8), list.len()));
                         due_arb.insert(c.clone(), list);
                     }
                     done.insert(c);
                 }
                 Decision::Escalate(why) => {
-                    n.log(&format!("case {}: escalation needed: {why}", &c[..8]))
+                    n.log(&format!("case {}: escalation needed: {why}", bitaid_node::pre(&c, 8)))
                 }
             }
         }
@@ -552,7 +552,7 @@ fn pool_member(mut n: Node) -> i32 {
                 Ok(a) => {
                     n.log(&format!(
                         "alert {} in cell {} checked",
-                        &a.case_hex[..8],
+                        bitaid_node::pre(&a.case_hex, 8),
                         a.cell
                     ));
                     alerts.insert(a.case_hex.clone(), a);
@@ -571,7 +571,7 @@ fn pool_member(mut n: Node) -> i32 {
                 if a.fallback_height < n.rpc.height() + funding_margin() {
                     n.log(&format!(
                         "alert {}: its funding fallback (block {}) is too near; no nonces reserved",
-                        &case_id[..8],
+                        bitaid_node::pre(&case_id, 8),
                         a.fallback_height
                     ));
                     continue;
@@ -608,7 +608,7 @@ fn pool_member(mut n: Node) -> i32 {
                 );
                 n.log(&format!(
                     "nonces {indices:?} reserved for {}",
-                    &case_id[..8]
+                    bitaid_node::pre(&case_id, 8)
                 ));
             }
             Msg::Accept {
@@ -645,7 +645,7 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log(&format!(
                         "roster v{} for {} refused: the incident is already co-signed",
                         r.set_version,
-                        &case_id[..8]
+                        bitaid_node::pre(&case_id, 8)
                     ));
                     continue;
                 }
@@ -664,7 +664,7 @@ fn pool_member(mut n: Node) -> i32 {
                     bitaid_node::sats(BOND_FLOOR),
                     fallback_blocks() / 2,
                 ) {
-                    n.log(&format!("roster v{} for {} refused: {e}", r.set_version, &case_id[..8]));
+                    n.log(&format!("roster v{} for {} refused: {e}", r.set_version, bitaid_node::pre(&case_id, 8)));
                     continue;
                 }
                 // the roster must use the nonces this member reserved for the case
@@ -683,7 +683,7 @@ fn pool_member(mut n: Node) -> i32 {
                     if let Some(key) =
                         wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
                     {
-                        n.add_case_key(case_id, key.try_into().unwrap());
+                        n.add_case_key(case_id, key);
                     }
                 }
                 commits.remove(case_id);
@@ -729,14 +729,14 @@ fn pool_member(mut n: Node) -> i32 {
                     // asked again in a later session (the requester retries when too few members
                     // committed in time): already checked, so answered at once — a replay over a slow
                     // link takes longer than a session waits
-                    n.log(&format!("co-signing again for {} (checked before)", &case_id[..8]));
+                    n.log(&format!("co-signing again for {} (checked before)", bitaid_node::pre(&case_id, 8)));
                     *d
                 } else if let Some((d, what)) = (!done.contains(case_id))
                     .then(|| seat_forfeit_due(&n, a, r, &t, *input, &vcommits, &fee_at, n.rpc.height()))
                     .flatten()
                 {
                     // a seat that missed its commit deadline: its seat forfeiture refunds the fee
-                    n.log(&format!("co-signing {what} for {}", &case_id[..8]));
+                    n.log(&format!("co-signing {what} for {}", bitaid_node::pre(&case_id, 8)));
                     d
                 } else if done.contains(case_id) {
                     // after the case is final: a forfeiture or the seizure distribution, only if this
@@ -752,7 +752,7 @@ fn pool_member(mut n: Node) -> i32 {
                         .cloned()
                     {
                         Some((_, _, d, what)) => {
-                            n.log(&format!("co-signing {what} for {}", &case_id[..8]));
+                            n.log(&format!("co-signing {what} for {}", bitaid_node::pre(&case_id, 8)));
                             d
                         }
                         None => {
@@ -789,16 +789,16 @@ fn pool_member(mut n: Node) -> i32 {
                                 .find(|x| x.0 == id && x.1 == *input as usize)
                                 .cloned()
                             {
-                                n.log(&format!("co-signing {what} for {}", &case_id[..8]));
+                                n.log(&format!("co-signing {what} for {}", bitaid_node::pre(&case_id, 8)));
                                 d
                             } else {
                                 match rel.iter().find(|x| x.3.compute_txid() == id && *input == 0) {
                                     Some((k, w, b, _, d)) => {
                                         n.log(&format!(
                                         "co-signing the release of {}'s tier-{k} unit ({} sats) for {}: the case is closed and its review let it go",
-                                        &w[..8],
+                                        bitaid_node::pre(&w, 8),
                                         b.value,
-                                        &case_id[..8]
+                                        bitaid_node::pre(&case_id, 8)
                                     ));
                                         *d
                                     }
@@ -868,7 +868,7 @@ fn pool_member(mut n: Node) -> i32 {
                         );
                         n.log(&format!(
                             "co-signed for {} (session {session})",
-                            &case_id[..8]
+                            bitaid_node::pre(&case_id, 8)
                         ));
                     }
                     Err(why) => n.log(&format!("session {session}: {why}")),
@@ -900,7 +900,7 @@ fn pool_member(mut n: Node) -> i32 {
                     if age < bitaid_node::slow(3600) {
                         deferred.push((Instant::now() + Duration::from_secs(10), env.clone(), ev.clone()));
                     } else {
-                        n.log(&format!("case {}: escalation to tier {tier} by {} ignored: neither a party nor a dissenter of the tier below", &case_id[..8], &s[..8]));
+                        n.log(&format!("case {}: escalation to tier {tier} by {} ignored: neither a party nor a dissenter of the tier below", bitaid_node::pre(&case_id, 8), bitaid_node::pre(&s, 8)));
                     }
                     continue;
                 }
@@ -910,7 +910,7 @@ fn pool_member(mut n: Node) -> i32 {
                 if challenger {
                     n.log(&format!(
                         "case {}: a dissenter of the tier below opens tier {tier}",
-                        &case_id[..8]
+                        bitaid_node::pre(&case_id, 8)
                     ));
                 }
                 // an escalation whose panel is never seated lapses, and the verdict below stands
@@ -935,7 +935,7 @@ fn pool_member(mut n: Node) -> i32 {
                 {
                     n.log(&format!(
                         "case {}: escalation to tier {tier} refused: it states block {h0}, its draw block is already mined",
-                        &case_id[..8]
+                        bitaid_node::pre(&case_id, 8)
                     ));
                     continue;
                 }
@@ -944,8 +944,8 @@ fn pool_member(mut n: Node) -> i32 {
                 deadlock_at.remove(case_id);
                 n.log(&format!(
                     "case {} escalated to tier {tier} by {}",
-                    &case_id[..8],
-                    &s[..8]
+                    bitaid_node::pre(&case_id, 8),
+                    bitaid_node::pre(&s, 8)
                 ));
             }
             Msg::SeatOffer {
@@ -1073,8 +1073,8 @@ fn pool_member(mut n: Node) -> i32 {
                         fees_ok.remove(&key);
                         n.log(&format!(
                             "tier {tier}: {} replaced by {} (seat forfeit; replacement drawn)",
-                            &replaced[..8],
-                            &seat[..8]
+                            bitaid_node::pre(&replaced, 8),
+                            bitaid_node::pre(&seat, 8)
                         ));
                     }
                     // the panel or the forfeiture behind it not yet verifiable here: looked at again
@@ -1136,7 +1136,7 @@ fn pool_member(mut n: Node) -> i32 {
                     if late {
                         n.log(&format!(
                             "tier {tier}: the commit of {} came after its deadline; not counted",
-                            &s[..8]
+                            bitaid_node::pre(&s, 8)
                         ));
                         continue;
                     }
@@ -1234,7 +1234,7 @@ fn pool_member(mut n: Node) -> i32 {
                             .map(|x| &x.0)
                             .collect();
                         for d in &dissenters {
-                            n.log(&format!("tier {tier}: dissenter {} owes {:.1}× the fee (provisional until the final ruling)", &d[..8], bitaid_node::arb::penalty_factor(seats.len(), dissenters.len())));
+                            n.log(&format!("tier {tier}: dissenter {} owes {:.1}× the fee (provisional until the final ruling)", bitaid_node::pre(&d, 8), bitaid_node::arb::penalty_factor(seats.len(), dissenters.len())));
                         }
                         verdicts.insert(case_id.clone(), v.clone());
                         n.log(&format!("tier {tier} verdict {} committed on chain in block {ch}; final at block {} unless appealed", verdict_classes(&v), ch + w));
@@ -1292,7 +1292,7 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log(&format!(
                         "all {} ballots revealed for {}; deemed consent at block {h} unless escalated",
                         rv.len(),
-                        &case_id[..8]
+                        bitaid_node::pre(&case_id, 8)
                     ));
                     ready_at.insert(case_id.clone(), h);
                 }
@@ -1308,7 +1308,7 @@ fn archivist(mut n: Node) -> i32 {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             // the system temporary folder (TMPDIR), which on Android/Termux is not /tmp
-            std::env::temp_dir().join(format!("bitaid-archive-{}", &n.me()[..8]))
+            std::env::temp_dir().join(format!("bitaid-archive-{}", bitaid_node::pre(&n.me(), 8)))
         });
     let srv = blossom::spawn(&listen, dir, blossom::Policy::default()).expect("listen");
     let port = srv.url.rsplit(':').next().unwrap_or("7480").to_string();
@@ -1381,7 +1381,7 @@ fn archivist(mut n: Node) -> i32 {
                         if t.elapsed() > secs(5) {
                             n.log(&format!(
                                 "review check of {} took {:.1} s",
-                                &c[..8],
+                                bitaid_node::pre(&c, 8),
                                 t.elapsed().as_secs_f64()
                             ));
                         }
@@ -1395,7 +1395,7 @@ fn archivist(mut n: Node) -> i32 {
         match &env.msg {
             Msg::Alert { case_id, .. } => {
                 srv.policy.allow(case_id, &env.sender);
-                n.log(&format!("live case {}: caller may upload", &case_id[..8]));
+                n.log(&format!("live case {}: caller may upload", bitaid_node::pre(&case_id, 8)));
                 if let Ok(a) = Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &okey) {
                     alerts.insert(a.case_hex.clone(), a);
                 }
@@ -1412,7 +1412,7 @@ fn archivist(mut n: Node) -> i32 {
                 }
                 n.log(&format!(
                     "case {}: {} seated responders may upload",
-                    &case_id[..8],
+                    bitaid_node::pre(&case_id, 8),
                     seats.len()
                 ));
                 if alerts
@@ -1430,7 +1430,7 @@ fn archivist(mut n: Node) -> i32 {
                                 &k,
                             )
                         }) {
-                            n.add_case_key(case_id, k.try_into().unwrap());
+                            n.add_case_key(case_id, k);
                         }
                     }
                     if let Some(r) = Rostered::from_msg(&env.msg) {
@@ -1485,8 +1485,8 @@ fn archivist(mut n: Node) -> i32 {
                         .serialize();
                     n.log(&format!(
                         "signed the move of {}'s seized entry bond into the seizure output of {}",
-                        &w[..8],
-                        &case_id[..8]
+                        bitaid_node::pre(&w, 8),
+                        bitaid_node::pre(&case_id, 8)
                     ));
                     n.send_case(
                         case_id,
@@ -1535,7 +1535,7 @@ fn archivist(mut n: Node) -> i32 {
                     .collect();
                 n.log(&format!(
                     "signed the seizure distribution of {} ({} inputs, {} sats from {} forfeitures)",
-                    &case_id[..8],
+                    bitaid_node::pre(&case_id, 8),
                     sigs.len(),
                     pens.iter().map(|p| p.amount).sum::<u64>(),
                     pens.len()
@@ -2169,7 +2169,7 @@ fn escalate_tier(
         if arb::inactive(&n.history, n.rpc.height() + 1).contains(&who) {
             n.log(&format!(
                 "seat offer from {} refused: suspended for inactivity",
-                &who[..8]
+                bitaid_node::pre(&who, 8)
             ));
             continue;
         }
@@ -2187,7 +2187,7 @@ fn escalate_tier(
             Some(b) => offers.push((who, b.payout.clone(), b)),
             _ => n.log(&format!(
                 "seat offer from {} refused: entry bond missing or below the floor",
-                &who[..8]
+                bitaid_node::pre(&who, 8)
             )),
         }
     }
@@ -2451,8 +2451,8 @@ fn escalate_tier(
                     &format!(
                         "review stage {}: reviewer {} never committed; {} drawn in its place",
                         tier - arb::REVIEW_BASE,
-                        &m[..8],
-                        &new[..8]
+                        bitaid_node::pre(&m, 8),
+                        bitaid_node::pre(&new, 8)
                     ),
                     true,
                     "",
@@ -2461,7 +2461,7 @@ fn escalate_tier(
             }
             let Some((stake, sig)) = stakes.get(&m).cloned() else {
                 n.check(
-                    &format!("tier {tier}: seat forfeiture of {}", &m[..8]),
+                    &format!("tier {tier}: seat forfeiture of {}", bitaid_node::pre(&m, 8)),
                     false,
                     "no pre-signed seat forfeiture",
                 );
@@ -2478,7 +2478,7 @@ fn escalate_tier(
             n.check(
                 &format!(
                     "tier {tier}: arbitrator {} missed its commit deadline (block {}); its seat forfeiture refunded the {fee}-sat fee to the payer, co-signed by the pool",
-                    &m[..8],
+                    bitaid_node::pre(&m, 8),
                     since.get(&m).copied().unwrap_or(h) + cb
                 ),
                 res.is_ok(),
@@ -2560,7 +2560,7 @@ fn escalate_tier(
                         false,
                     );
                     n.check(
-                        &format!("tier {tier}: replacement {} drawn from the {} offers left by block {h}, staked, pre-signed and paid", &new[..8], left.len()),
+                        &format!("tier {tier}: replacement {} drawn from the {} offers left by block {h}, staked, pre-signed and paid", bitaid_node::pre(&new, 8), left.len()),
                         stakes.contains_key(&new),
                         &txid.to_string()[..16],
                     );
@@ -2809,7 +2809,7 @@ fn seat_forfeit_due(
                 d,
                 format!(
                     "the seat forfeiture of {} on tier {k} (no vote by the deadline)",
-                    &seat[..8]
+                    bitaid_node::pre(&seat, 8)
                 ),
             ));
         }
@@ -2836,7 +2836,7 @@ fn arb_due(n: &Node, a: &Alerted, r: &Rostered) -> Vec<(bitcoin::Txid, usize, [u
                     "the forfeiture of {} sats ({:.1}× the fee) from the bond of {}",
                     p.amount,
                     p.step as f64 / 10.0,
-                    &p.arbitrator[..8]
+                    bitaid_node::pre(&p.arbitrator, 8)
                 ),
             )
         })
@@ -2985,7 +2985,7 @@ fn release_units(
         n.check(
             &format!(
                 "case {}: review draw at block {} ({}% for a {} final panel): {}",
-                &c[..8],
+                bitaid_node::pre(&c, 8),
                 dr.height,
                 dr.rate_bp / 100,
                 if dr.split { "split" } else { "unanimous" },
@@ -3027,7 +3027,7 @@ fn release_units(
                 })
                 .next()
             {
-                let me_n = u16::from_str_radix(&me[..4], 16).unwrap_or(0) as u32;
+                let me_n = u16::from_str_radix(bitaid_node::pre(&me, 4), 16).unwrap_or(0) as u32;
                 let res = pool::cosign_tries(
                     n,
                     view,
@@ -3056,7 +3056,7 @@ fn release_units(
             n.check(
                 &format!(
                     "case {}: the staged review confirmed a different verdict; {}",
-                    &c[..8],
+                    bitaid_node::pre(&c, 8),
                     if held {
                         "this arbitrator voted for the overturned one: its unit is held for seizure"
                     } else {
@@ -3073,7 +3073,7 @@ fn release_units(
         arb::ReviewState::Cleared(st) => n.check(
             &format!(
                 "case {}: the staged review cleared the verdict at stage {st} (0: too few to draw a panel, the verdict stands); units released",
-                &c[..8]
+                bitaid_node::pre(&c, 8)
             ),
             true,
             "",
@@ -3088,7 +3088,7 @@ fn release_units(
         let csig = sign_bip340(&cold, &d);
         // signing sessions are numbered per case, and every seat of the case releases at once:
         // each arbitrator takes its own range, from its key, so requests never share a session
-        let me_n = u16::from_str_radix(&me[..4], 16).unwrap_or(0) as u32;
+        let me_n = u16::from_str_radix(bitaid_node::pre(&me, 4), 16).unwrap_or(0) as u32;
         let first = 100_000 + me_n * 256 + (*session % 256);
         let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, first).and_then(
             |(osig, _, signers)| {
@@ -3152,7 +3152,7 @@ fn convene_review(
             {
                 n.log(&format!(
                     "case {}: review draw at block {} passed it over ({}%)",
-                    &c[..8],
+                    bitaid_node::pre(&c, 8),
                     dr.height,
                     dr.rate_bp / 100
                 ));
@@ -3185,7 +3185,7 @@ fn convene_review(
                 } else {
                     n.log(&format!(
                         "case {}: its penalties not distributed after {} s; reviewing anyway",
-                        &c[..8],
+                        bitaid_node::pre(&c, 8),
                         since.elapsed().as_secs()
                     ));
                 }
@@ -3193,12 +3193,12 @@ fn convene_review(
                     &match &rp.flagger {
                         Some(f) => format!(
                             "case {}: passed over by the draw, flagged by {}; convening the staged review at the flagger's expense",
-                            &c[..8],
-                            &f[..8]
+                            bitaid_node::pre(&c, 8),
+                            bitaid_node::pre(&f, 8)
                         ),
                         None => format!(
                             "case {}: drawn for review at block {} ({}% for a {} final panel); convening the staged review",
-                            &c[..8],
+                            bitaid_node::pre(&c, 8),
                             dr.height,
                             dr.rate_bp / 100,
                             if dr.split { "split" } else { "unanimous" }
@@ -3215,7 +3215,7 @@ fn convene_review(
             n.check(
                 &format!(
                     "case {}: {}",
-                    &c[..8],
+                    bitaid_node::pre(&c, 8),
                     if st == 0 {
                         "too few arbitrators who sat on neither the case to draw a review panel; the verdict stands".to_string()
                     } else {
@@ -3231,7 +3231,7 @@ fn convene_review(
             n.check(
                 &format!(
                     "case {}: three review panels in turn found {} at 80%: the verdict is overturned",
-                    &c[..8],
+                    bitaid_node::pre(&c, 8),
                     verdict_classes(&v)
                 ),
                 true,
@@ -3279,7 +3279,7 @@ fn review_stage(
         if reg.contains_key(w) {
             n.log(&format!(
                 "{} suspended for inactivity: left more than 80% of its review draws unanswered",
-                &w[..8]
+                bitaid_node::pre(&w, 8)
             ));
         }
     }
@@ -3418,7 +3418,7 @@ fn review_stage(
                         state.insert(w.clone(), S::Keyed);
                     }
                     Some(S::Drawn(_)) => {
-                        n.check(&format!("review stage {st}: {} would rather not serve and posted a replacement fee from {fee} sats", &w[..8]), true, "");
+                        n.check(&format!("review stage {st}: {} would rather not serve and posted a replacement fee from {fee} sats", bitaid_node::pre(&w, 8)), true, "");
                         state.insert(w.clone(), S::Leaving(*fee));
                     }
                     Some(S::Leaving(f)) if *fee > f => {
@@ -3459,7 +3459,7 @@ fn review_stage(
                                     false,
                                 );
                             }
-                            n.check(&format!("review stage {st}: the leaver paid its replacement {} the {fee} sats on chain; the case disclosed to the replacement", &new[..8]), true, &txid[..16.min(txid.len())]);
+                            n.check(&format!("review stage {st}: the leaver paid its replacement {} the {fee} sats on chain; the case disclosed to the replacement", bitaid_node::pre(&new, 8)), true, &txid[..16.min(txid.len())]);
                             state.insert(new, S::Keyed);
                         }
                     }
@@ -3515,7 +3515,7 @@ fn review_stage(
                 },
                 false,
             );
-            n.check(&format!("review stage {st}: {} silent past the window — one declined assignment toward the inactivity rule, no momentum; {} drawn in its place", &m[..8], &new[..8]), true, "");
+            n.check(&format!("review stage {st}: {} silent past the window — one declined assignment toward the inactivity rule, no momentum; {} drawn in its place", bitaid_node::pre(&m, 8), bitaid_node::pre(&new, 8)), true, "");
         }
         // a leaver with offers for its seat: one replacement drawn blind from them
         let leavers: Vec<(String, u64)> = state
@@ -3563,7 +3563,7 @@ fn review_stage(
                 },
                 false,
             );
-            n.check(&format!("review stage {st}: {} replaced at {fee} sats by {}, drawn blind from the {} arbitrator(s) who offered at that fee — not chosen by the leaver", &m[..8], &new[..8], from.len()), true, "");
+            n.check(&format!("review stage {st}: {} replaced at {fee} sats by {}, drawn blind from the {} arbitrator(s) who offered at that fee — not chosen by the leaver", bitaid_node::pre(&m, 8), bitaid_node::pre(&new, 8), from.len()), true, "");
         }
     }
     if state.values().any(|x| !matches!(x, S::Keyed)) {
@@ -3693,7 +3693,7 @@ fn review_stage(
     let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
     for w in seats.iter().filter(|w| !reveals.iter().any(|x| &x.0 == *w)) {
         n.check(
-            &format!("review stage {st}: {} accepted and never revealed its finding — charged as a missed reveal in its momentum", &w[..8]),
+            &format!("review stage {st}: {} accepted and never revealed its finding — charged as a missed reveal in its momentum", bitaid_node::pre(&w, 8)),
             true,
             "",
         );
@@ -3790,7 +3790,7 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
     n.check(
         &format!(
             "case {}: {} arbitrator(s) voted for the overturned verdict; {} unit(s) still held, {} already released",
-            &c[..8],
+            bitaid_node::pre(&c, 8),
             voters.len(),
             pens.len(),
             rp.released.iter().filter(|x| voters.contains(x)).count()
@@ -3817,7 +3817,7 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
             &format!(
                 "tier {} arbitrator {}: its whole unit ({} sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature",
                 p.tier,
-                &p.arbitrator[..8],
+                bitaid_node::pre(&p.arbitrator, 8),
                 p.amount
             ),
             res.is_ok(),
@@ -3849,7 +3849,7 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
                 n.check(
                     &format!(
                         "the move of {}'s seized entry bond signed by {} of its {} committee archivist(s) after their own replay",
-                        &w[..8],
+                        bitaid_node::pre(&w, 8),
                         arch.len(),
                         holders.len()
                     ),
@@ -3872,14 +3872,14 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
             &if paid < b.value {
                 format!(
                     "arbitrator {}: its unit already released, a first offense: its entry bond seized by the forfeiture it pre-signed when it joined, {} sats of it moved into the case's seizure output and {} returned under its bond's script, both co-signed by the pool",
-                    &w[..8],
+                    bitaid_node::pre(&w, 8),
                     paid,
                     b.value - paid
                 )
             } else {
                 format!(
                     "arbitrator {}: a second confirmed overturn: its whole entry bond ({} sats) seized by the forfeiture it pre-signed when it joined, and moved into the case's seizure output, both co-signed by the pool",
-                    &w[..8],
+                    bitaid_node::pre(&w, 8),
                     b.value
                 )
             },
@@ -3994,7 +3994,7 @@ fn answer_review(
     if flag("--review-silent") {
         n.log(&format!(
             "(test) drawn for review stage {st} of {}; stays silent",
-            &c[..8]
+            bitaid_node::pre(&c, 8)
         ));
         return;
     }
@@ -4015,12 +4015,12 @@ fn answer_review(
         leaving.insert((c.to_string(), tier), (Instant::now(), fee0));
         n.log(&format!(
             "drawn for review stage {st} of {}; would rather not serve: posting a replacement fee from {fee0} sats",
-            &c[..8]
+            bitaid_node::pre(&c, 8)
         ));
     } else {
         n.log(&format!(
             "drawn for review stage {st} of {}; accepted",
-            &c[..8]
+            bitaid_node::pre(&c, 8)
         ));
     }
 }
@@ -4251,7 +4251,7 @@ fn arbitrator(mut n: Node) -> i32 {
             n.check(
                 &format!(
                     "flagged closed case {} for the staged review, paying each panel before it sits",
-                    &c[..8]
+                    bitaid_node::pre(&c, 8)
                 ),
                 true,
                 "",
@@ -4342,7 +4342,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     let v: u64 = mine.iter().filter_map(|k| units.remove(k)).sum();
                     n.log(&format!(
                         "case {}: {} unit(s), {v} sats, back to free capital",
-                        &c[..8],
+                        bitaid_node::pre(&c, 8),
                         mine.len()
                     ));
                 }
@@ -4425,7 +4425,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 );
                 n.log(&format!(
                     "offered a seat on tier {tier} of {}",
-                    &case_id[..8]
+                    bitaid_node::pre(&case_id, 8)
                 ));
             }
             Msg::Seated {
@@ -4462,10 +4462,10 @@ fn arbitrator(mut n: Node) -> i32 {
                             wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
                         })
                     {
-                        n.add_case_key(&case_id, k.try_into().unwrap());
+                        n.add_case_key(&case_id, k);
                         n.log(&format!(
                             "seated on tier {tier} of {} (seat {pos}); case disclosed",
-                            &case_id[..8]
+                            bitaid_node::pre(&case_id, 8)
                         ));
                         let seat = SeatKeys {
                             bond,
@@ -4542,7 +4542,7 @@ fn arbitrator(mut n: Node) -> i32 {
                                 &format!(
                                     "review stage {}: replaced by {}, drawn blind from {} offer(s); paid it {fee} sats",
                                     tier - arb::REVIEW_BASE,
-                                    &seat[..8],
+                                    bitaid_node::pre(&seat, 8),
                                     from.len()
                                 ),
                                 res.is_ok(),
@@ -4564,11 +4564,11 @@ fn arbitrator(mut n: Node) -> i32 {
                     if let Some(k) = hex::decode(&sealed_key).ok().and_then(|k| {
                         wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
                     }) {
-                        n.add_case_key(&case_id, k.try_into().unwrap());
+                        n.add_case_key(&case_id, k);
                         n.log(&format!(
                             "drawn on tier {tier} of {} to replace {}, whose seat was forfeit; case disclosed",
-                            &case_id[..8],
-                            &replaced[..8]
+                            bitaid_node::pre(&case_id, 8),
+                            bitaid_node::pre(&replaced, 8)
                         ));
                         let refund = refunds.get(&key).cloned().unwrap_or_default();
                         let sk = SeatKeys {
@@ -4664,7 +4664,7 @@ fn arbitrator(mut n: Node) -> i32 {
                                 .or_else(|e| {
                                     n.log(&format!(
                                         "fetch of {} from {url} failed ({e}); retrying",
-                                        &h[..8]
+                                        bitaid_node::pre(&h, 8)
                                     ));
                                     blossom::fetch(url, h)
                                 })
@@ -4672,7 +4672,7 @@ fn arbitrator(mut n: Node) -> i32 {
                                 .map_err(|e| {
                                     n.log(&format!(
                                         "fetch of {} from {url} failed again: {e}",
-                                        &h[..8]
+                                        bitaid_node::pre(&h, 8)
                                     ))
                                 })
                                 .ok()
@@ -4681,7 +4681,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     if t_f.elapsed() > secs(10) {
                         n.log(&format!(
                             "evidence of {} took {:.1} s to fetch",
-                            &who[..8],
+                            bitaid_node::pre(&who, 8),
                             t_f.elapsed().as_secs_f64()
                         ));
                     }
@@ -4880,11 +4880,11 @@ fn arbitrator(mut n: Node) -> i32 {
                 if let Some(k) = hex::decode(&sealed_key).ok().and_then(|k| {
                     wire::unseal(&n.keys, &wire::xonly(&s).unwrap(), case_id.as_bytes(), &k)
                 }) {
-                    n.add_case_key(&case_id, k.try_into().unwrap());
+                    n.add_case_key(&case_id, k);
                     n.log(&format!(
                         "review stage {} of {}: case disclosed",
                         tier - arb::REVIEW_BASE,
-                        &case_id[..8]
+                        bitaid_node::pre(&case_id, 8)
                     ));
                 }
             }
@@ -4924,8 +4924,8 @@ fn arbitrator(mut n: Node) -> i32 {
                 );
                 n.log(&format!(
                     "offered to take {}'s review seat on {} for {fee} sats",
-                    &s[..8],
-                    &case_id[..8]
+                    bitaid_node::pre(&s, 8),
+                    bitaid_node::pre(&case_id, 8)
                 ));
             }
             // a review stage of a case this arbitrator flagged is seated: pay each seat the case fee
@@ -4987,7 +4987,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 if who.len() == view.t && units.keys().any(|k| k.0 == case_id) {
                     n.log(&format!(
                         "case {} final; its units wait for the review draw",
-                        &case_id[..8]
+                        bitaid_node::pre(&case_id, 8)
                     ));
                     pending.insert(case_id.clone(), Instant::now());
                 }
@@ -5019,13 +5019,13 @@ fn caller(mut n: Node) -> i32 {
             view.batch.r.len()
         ),
         true,
-        &okey[..16],
+        bitaid_node::pre(&okey, 16),
     );
     let want_arch = num("--archivists", 1usize);
     let archivists = n.all_services("archivist", want_arch, secs(60));
     n.log(&format!(
         "pool {}…, {} archivist(s)",
-        &okey[..12],
+        bitaid_node::pre(&okey, 12),
         archivists.len()
     ));
 
@@ -5154,7 +5154,7 @@ fn caller(mut n: Node) -> i32 {
         alert.clone(),
         None,
     );
-    n.log(&format!("ALERT case {} in H3 cell {cell}", &case_hex[..8]));
+    n.log(&format!("ALERT case {} in H3 cell {cell}", bitaid_node::pre(&case_hex, 8)));
     let a = Alerted::check(&n.me(), &alert, chain_view(&n.rpc), &okey).expect("own alert checks");
 
     // ------------------------------------------------ joining window
@@ -5212,13 +5212,16 @@ fn caller(mut n: Node) -> i32 {
         if ok.is_none() {
             n.log(&format!(
                 "acceptance from {} refused: bond missing, below floor or not a bond",
-                &who[..8]
+                bitaid_node::pre(&who, 8)
             ));
             continue;
         }
         let Some(p) = point_from(&mk) else { continue };
+        if bitcoin::ScriptBuf::from_hex(&spk).is_err() {
+            continue;
+        }
         first_accept.get_or_insert(alert_t.elapsed());
-        n.log(&format!("accepted by {} (bond {})", &who[..8], &bond[..12]));
+        n.log(&format!("accepted by {} (bond {})", bitaid_node::pre(&who, 8), bitaid_node::pre(&bond, 12)));
         accepts.push((who, p, spk));
     }
     n.check(
@@ -5533,7 +5536,7 @@ fn responder(mut n: Node) -> i32 {
     n.check(
         &format!(
             "alert {} in cell {} checked: registration, wallet signature, funding output on chain",
-            &a.case_hex[..8],
+            bitaid_node::pre(&a.case_hex, 8),
             a.cell
         ),
         true,
@@ -5587,7 +5590,7 @@ fn responder(mut n: Node) -> i32 {
             n.check("case key unsealed", false, "");
             return n.summary();
         };
-        n.add_case_key(&c, key.try_into().unwrap());
+        n.add_case_key(&c, key);
         // the roster must be the template's: same incident txid as I compute
         if case::incident_tx(&a, &r).compute_txid() != r.incident_txid {
             n.check(
@@ -5828,7 +5831,7 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
             let (tx, d) = b.penalty_tx(&oxo, 4 * arb::seat_fee(rp.base_fee, ft), &spk);
             let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, 900);
             n.check(
-                &format!("the pool refuses to co-sign a forfeiture the log does not call for (coherent arbitrator {})", &who[..8]),
+                &format!("the pool refuses to co-sign a forfeiture the log does not call for (coherent arbitrator {})", bitaid_node::pre(&who, 8)),
                 res.is_err(),
                 &res.err().unwrap_or_default(),
             );
@@ -5852,7 +5855,7 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
         let what = format!(
             "tier {} arbitrator {}: {:.1}× the {}-sat fee ({} sats) forfeited from its stake",
             p.tier,
-            &p.arbitrator[..8],
+            bitaid_node::pre(&p.arbitrator, 8),
             p.step as f64 / 10.0,
             arb::seat_fee(rp.base_fee, p.tier),
             p.amount
@@ -5949,7 +5952,9 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
         for (who, sigs) in &got {
             if let (Some(k), Some(g)) = (wire::xonly(who), sigs.get(i)) {
                 if arb::schnorr_ok(&k, &d, g) {
-                    m.insert(k, hex::decode(g).unwrap());
+                    if let Ok(b) = hex::decode(g) {
+                        m.insert(k, b);
+                    }
                 }
             }
         }

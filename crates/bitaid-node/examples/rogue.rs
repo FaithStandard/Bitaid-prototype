@@ -260,7 +260,7 @@ fn main() {
             obs.seen.lock().unwrap().len() == before,
             &format!(
                 "replay of a message already seen ({}…): not forwarded again",
-                &e.id[..8]
+                bitaid_node::pre(&e.id, 8)
             ),
         );
     }

@@ -1648,7 +1648,7 @@ impl Replay {
                         "the forfeiture of the whole {}-sat tier-{} unit of {} (review confirmed)",
                         p.amount,
                         p.tier,
-                        &p.arbitrator[..8]
+                        crate::pre(&p.arbitrator, 8)
                     ),
                 )
             })
@@ -1660,7 +1660,7 @@ impl Replay {
                 d,
                 format!(
                     "the seizure of {}'s whole entry bond ({} sats) pre-signed at joining (review confirmed)",
-                    &w[..8],
+                    crate::pre(&w, 8),
                     b.value
                 ),
             ));
@@ -1670,7 +1670,7 @@ impl Replay {
                 d2,
                 format!(
                     "the move of {}'s seized entry bond into the case's seizure output",
-                    &w[..8]
+                    crate::pre(&w, 8)
                 ),
             ));
         }
