@@ -29,14 +29,25 @@ pub struct PoolView {
     pub members: Vec<u16>,
     /// member id -> identity key (hex x-only)
     pub ids: BTreeMap<u16, String>,
+    /// the attestation key: signs outcomes only, under the batch's committed nonces
     pub public: PoolPublic,
+    /// the co-signing key: the one in funding and bond scripts, signs transactions only
+    pub cosign: PoolPublic,
     pub batch: BatchPublic,
 }
 
 impl PoolView {
-    /// The pool key as it appears in scripts (x-only, hex).
+    /// The co-signing key as it appears in scripts (x-only, hex).
     pub fn key_hex(&self) -> String {
+        hex::encode(self.cosign.xonly())
+    }
+    /// The attestation key (x-only, hex).
+    pub fn attest_hex(&self) -> String {
         hex::encode(self.public.xonly())
+    }
+    /// Both keys, as a registration names the pool.
+    pub fn pool_id(&self) -> String {
+        crate::case::pool_id(&self.key_hex(), &self.attest_hex())
     }
     pub fn member_of(&self, identity: &str) -> Option<u16> {
         self.ids
@@ -141,10 +152,10 @@ pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView>
         if !q.iter().all(|d| by_dealer.contains_key(d)) {
             continue; // commitments still arriving
         }
-        let public = frost::keys::PublicKeyPackage::deserialize(
-            &hex::decode(first.split('|').nth(1)?).ok()?,
-        )
-        .ok()?;
+        let pk = |i: usize| {
+            frost::keys::PublicKeyPackage::deserialize(&hex::decode(first.split('|').nth(i)?).ok()?).ok()
+        };
+        let (public, cosign) = (pk(1)?, pk(2)?);
         let batch = nonces::public_view(&members, &by_dealer, &q);
         let t = hello[&members[0]].1 as usize;
         return Some(PoolView {
@@ -153,6 +164,7 @@ pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView>
             members,
             ids,
             public: PoolPublic { public },
+            cosign: PoolPublic { public: cosign },
             batch,
         });
     }
@@ -173,7 +185,10 @@ pub struct MemberCfg {
 
 pub struct Member {
     pub cfg: MemberCfg,
+    /// attestation share
     pub key: MemberKey,
+    /// co-signing share
+    pub cosign_key: MemberKey,
     pub batch: Batch,
     pub view: PoolView,
 }
@@ -266,90 +281,17 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         ));
     }
     let members: Vec<u16> = hellos.keys().copied().collect();
-    let idx = |m: u16| wire::xonly(&hellos[&m]).unwrap();
     n.log("all pool members present");
-    // ---- FROST DKG
-    let mut rng = rand::thread_rng();
-    let (s1, p1) =
-        frost::keys::dkg::part1(conv::id(me), cfg.n, cfg.t, &mut rng).map_err(|e| e.to_string())?;
-    send_pool(
-        n,
-        &name,
-        Msg::PoolDkg1 {
-            pool: name.clone(),
-            member: me,
-            package: hex::encode(p1.serialize().unwrap()),
-        },
-    );
-    let ids = hellos.clone();
-    let r1 = collect_pool(n, &name, cfg.n as usize - 1, cfg.wait, |env| {
-        match &env.msg {
-            Msg::PoolDkg1 {
-                member, package, ..
-            } if *member != me && ids.get(member) == Some(&env.sender) => {
-                frost::keys::dkg::round1::Package::deserialize(&hex::decode(package).ok()?)
-                    .ok()
-                    .map(|p| (*member, p))
-            }
-            _ => None,
-        }
-    });
-    let r1: BTreeMap<frost::Identifier, _> =
-        r1.into_iter().map(|(m, p)| (conv::id(m), p)).collect();
-    let (s2, out) = frost::keys::dkg::part2(s1, &r1).map_err(|e| e.to_string())?;
-    // every other member's share, each sealed to it, in one message (relays rate-limit bursts)
-    let mut bundle = vec![];
-    for (to, pkg) in out {
-        let to_n = *members.iter().find(|&&i| conv::id(i) == to).unwrap();
-        let aad = format!("{name}/dkg2/{me}/{to_n}");
-        let sealed = wire::seal(
-            &n.keys,
-            &idx(to_n),
-            aad.as_bytes(),
-            &pkg.serialize().unwrap(),
-        );
-        bundle.push((to_n, hex::encode(sealed)));
-    }
-    send_pool(
-        n,
-        &name,
-        Msg::PoolDkg2 {
-            pool: name.clone(),
-            from: me,
-            sealed: bundle,
-        },
-    );
+    // ---- two FROST key generations: one key only attests outcomes under the batch's committed
+    // nonces, the other only co-signs transactions with fresh nonces. One key doing both would let
+    // a party steering many cases combine attestations into a co-signature (ROS); forgeries under
+    // the attestation key sign nothing that spends.
+    let key = dkg(n, &name, me, &cfg, &members, &hellos, "")?;
+    let cosign_key = dkg(n, &name, me, &cfg, &members, &hellos, "cosign")?;
+    n.log(&format!("pool keys: attestation {}, co-signing {}", hex::encode(key.xonly()), hex::encode(cosign_key.xonly())));
     let keys = n.keys;
-    let r2 = collect_pool(n, &name, cfg.n as usize - 1, cfg.wait, |env| {
-        match &env.msg {
-            Msg::PoolDkg2 { from, sealed, .. }
-                if *from != me && ids.get(from) == Some(&env.sender) =>
-            {
-                let mine = &sealed.iter().find(|(to, _)| *to == me)?.1;
-                let aad = format!("{name}/dkg2/{from}/{me}");
-                let pt = wire::unseal(
-                    &keys,
-                    &wire::xonly(&env.sender)?,
-                    aad.as_bytes(),
-                    &hex::decode(mine).ok()?,
-                )?;
-                frost::keys::dkg::round2::Package::deserialize(&pt)
-                    .ok()
-                    .map(|p| (*from, p))
-            }
-            _ => None,
-        }
-    });
-    let r2: BTreeMap<frost::Identifier, _> =
-        r2.into_iter().map(|(m, p)| (conv::id(m), p)).collect();
-    let (kp, pp) =
-        frost::keys::dkg::part3(&s2, &r1, &r2).map_err(|e| format!("key generation: {e}"))?;
-    let key = MemberKey {
-        id: me,
-        key_package: kp,
-        public: pp,
-    };
-    n.log(&format!("pool key {}", hex::encode(key.xonly())));
+    let ids = hellos.clone();
+    let idx = |m: u16| wire::xonly(&hellos[&m]).unwrap();
     // ---- nonce batch
     let dealer = nonces::Dealer::new(me, cfg.batch, cfg.t);
     let mine_c = dealer.commitments(1);
@@ -531,14 +473,18 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         ));
     }
     let batch = nonces::finish(me, &members, &commits, &received, &qualified);
-    let public_hex = hex::encode(key.public.serialize().unwrap());
+    let public_hex = format!(
+        "{}|{}",
+        hex::encode(key.public.serialize().unwrap()),
+        hex::encode(cosign_key.public.serialize().unwrap())
+    );
     send_pool(
         n,
         &name,
         Msg::PoolReady {
             pool: name.clone(),
             member: me,
-            key: hex::encode(key.xonly()),
+            key: format!("{}{}", hex::encode(key.xonly()), hex::encode(cosign_key.xonly())),
             public: public_hex,
             members: members.clone(),
             qualified: qualified.iter().copied().collect(),
@@ -554,13 +500,111 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         members: members.clone(),
         ids: hellos.clone(),
         public: key.pool(),
+        cosign: cosign_key.pool(),
         batch: batch.public(),
     };
     Ok(Member {
         cfg,
         key,
+        cosign_key,
         batch,
         view,
+    })
+}
+
+/// One FROST key generation among the members (`purpose` keeps two runs apart).
+fn dkg(
+    n: &mut Node,
+    name: &str,
+    me: u16,
+    cfg: &MemberCfg,
+    members: &[u16],
+    hellos: &BTreeMap<u16, wire::Hex32>,
+    purpose: &str,
+) -> Result<MemberKey, String> {
+    let idx = |m: u16| wire::xonly(&hellos[&m]).unwrap();
+    let name = &name.to_string();
+    let mut rng = rand::thread_rng();
+    let (s1, p1) =
+        frost::keys::dkg::part1(conv::id(me), cfg.n, cfg.t, &mut rng).map_err(|e| e.to_string())?;
+    send_pool(
+        n,
+        name,
+        Msg::PoolDkg1 {
+            pool: name.clone(),
+            member: me,
+            package: hex::encode(p1.serialize().unwrap()),
+            purpose: purpose.into(),
+        },
+    );
+    let ids = hellos.clone();
+    let r1 = collect_pool(n, name, cfg.n as usize - 1, cfg.wait, |env| {
+        match &env.msg {
+            Msg::PoolDkg1 {
+                member, package, purpose: p, ..
+            } if *member != me && p == purpose && ids.get(member) == Some(&env.sender) => {
+                frost::keys::dkg::round1::Package::deserialize(&hex::decode(package).ok()?)
+                    .ok()
+                    .map(|p| (*member, p))
+            }
+            _ => None,
+        }
+    });
+    let r1: BTreeMap<frost::Identifier, _> =
+        r1.into_iter().map(|(m, p)| (conv::id(m), p)).collect();
+    let (s2, out) = frost::keys::dkg::part2(s1, &r1).map_err(|e| e.to_string())?;
+    // every other member's share, each sealed to it, in one message (relays rate-limit bursts)
+    let mut bundle = vec![];
+    for (to, pkg) in out {
+        let to_n = *members.iter().find(|&&i| conv::id(i) == to).unwrap();
+        let aad = format!("{name}/dkg2{purpose}/{me}/{to_n}");
+        let sealed = wire::seal(
+            &n.keys,
+            &idx(to_n),
+            aad.as_bytes(),
+            &pkg.serialize().unwrap(),
+        );
+        bundle.push((to_n, hex::encode(sealed)));
+    }
+    send_pool(
+        n,
+        name,
+        Msg::PoolDkg2 {
+            pool: name.clone(),
+            from: me,
+            sealed: bundle,
+            purpose: purpose.into(),
+        },
+    );
+    let keys = n.keys;
+    let r2 = collect_pool(n, name, cfg.n as usize - 1, cfg.wait, |env| {
+        match &env.msg {
+            Msg::PoolDkg2 { from, sealed, purpose: p, .. }
+                if *from != me && p == purpose && ids.get(from) == Some(&env.sender) =>
+            {
+                let mine = &sealed.iter().find(|(to, _)| *to == me)?.1;
+                let aad = format!("{name}/dkg2{purpose}/{from}/{me}");
+                let pt = wire::unseal(
+                    &keys,
+                    &wire::xonly(&env.sender)?,
+                    aad.as_bytes(),
+                    &hex::decode(mine).ok()?,
+                )?;
+                frost::keys::dkg::round2::Package::deserialize(&pt)
+                    .ok()
+                    .map(|p| (*from, p))
+            }
+            _ => None,
+        }
+    });
+    let r2: BTreeMap<frost::Identifier, _> =
+        r2.into_iter().map(|(m, p)| (conv::id(m), p)).collect();
+    let (kp, pp) =
+        frost::keys::dkg::part3(&s2, &r1, &r2).map_err(|e| format!("key generation: {e}"))?;
+    Ok(MemberKey {
+        id: me,
+        key_package: kp,
+        public: pp,
     })
 }
 
@@ -568,7 +612,7 @@ impl Member {
     /// This member's FROST commitment for a co-signing session, after checking what it will sign.
     pub fn commit(&self) -> (frost::round1::SigningNonces, String) {
         let (nonces, c) = frost::round1::commit(
-            self.key.key_package.signing_share(),
+            self.cosign_key.key_package.signing_share(),
             &mut rand::thread_rng(),
         );
         (nonces, hex::encode(c.serialize().unwrap()))
@@ -587,14 +631,14 @@ impl Member {
             .ok_or("unreadable package")?;
         if !pkg
             .signing_commitments()
-            .contains_key(&conv::id(self.key.id))
+            .contains_key(&conv::id(self.cosign_key.id))
         {
             return Err("this member was not chosen for the session");
         }
         if pkg.message() != digest {
             return Err("not the digest this member checked");
         }
-        let sh = frost::round2::sign(&pkg, nonces, &self.key.key_package)
+        let sh = frost::round2::sign(&pkg, nonces, &self.cosign_key.key_package)
             .map_err(|_| "signing failed")?;
         Ok(hex::encode(sh.serialize()))
     }
@@ -807,7 +851,7 @@ pub fn cosign_tries(
         let sh: BTreeMap<frost::Identifier, _> =
             shares.into_iter().map(|(m, x)| (conv::id(m), x)).collect();
         let sig =
-            frost::aggregate(&package, &sh, &view.public.public).map_err(|e| e.to_string())?;
+            frost::aggregate(&package, &sh, &view.cosign.public).map_err(|e| e.to_string())?;
         let mut out = [0u8; 64];
         out.copy_from_slice(&sig.serialize().unwrap());
         return Ok((out, session, chosen));

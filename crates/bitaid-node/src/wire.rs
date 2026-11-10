@@ -91,10 +91,13 @@ pub struct Ballot {
 }
 
 impl Ballot {
-    pub fn commitment(&self, salt: &[u8; 32]) -> [u8; 32] {
+    /// hash(ballot, salt, voter key) (§10.4): bound to the voter, so a seat cannot copy another's
+    /// commitment and then its reveal.
+    pub fn commitment(&self, salt: &[u8; 32], voter: &str) -> [u8; 32] {
         let mut b = Vec::new();
         ciborium::into_writer(self, &mut b).unwrap();
         b.extend_from_slice(salt);
+        b.extend_from_slice(&h32(voter).unwrap_or_default());
         tagged("Bitaid/ballot", &b)
     }
 }
@@ -113,7 +116,11 @@ pub enum Msg {
         funding_value: u64,
         wallet_key: Hex32,
         scoped_key: Hex32,
+        /// the pool's co-signing key (in the funding script)
         oracle_key: Hex32,
+        /// the pool's attestation key (outcomes are attested under it, never co-signed)
+        #[serde(default)]
+        attest_key: Hex32,
         fallback_height: u32,
         template: Template,
         /// wallet key's BIP340 signature over (scoped key, template hash, funding outpoint)
@@ -234,12 +241,17 @@ pub enum Msg {
         pool: String,
         member: u16,
         package: String,
+        /// which of the pool's two keys ("" attestation, "cosign" co-signing)
+        #[serde(default)]
+        purpose: String,
     },
     /// One message per sender: the share for each other member, sealed to it.
     PoolDkg2 {
         pool: String,
         from: u16,
         sealed: Vec<(u16, String)>,
+        #[serde(default)]
+        purpose: String,
     },
     PoolNonceCommit {
         pool: String,

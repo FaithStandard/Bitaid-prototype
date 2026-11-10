@@ -326,6 +326,7 @@ fn pool_member(mut n: Node) -> i32 {
         }
     };
     let okey = m.view.key_hex();
+    let opid = m.view.pool_id();
     n.subscribe("all", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
     let mut alerts: HashMap<String, Alerted> = HashMap::new();
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
@@ -548,7 +549,7 @@ fn pool_member(mut n: Node) -> i32 {
         last = Instant::now();
         let s = env.sender.clone();
         match &env.msg {
-            Msg::Alert { .. } => match Alerted::check(&s, &env.msg, chain_view(&n.rpc), &okey) {
+            Msg::Alert { .. } => match Alerted::check(&s, &env.msg, chain_view(&n.rpc), &opid) {
                 Ok(a) => {
                     n.log(&format!(
                         "alert {} in cell {} checked",
@@ -710,11 +711,35 @@ fn pool_member(mut n: Node) -> i32 {
                 let Ok(t) = deserialize_hex::<Transaction>(tx) else {
                     continue;
                 };
-                let d = if a.caller == s
+                let is_incident = a.caller == s
                     && *input == 0
                     && t.compute_txid() == case::incident_tx(a, r).compute_txid()
-                    && t.compute_txid() == r.incident_txid
-                {
+                    && t.compute_txid() == r.incident_txid;
+                if is_incident && !cosigned.contains(case_id) {
+                    // checked again now, not only when the roster came: a bond spent or a fallback
+                    // come near since then would leave pots no bond answers for
+                    let tip = n.rpc.height();
+                    let empty = HashMap::new();
+                    let again = case::check_roster(
+                        a,
+                        r,
+                        accepted.get(case_id).unwrap_or(&empty),
+                        |op| n.rpc.utxo(op),
+                        tip,
+                        bitaid_node::sats(BOND_FLOOR),
+                        fallback_blocks() / 2,
+                    )
+                    .and_then(|_| {
+                        (a.fallback_height >= tip + funding_margin())
+                            .then_some(())
+                            .ok_or_else(|| format!("the funding fallback (block {}) is too near", a.fallback_height))
+                    });
+                    if let Err(e) = again {
+                        n.log(&format!("incident of {} not co-signed: {e}", bitaid_node::pre(&case_id, 8)));
+                        continue;
+                    }
+                }
+                let d = if is_incident {
                     // the template's incident transaction for this roster, whose roster this member
                     // checked; from now on the roster cannot be replaced
                     cosigned.insert(case_id.clone());
@@ -1140,8 +1165,13 @@ fn pool_member(mut n: Node) -> i32 {
                         ));
                         continue;
                     }
+                    // the first commitment of a seat stands, and one already recorded for another
+                    // seat of the tier is refused
                     let m = vcommits.entry(key.clone()).or_default();
-                    m.insert(s.clone(), commitment.clone());
+                    if m.iter().any(|(w, c)| *c == *commitment && *w != s) {
+                        continue;
+                    }
+                    m.entry(s.clone()).or_insert(commitment.clone());
                     // every seat committed: the reveal deadline runs from here (§10.4)
                     if m.len() >= panels[&key].len() {
                         let h = n.tip();
@@ -1162,7 +1192,7 @@ fn pool_member(mut n: Node) -> i32 {
                 let ok = vcommits
                     .get(&key)
                     .and_then(|m| m.get(&s))
-                    .map(|c| *c == hex::encode(verdict.commitment(&h32(salt).unwrap_or_default())))
+                    .map(|c| *c == hex::encode(verdict.commitment(&h32(salt).unwrap_or_default(), &s)))
                     .unwrap_or(false);
                 if ok {
                     let l = vreveals.entry(key).or_default();
@@ -1263,10 +1293,10 @@ fn pool_member(mut n: Node) -> i32 {
                     continue;
                 };
                 if r.seats.contains(&s) {
-                    commits
-                        .entry(case_id.clone())
-                        .or_default()
-                        .insert(s.clone(), commitment.clone());
+                    let m = commits.entry(case_id.clone()).or_default();
+                    if !m.iter().any(|(w, c)| *c == *commitment && *w != s) {
+                        m.entry(s.clone()).or_insert(commitment.clone());
+                    }
                 }
             }
             Msg::BallotReveal {
@@ -1279,7 +1309,7 @@ fn pool_member(mut n: Node) -> i32 {
                 };
                 let ok = cm
                     .get(&s)
-                    .map(|c| *c == hex::encode(ballot.commitment(&h32(salt).unwrap_or_default())))
+                    .map(|c| *c == hex::encode(ballot.commitment(&h32(salt).unwrap_or_default(), &s)))
                     .unwrap_or(false);
                 if !ok {
                     n.log("reveal ignored: does not match its commitment");
@@ -1338,7 +1368,7 @@ fn archivist(mut n: Node) -> i32 {
         &arg("--pool").unwrap_or("bitaid".into()),
         secs(num("--setup-wait", 3600u64)),
     );
-    let okey = view.as_ref().map(|v| v.key_hex()).unwrap_or_default();
+    let opid = view.as_ref().map(|v| v.pool_id()).unwrap_or_default();
     let mut alerts: HashMap<String, Alerted> = HashMap::new();
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
     let idle = num("--exit-after", 900u64);
@@ -1396,7 +1426,7 @@ fn archivist(mut n: Node) -> i32 {
             Msg::Alert { case_id, .. } => {
                 srv.policy.allow(case_id, &env.sender);
                 n.log(&format!("live case {}: caller may upload", bitaid_node::pre(&case_id, 8)));
-                if let Ok(a) = Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &okey) {
+                if let Ok(a) = Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid) {
                     alerts.insert(a.case_hex.clone(), a);
                 }
             }
@@ -1989,7 +2019,7 @@ fn vote(n: &mut Node, a: &Alerted, r: &Rostered, ballot: Ballot) {
         &[],
         Msg::BallotCommit {
             case_id: c.clone(),
-            commitment: hex::encode(ballot.commitment(&salt)),
+            commitment: hex::encode(ballot.commitment(&salt, &n.me())),
         },
         true,
     );
@@ -4048,6 +4078,7 @@ fn arbitrator(mut n: Node) -> i32 {
         return 1;
     };
     let okey = view.key_hex();
+    let opid = view.pool_id();
     let (bs, bc) = (random_scalar(), random_scalar());
     let bf = n.rpc.height() + fallback_blocks();
     let bt = outputs::bond(&secp, &xo(&bs), &xo(&bc), &wire::xonly(&okey).unwrap(), bf);
@@ -4358,7 +4389,7 @@ fn arbitrator(mut n: Node) -> i32 {
         let s = env.sender.clone();
         match env.msg {
             Msg::Alert { .. } => {
-                if let Ok(a) = Alerted::check(&s, &env.msg, chain_view(&n.rpc), &okey) {
+                if let Ok(a) = Alerted::check(&s, &env.msg, chain_view(&n.rpc), &opid) {
                     alerts.insert(a.case_hex.clone(), a);
                 }
             }
@@ -4749,7 +4780,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     Msg::VerdictCommit {
                         case_id: case_id.clone(),
                         tier,
-                        commitment: hex::encode(verdict.commitment(&salt)),
+                        commitment: hex::encode(verdict.commitment(&salt, &n.me())),
                     },
                     // in clear: verdicts are the record every arbitrator's momentum is computed from
                     false,
@@ -5011,6 +5042,7 @@ fn caller(mut n: Node) -> i32 {
         return n.summary();
     };
     let okey = view.key_hex();
+    let opid = view.pool_id();
     n.check(
         &format!(
             "oracle pool found and checked: {} members, threshold {}, {} nonces",
@@ -5112,6 +5144,7 @@ fn caller(mut n: Node) -> i32 {
         wallet_key: hex::encode(xo(&w).serialize()),
         scoped_key: scoped_hex,
         oracle_key: okey.clone(),
+        attest_key: view.attest_hex(),
         fallback_height: fallback,
         template: template.clone(),
         wallet_sig: hex::encode(sign_bip340(&w, &d)),
@@ -5155,7 +5188,7 @@ fn caller(mut n: Node) -> i32 {
         None,
     );
     n.log(&format!("ALERT case {} in H3 cell {cell}", bitaid_node::pre(&case_hex, 8)));
-    let a = Alerted::check(&n.me(), &alert, chain_view(&n.rpc), &okey).expect("own alert checks");
+    let a = Alerted::check(&n.me(), &alert, chain_view(&n.rpc), &opid).expect("own alert checks");
 
     // ------------------------------------------------ joining window
     let max = template.max_signers as usize;
@@ -5374,7 +5407,7 @@ fn caller(mut n: Node) -> i32 {
                     signers.len(),
                     view.members.len()
                 ),
-                bitaid_core::oracle::verify_bip340(&view.public.xonly(), &dd, &sig),
+                bitaid_core::oracle::verify_bip340(&view.cosign.xonly(), &dd, &sig),
                 &format!(
                     "{sessions} session(s), signers {signers:?}, {:.2} s",
                     t_co.elapsed().as_secs_f64()
@@ -5470,6 +5503,7 @@ fn responder(mut n: Node) -> i32 {
         return n.summary();
     };
     let okey = view.key_hex();
+    let opid = view.pool_id();
     let archivists = n.all_services("archivist", num("--archivists", 1usize), secs(60));
     // ------------------------------------------------ bond
     let (bond_scoped, bond_cold) = (random_scalar(), random_scalar());
@@ -5522,7 +5556,7 @@ fn responder(mut n: Node) -> i32 {
             n.check("an alert arrived in my cells", false, "");
             return n.summary();
         };
-        match Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &okey) {
+        match Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid) {
             Ok(a) if a.fallback_height < n.rpc.height() + funding_margin() => {
                 n.log("alert whose funding fallback is too near; ignored")
             }

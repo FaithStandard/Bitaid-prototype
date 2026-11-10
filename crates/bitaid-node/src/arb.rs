@@ -701,7 +701,7 @@ impl Replay {
                 }
             }
         }
-        let logs = ledger(hist, rpc, &a.oracle_key);
+        let logs = ledger(hist, rpc, &crate::case::pool_id(&a.oracle_key, &a.attest_key));
         for (w, cases) in overturned_votes(&logs) {
             let n = cases.iter().filter(|c| **c != rp.case).count();
             rp.prior_overturns.insert(w, n);
@@ -1054,9 +1054,11 @@ impl Replay {
             if !t.committed {
                 continue;
             }
-            // each incoherent vote, and each commitment never revealed (charged at the isolation penalty)
+            // each incoherent vote, and each commitment never revealed (charged at the isolation penalty);
+            // a hung tier (no two thirds) has no dissenters, only its silent seats (§10.5)
+            let hung = t.verdict().is_none();
             let mut owed: Vec<(String, f64)> = vec![];
-            for (arb, v) in &t.reveals {
+            for (arb, v) in t.reveals.iter().filter(|_| !hung) {
                 let vk = verdict_key(v);
                 if vk == fk {
                     continue;
@@ -1776,7 +1778,9 @@ fn read_tier(
             Msg::VerdictCommit {
                 tier, commitment, ..
             } if *tier == k => {
-                vcommits.entry(s.clone()).or_insert(commitment.clone());
+                if !vcommits.iter().any(|(w, c)| *c == *commitment && w != s) {
+                    vcommits.entry(s.clone()).or_insert(commitment.clone());
+                }
             }
             _ => {}
         }
@@ -1896,7 +1900,7 @@ fn read_tier(
                 && t.seats.contains(&e.sender)
                 && !t.reveals.iter().any(|x| x.0 == e.sender)
                 && vcommits.get(&e.sender).map(|c| {
-                    *c == hex::encode(verdict.commitment(&wire::h32(salt).unwrap_or_default()))
+                    *c == hex::encode(verdict.commitment(&wire::h32(salt).unwrap_or_default(), &e.sender))
                 }) == Some(true);
             if ok {
                 t.reveals.push((e.sender.clone(), verdict.clone()));
@@ -2220,6 +2224,8 @@ pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
             continue;
         };
         let fk = verdict_key(fv);
+        // a tier with no two thirds of its own (hung) charges no one for disagreeing (§10.5)
+        let hung = !l.review && supermajority(l.seats.len(), &l.reveals.iter().map(|x| x.1.clone()).collect::<Vec<_>>()).is_none();
         for seat in &l.seats {
             if l.review {
                 // a review seat is charged only for a finding it owed and never revealed
@@ -2235,7 +2241,7 @@ pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
                 continue;
             }
             let e = match l.reveals.iter().find(|x| &x.0 == seat) {
-                Some((_, v)) if verdict_key(v) == fk => 0.0,
+                Some((_, v)) if verdict_key(v) == fk || hung => 0.0,
                 Some((_, v)) => {
                     let vk = verdict_key(v);
                     let agree = fin
