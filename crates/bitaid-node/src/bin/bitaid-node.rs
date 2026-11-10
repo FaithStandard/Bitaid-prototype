@@ -525,7 +525,8 @@ fn pool_member(mut n: Node) -> i32 {
             let decision = if ruled && ballots.len() == 1 {
                 bitaid_node::settle::decide_panel(r.seats.len(), a.template.pots, &a.template, &ballots[0])
             } else {
-                decide(r.seats.len(), a.template.pots, &a.template, &ballots)
+                // the window closed and no one paid a panel: an unpaid dissent is dropped (§9)
+                bitaid_node::settle::decide_unpaid_dissent(r.seats.len(), a.template.pots, &a.template, &ballots)
             };
             match decision {
                 Decision::Settled(ends) => {

@@ -143,6 +143,29 @@ fn decide_of(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot], of: usi
     Decision::Settled(out)
 }
 
+/// Deemed consent with an unpaid dissent (§9, "a dissent pays to be heard"): the window closed and
+/// no one paid a panel, so the ballots that keep a class below 80% are dropped and the case settles on
+/// the largest group of ballots giving the same answers, provided it holds at least two thirds of the
+/// seats; otherwise the vote stays split (whoever wants it decided pays a panel, or the refund).
+pub fn decide_unpaid_dissent(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot]) -> Decision {
+    let first = decide(k, pots, t, ballots);
+    if matches!(first, Decision::Settled(_)) || ballots.iter().any(|b| b.misuse) {
+        return first;
+    }
+    let key = |b: &Ballot| crate::arb::verdict_key(b);
+    let mut best: Vec<Ballot> = vec![];
+    for b in ballots {
+        let g: Vec<Ballot> = ballots.iter().filter(|x| key(x) == key(b)).cloned().collect();
+        if g.len() > best.len() {
+            best = g;
+        }
+    }
+    if 3 * best.len() < 2 * k {
+        return first;
+    }
+    decide_of(k, pots, t, &best, best.len())
+}
+
 /// A panel's ruling (§10.5, §12), as opposed to the attendees' ballots: one verdict decides. A ruling
 /// of caller misuse seizes the deposit by merit and, the whole offer being forfeit, pays the bounty
 /// and the reward to the attendees too, by merit, equally if the ruling classes no one (review finding
@@ -284,5 +307,42 @@ mod tests {
         assert!(matches!(ends[2].kind, EndingKind::Split(_)));
         // the attendees' own ballots still cannot seize: only a panel decides misuse
         assert!(matches!(decide(3, t.pots, &t, &[v]), Decision::Escalate(_)));
+    }
+
+    #[test]
+    fn an_unpaid_dissent_is_dropped_when_the_rest_hold_two_thirds() {
+        use crate::wire::Act;
+        let mut t = crate::wire::Template {
+            pots: [100_000, 600_000, 300_000],
+            intervener_pct: 70,
+            good_faith_pct: 50,
+            max_signers: 3,
+            joining_window: 15,
+            dispute_blocks: 3,
+            arb_fee: 20_000,
+            refund_delay: 12_960,
+            refund_xpub: String::new(),
+            commit_blocks: 4,
+            reveal_blocks: 3,
+            review_delay: 2,
+            review_pct: None,
+        };
+        t.max_signers = 3;
+        let act = |s: u8, c: Class| Act { seat: s, class: c, footage: None };
+        let honest = Ballot {
+            acts: vec![act(0, Class::Intervention), act(1, Class::Documentation), act(2, Class::Documentation)],
+            outcome_achieved: true,
+            misuse: false,
+        };
+        let mut dissent = honest.clone();
+        dissent.acts[0].class = Class::None;
+        let ballots = [honest.clone(), honest.clone(), dissent.clone()];
+        assert!(matches!(decide(3, t.pots, &t, &ballots), Decision::Escalate(_)));
+        assert!(matches!(decide_unpaid_dissent(3, t.pots, &t, &ballots), Decision::Settled(_)));
+        // one against one of three seats: still split
+        assert!(matches!(
+            decide_unpaid_dissent(3, t.pots, &t, &[honest, dissent]),
+            Decision::Escalate(_)
+        ));
     }
 }
