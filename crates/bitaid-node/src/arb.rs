@@ -837,6 +837,7 @@ impl Replay {
                 rpc,
                 None,
                 None,
+                a.template.commit_blocks,
             );
             rp.tiers.insert(k, t);
         }
@@ -878,6 +879,7 @@ impl Replay {
                 rpc,
                 Some(&reg),
                 payer.as_deref(),
+                a.template.commit_blocks,
             );
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
@@ -1787,6 +1789,7 @@ fn read_tier(
     rpc: &Rpc,
     registry: Option<&HashMap<String, Bond>>,
     payer: Option<&str>,
+    commit_blocks: u32,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -1798,6 +1801,7 @@ fn read_tier(
         t.offers = reg.clone();
     }
     let mut vcommits: HashMap<String, String> = HashMap::new();
+    let mut commit_h: HashMap<String, u32> = HashMap::new();
     for e in mine {
         let s = &e.sender;
         match &e.msg {
@@ -1811,6 +1815,7 @@ fn read_tier(
             } if *tier == k => {
                 if !vcommits.iter().any(|(w, c)| *c == *commitment && w != s) {
                     vcommits.entry(s.clone()).or_insert(commitment.clone());
+                    commit_h.entry(s.clone()).or_insert(e.height);
                 }
             }
             _ => {}
@@ -1844,7 +1849,51 @@ fn read_tier(
             }
         }
     }
-    // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4)
+    // each seat's deadline runs from the block confirming its fee, as live members judge it (§10.4)
+    let fee_amt = if payer.is_some() {
+        base_fee
+    } else {
+        seat_fee(base_fee, k)
+    };
+    let fee_payer = payer.unwrap_or(escalator);
+    let fee_tx_list: Vec<String> = mine
+        .iter()
+        .filter_map(|e| match &e.msg {
+            Msg::FeePaid { tier, txid, .. } if *tier == k && e.sender == fee_payer => Some(txid.clone()),
+            _ => None,
+        })
+        .collect();
+    let offers_now = t.offers.clone();
+    let is_review = registry.is_some();
+    let deadline = |w: &str, seated_at: u32| -> u32 {
+        // a review seat counts from its draw
+        if is_review {
+            return seated_at.saturating_add(commit_blocks);
+        }
+        let paid_at = offers_now.get(w).and_then(|o| {
+            fee_tx_list
+                .iter()
+                .filter(|txid| rpc.paid_to(txid, &o.payout) >= fee_amt)
+                .filter_map(|txid| rpc.tx_height(txid))
+                .min()
+        });
+        paid_at.unwrap_or(seated_at).saturating_add(commit_blocks)
+    };
+    // a commitment stated at or after its seat's deadline does not count, live or in the replay
+    // (review finding D-5)
+    let late: Vec<String> = vcommits
+        .keys()
+        .filter(|w| match (t.seat_height.get(*w), commit_h.get(*w)) {
+            (Some(sh), Some(ch)) => *ch >= deadline(w, *sh),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    for w in late {
+        vcommits.remove(&w);
+    }
+    // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4); never
+    // before the deadline has passed
     for e in mine {
         if let Msg::Reseated {
             tier,
@@ -1887,7 +1936,14 @@ fn read_tier(
                 }
                 from.clone()
             };
+            // a seat that missed its deadline only; a reviewer that paid its way out leaves at once
+            let due = if from.is_empty() {
+                t.seat_height.get(replaced).map_or(u32::MAX, |h| deadline(replaced, *h))
+            } else {
+                0
+            };
             if !vcommits.contains_key(replaced)
+                && *height >= due
                 && draw(block_hash, case, k, &left, 1) == vec![seat.clone()]
                 && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
             {
