@@ -1069,10 +1069,9 @@ fn pool_member(mut n: Node) -> i32 {
                 bond_value,
                 payout_spk,
             } => {
-                let Some(a) = alerts.get(case_id) else {
+                if !alerts.contains_key(case_id) {
                     continue;
                 };
-                let value: u64 = a.template.pots.iter().sum();
                 let secp = Secp256k1::verification_only();
                 let ok = (|| {
                     let op = OutPoint::from_str(bond).ok()?;
@@ -1088,7 +1087,9 @@ fn pool_member(mut n: Node) -> i32 {
                     // is ruled backs nothing (review finding: fallback heights unchecked)
                     (u.script_pubkey == t.script_pubkey()
                         && u.value.to_sat() == *bond_value
-                        && u.value.to_sat() >= bitaid_node::sats(ARB_BOND_FLOOR).max(2 * value)
+                        // the entry bond's floor, as the escalator checks it: the case itself is covered
+                        // by the seat's case unit (review finding D-13)
+                        && u.value.to_sat() >= bitaid_node::sats(ARB_BOND_FLOOR)
                         && *bond_fallback >= n.rpc.height() + fallback_blocks() / 2)
                     .then_some(())
                 })()
