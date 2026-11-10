@@ -37,6 +37,12 @@ pub struct Alerted {
     pub fallback_height: u32,
 }
 
+/// The bond a responder needs to accept this case: twice the most it could capture (the reward and
+/// the bounty, all to one seat), and never below `floor` (§2.3, review finding D-12).
+pub fn exposure_bond(a: &Alerted, floor: u64) -> u64 {
+    floor.max(2 * (a.template.pots[1] + a.template.pots[2]))
+}
+
 /// How a registration names its pool: the co-signing key, then the attestation key.
 pub fn pool_id(cosign: &str, attest: &str) -> String {
     format!("{cosign}{attest}")
@@ -82,6 +88,7 @@ impl Alerted {
         if &rt != template {
             return Err("alert economics differ from the registered template".into());
         }
+        rt.check()?;
         // `oracle_expected` is the pool's id: both its keys, which must be distinct (or, for a replay
         // of the log that relies on no attestation, the co-signing key alone)
         let named = pool_id(&oracle_key, &attest_key) == oracle_expected

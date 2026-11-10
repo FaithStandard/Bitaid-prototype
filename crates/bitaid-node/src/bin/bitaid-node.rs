@@ -28,6 +28,8 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 const BOND_FLOOR: u64 = 1_000_000; // 0.01 BTC, §2
+/// a responder's default bond: covers the default template's exposure (twice reward and bounty)
+const RESPONDER_BOND: u64 = 2_000_000;
 
 fn args() -> Vec<String> {
     std::env::args().collect()
@@ -662,7 +664,7 @@ fn pool_member(mut n: Node) -> i32 {
                     acc,
                     |op| n.rpc.utxo(op),
                     n.rpc.height(),
-                    bitaid_node::sats(BOND_FLOOR),
+                    case::exposure_bond(a, bitaid_node::sats(BOND_FLOOR)),
                     fallback_blocks() / 2,
                 ) {
                     n.log(&format!("roster v{} for {} refused: {e}", r.set_version, bitaid_node::pre(&case_id, 8)));
@@ -726,7 +728,7 @@ fn pool_member(mut n: Node) -> i32 {
                         accepted.get(case_id).unwrap_or(&empty),
                         |op| n.rpc.utxo(op),
                         tip,
-                        bitaid_node::sats(BOND_FLOOR),
+                        case::exposure_bond(a, bitaid_node::sats(BOND_FLOOR)),
                         fallback_blocks() / 2,
                     )
                     .and_then(|_| {
@@ -1393,7 +1395,7 @@ fn archivist(mut n: Node) -> i32 {
                 let due: Vec<String> = rosters
                     .iter()
                     .filter(|(c, r)| {
-                        r.archivists.first() == Some(&me)
+                        r.archivists.contains(&me)
                             && !settled.contains(*c)
                             && looked.get(*c).is_none_or(|t| t.elapsed() > secs(5))
                     })
@@ -2081,7 +2083,7 @@ fn collect_reveals(n: &mut Node, a: &Alerted, r: &Rostered) -> Vec<Ballot> {
 /// Evidence as announced: recorder, blobs (hash, size), archivists.
 type EvidenceItem = (String, Vec<(String, u64)>, Vec<String>);
 
-const ARB_BOND_FLOOR: u64 = 10_000_000; // the entry bond, 0.1 BTC provisional (§2.2, §10.2)
+use bitaid_node::arb::ENTRY_BOND as ARB_BOND_FLOOR; // the entry bond, 0.1 BTC provisional (§2.2, §10.2)
 
 /// Waits for the pre-signed forfeitures of `who` and keeps those that verify: per seat, its stake and its
 /// seat forfeiture's pre-signature.
@@ -3199,6 +3201,21 @@ fn convene_review(
                 // convened already; its panel has not committed yet
                 return false;
             }
+            // the first archivist convenes; each later one only once the stage has been due for a
+            // grace period per place ahead of it, so a first archivist that never convenes holds
+            // nothing back (any registered arbitrator may also open it)
+            let place = r.archivists.iter().position(|x| *x == n.me()).unwrap_or(0) as u32;
+            if place > 0 {
+                let due = *first_seen.entry(format!("due:{c}:{k}")).or_insert_with(Instant::now);
+                if due.elapsed() < secs(place as u64 * num("--convene-grace", 120u64)) {
+                    return false;
+                }
+                n.log(&format!(
+                    "case {}: review stage {st} due and not convened; convening it as archivist {}",
+                    bitaid_node::pre(&c, 8),
+                    place + 1
+                ));
+            }
             if st == 1 {
                 // the review takes up a closed case: its penalties taken and distributed first, unless
                 // nobody collects them within --review-wait of the case's attestation
@@ -3291,6 +3308,9 @@ fn review_stage(
     let size = arb::panel_size(k);
     let oxo = wire::xonly(&view.key_hex()).unwrap();
     let t0 = Instant::now();
+    // the opening fixes the draw block, draw_blocks() later; the list is the whole eligible pool
+    n.refresh_height();
+    let draw_h = n.height() + bitaid_node::draw_blocks();
     n.send_case(
         &c,
         &[],
@@ -3301,10 +3321,14 @@ fn review_stage(
         },
         false,
     );
+    while n.rpc.height() < draw_h {
+        n.rpc.mine(1).ok();
+        std::thread::sleep(Duration::from_millis(200));
+    }
     let excluded = arb::Replay::build_core(&n.history, a, r, &n.rpc)?.review_excluded();
-    let reg = arb::registry(&n.history);
+    let reg = arb::registry_at(&n.history, draw_h - 2);
     // suspended for inactivity (§10.3): no review draws
-    let off = arb::inactive(&n.history, n.rpc.height() + 1);
+    let off = arb::inactive(&n.history, draw_h);
     for w in &off {
         if reg.contains_key(w) {
             n.log(&format!(
@@ -3335,8 +3359,7 @@ fn review_stage(
         );
         return None;
     }
-    n.rpc.mine(1).ok();
-    let h = n.rpc.height();
+    let h = draw_h;
     let bh = n.rpc.block_hash(h).unwrap_or_default();
     let mut seats = arb::draw(&bh, &c, k, &eligible, size);
     n.send_case(
@@ -5237,7 +5260,7 @@ fn caller(mut n: Node) -> i32 {
                 &wire::xonly(&okey)?,
                 bf,
             );
-            (utxo.value.to_sat() >= bitaid_node::sats(BOND_FLOOR)
+            (utxo.value.to_sat() >= case::exposure_bond(&a, bitaid_node::sats(BOND_FLOOR))
                 && utxo.script_pubkey == t.script_pubkey()
                 && bf >= n.rpc.height() + fallback_blocks() / 2)
                 .then_some(())
@@ -5518,7 +5541,7 @@ fn responder(mut n: Node) -> i32 {
     );
     let bond = match n
         .rpc
-        .fund(&btree.script_pubkey(), amt("--bond", BOND_FLOOR))
+        .fund(&btree.script_pubkey(), amt("--bond", RESPONDER_BOND))
     {
         Ok(op) => op,
         Err(e) => {
@@ -5559,6 +5582,11 @@ fn responder(mut n: Node) -> i32 {
         match Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid) {
             Ok(a) if a.fallback_height < n.rpc.height() + funding_margin() => {
                 n.log("alert whose funding fallback is too near; ignored")
+            }
+            Ok(a) if a.template.pots[2] >= min_bounty
+                && amt("--bond", RESPONDER_BOND) < case::exposure_bond(&a, bitaid_node::sats(BOND_FLOOR)) =>
+            {
+                n.log("alert above what my bond backs (twice the reward and bounty); ignored")
             }
             Ok(a) if a.template.pots[2] >= min_bounty => break a,
             Ok(_) => n.log("alert below my price; ignored"),

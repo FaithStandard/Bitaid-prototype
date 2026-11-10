@@ -841,19 +841,20 @@ impl Replay {
         }
         let seated = rp.review_excluded();
         rp.review_pool = reg_all.keys().filter(|w| !seated.contains(*w)).count();
-        let conv = rp.convener.clone();
         for st in 1..=REVIEW_STAGES {
             let k = REVIEW_BASE + st;
             if rp.review_state(a, rpc) != ReviewState::Pending(st) {
                 break;
             }
-            let Some(conv) = conv.as_ref() else { break };
-            let opened = mine.iter().any(|e| {
-                matches!(&e.msg, Msg::Escalate { tier, .. } if *tier == k) && &e.sender == conv
+            // any of the case's archivists or any registered arbitrator may convene a stage that is
+            // due, the first to open it counting: the draw leaves the convener no choice (below), so a
+            // caller's own archivist that never convenes cannot hold a case's review back
+            let opener = mine.iter().find(|e| {
+                matches!(&e.msg, Msg::Escalate { tier, .. } if *tier == k)
+                    && (r.archivists.contains(&e.sender) || reg_all.contains_key(&e.sender))
             });
-            if !opened {
-                break;
-            }
+            let Some(opener) = opener else { break };
+            let (conv, h_open) = (&opener.sender, opener.height);
             let reg = registry(hist);
             let payer = rp.flagger.clone();
             let mut t = read_tier(
@@ -878,6 +879,28 @@ impl Replay {
             let off = inactive(hist, h);
             if t.listed.iter().any(|x| off.contains(x)) {
                 break;
+            }
+            // the block is fixed by the opening (draw_blocks() after it), and the list is the whole
+            // eligible pool: everyone registered at least two blocks before the draw who sat on neither
+            // the case nor an earlier stage and is not suspended; one may be left out only if its bond
+            // is not a live entry bond
+            if !t.seats.is_empty() {
+                let at = registry_at(hist, h.saturating_sub(2));
+                let listed: std::collections::HashSet<&String> = t.listed.iter().collect();
+                let live = |b: &Bond| {
+                    b.value >= crate::sats(ENTRY_BOND)
+                        && rpc
+                            .utxo(&b.op)
+                            .is_some_and(|u| u.script_pubkey == b.tree(&oracle).script_pubkey())
+                };
+                let complete = at
+                    .iter()
+                    .filter(|(w, _)| !excluded.contains(*w) && !off.contains(*w))
+                    .all(|(w, b)| listed.contains(w) || !live(b));
+                let inside = t.listed.iter().all(|w| at.contains_key(w));
+                if h != h_open + crate::draw_blocks() || !complete || !inside {
+                    break;
+                }
             }
             rp.reviews.insert(k, t);
         }
@@ -2062,6 +2085,24 @@ pub fn inactive(hist: &[Envelope], height: u32) -> std::collections::HashSet<Str
 pub fn registry_case() -> String {
     hex::encode(tagged("Bitaid/arbitrator-registry", b""))
 }
+
+/// The arbitrators registered by `height`: their first seat offer stated at or before it.
+pub fn registry_at(hist: &[Envelope], height: u32) -> HashMap<String, Bond> {
+    let mut m: HashMap<String, Bond> = HashMap::new();
+    for e in hist {
+        if let Msg::SeatOffer { .. } = &e.msg {
+            if e.height <= height {
+                if let Some(b) = Bond::from_offer(&e.msg) {
+                    m.entry(e.sender.clone()).or_insert(b);
+                }
+            }
+        }
+    }
+    m
+}
+
+/// The entry bond's floor, 0.1 BTC provisional (§2.2, §10.2).
+pub const ENTRY_BOND: u64 = 10_000_000;
 
 /// Every arbitrator the log knows, by its first seat offer (registration or any case): the pool review
 /// panels are drawn from.
