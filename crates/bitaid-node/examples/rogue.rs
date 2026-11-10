@@ -11,7 +11,7 @@
 //! (needs BITAID_RPC and BITAID_WALLET: its stakes are paid from that wallet, kept in BITAID_LINK_DIR)
 use bitaid_node::chain::Rpc;
 use bitaid_node::gossip::{self, Credential, BURST, MAX_IN, MAX_JUNK, MAX_LINE, PER_KEY, PROOF_SECS};
-use bitaid_node::node::link_credential;
+use bitaid_node::node::link_credentials;
 use bitaid_node::nostr::{kind, now, Event};
 use bitaid_node::wire::{self, b64, Msg};
 use bitcoin::secp256k1::{Keypair, Secp256k1};
@@ -176,8 +176,15 @@ fn main() {
         .unwrap_or(MAX_IN + 16);
     // the stakes this stranger pays for its own keys, like anyone (kept and reused while unspent)
     let rpc = Rpc::from_env();
-    let cred = |n: &str| link_credential(&format!("rogue-{n}"), &rpc).expect("cannot lock a link stake");
-    let (co, ca, cb, cc, cd, ce, cf) = (cred("obs"), cred("a"), cred("b"), cred("c"), cred("d"), cred("e"), cred("f"));
+    let mut cs = link_credentials(
+        &["rogue-obs", "rogue-a", "rogue-b", "rogue-c", "rogue-d", "rogue-e", "rogue-f"],
+        &rpc,
+    );
+    assert_eq!(cs.len(), 7, "cannot lock the link stakes");
+    let (cf, ce, cd, cc, cb, ca, co) = (
+        cs.pop().unwrap(), cs.pop().unwrap(), cs.pop().unwrap(), cs.pop().unwrap(),
+        cs.pop().unwrap(), cs.pop().unwrap(), cs.pop().unwrap(),
+    );
     if wait > 0 {
         println!("rogue: waiting {wait} s, so the attacks land while a case runs");
         std::thread::sleep(Duration::from_secs(wait));

@@ -120,6 +120,54 @@ pub fn link_verifier() -> Verify {
     })
 }
 
+/// Several link credentials at once (the hostile-peer test needs seven): the usable ones kept, the
+/// rest made in one transaction and one confirmation.
+pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
+    let dir = std::env::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
+        format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into()))
+    });
+    let _ = std::fs::create_dir_all(&dir);
+    let secp = Secp256k1::new();
+    let load = |name: &str| -> Option<Credential> {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(format!("{dir}/link_{name}.json")).ok()?).ok()?;
+        let sk = SecretKey::from_slice(&hex::decode(v["secret"].as_str()?).ok()?).ok()?;
+        let kp = Keypair::from_secret_key(&secp, &sk);
+        let stake = v["stake"].as_str()?.to_string();
+        let (o, _) = rpc.confirmed_utxo(&stake.parse().ok()?)?;
+        (o.script_pubkey == link_spk(&kp.x_only_public_key().0) && o.value.to_sat() >= link_stake())
+            .then_some(Credential { keys: kp, stake })
+    };
+    let mut have: Vec<Option<Credential>> = names.iter().map(|n| load(n)).collect();
+    let missing: Vec<usize> = (0..names.len()).filter(|i| have[*i].is_none()).collect();
+    if !missing.is_empty() {
+        let kps: Vec<Keypair> = missing.iter().map(|_| Keypair::new(&secp, &mut rand::thread_rng())).collect();
+        let pay: Vec<(bitcoin::ScriptBuf, u64)> =
+            kps.iter().map(|k| (link_spk(&k.x_only_public_key().0), link_stake())).collect();
+        eprintln!("gossip: locking {} link stakes of {} sats in one transaction (once; reused while unspent)", kps.len(), link_stake());
+        match rpc.pay_many(&pay) {
+            Err(e) => eprintln!("gossip: cannot lock the link stakes ({e})"),
+            Ok(txid) => {
+            rpc.confirm(&[txid]);
+            for (i, kp) in missing.iter().zip(kps) {
+                let spk = link_spk(&kp.x_only_public_key().0);
+                if let Some(vout) = (0..(pay.len() as u32 + 2)).find(|v| {
+                    rpc.utxo(&bitcoin::OutPoint { txid, vout: *v }).map(|o| o.script_pubkey == spk).unwrap_or(false)
+                }) {
+                    let stake = format!("{txid}:{vout}");
+                    let _ = std::fs::write(
+                        format!("{dir}/link_{}.json", names[*i]),
+                        serde_json::json!({"secret": hex::encode(kp.secret_bytes()), "stake": stake, "who": names[*i]}).to_string(),
+                    );
+                    have[*i] = Some(Credential { keys: kp, stake });
+                }
+            }
+            }
+        }
+    }
+    have.into_iter().flatten().collect()
+}
+
 /// This node's link credential: kept in BITAID_LINK_DIR (default ~/.bitaid) as link_<name>.json and
 /// reused while its stake stays unspent; otherwise a new key and stake are made and confirmed (on a
 /// test chain the secret is kept, so the stake can be spent back). BITAID_LINK_STAKE=0: none.

@@ -202,7 +202,8 @@ attack)
   nohup target/release/bitaid-node --role core --name core-attack --listen-gossip 127.0.0.1:7790 >/dev/null 2>"$L/core_attack.log" </dev/null &
   sleep 3
   for i in 1 2; do
-    timeout 900 target/release/examples/rogue --peer 127.0.0.1:7790 2>&1 | tee "$L/rogue_attack_$i.out" | grep -E "PASS|FAIL|passed"
+    # (the first round may wait a block for the rogue's stakes: 40 minutes allowed)
+    timeout 2400 target/release/examples/rogue --peer 127.0.0.1:7790 2>&1 | tee "$L/rogue_attack_$i.out" | grep -E "PASS|FAIL|passed"
   done
   pkill -f "core-attack"
   echo "ATTACK_DONE"
