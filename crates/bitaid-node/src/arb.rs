@@ -71,10 +71,20 @@ pub fn draw(block_hash: &str, case: &str, tier: u32, offers: &[String], n: usize
     ranked.into_iter().take(n).map(|x| x.1).collect()
 }
 
-/// A verdict's identity for counting: two arbitrators agree when their answers are identical.
+/// A verdict's identity for counting: two arbitrators agree when they give the same answers — each
+/// seat's class, the outcome and misuse — whatever order they list the acts in and whichever second of
+/// the footage they cite (review finding D-7).
 pub fn verdict_key(v: &Ballot) -> Vec<u8> {
+    let mut c = v.clone();
+    for a in &mut c.acts {
+        a.footage = None;
+    }
+    c.acts.sort_by(|x, y| {
+        (x.seat, format!("{:?}", x.class)).cmp(&(y.seat, format!("{:?}", y.class)))
+    });
+    c.acts.dedup_by(|x, y| x.seat == y.seat && x.class == y.class);
     let mut b = Vec::new();
-    ciborium::into_writer(v, &mut b).unwrap();
+    ciborium::into_writer(&c, &mut b).unwrap();
     b
 }
 
@@ -1513,12 +1523,9 @@ impl Replay {
     /// What each payout script receives under `v` (the attending-vote payout rules, §9).
     fn paid_under(a: &Alerted, r: &Rostered, v: &Ballot) -> Vec<(u64, ScriptBuf)> {
         let parties = crate::case::terms(a, r).parties;
-        let crate::settle::Decision::Settled(ends) = crate::settle::decide(
-            r.seats.len(),
-            a.template.pots,
-            &a.template,
-            std::slice::from_ref(v),
-        ) else {
+        let crate::settle::Decision::Settled(ends) =
+            crate::settle::decide_panel(r.seats.len(), a.template.pots, &a.template, v)
+        else {
             return vec![];
         };
         let mut m: Vec<(u64, ScriptBuf)> = vec![];

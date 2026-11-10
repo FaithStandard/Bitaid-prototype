@@ -346,6 +346,9 @@ fn pool_member(mut n: Node) -> i32 {
     // per case, the block height at which its outcome is final unless escalated (deemed consent or
     // a tier's verdict): protocol deadlines are block heights, judged by this member's chain tip
     let mut ready_at: HashMap<String, u32> = HashMap::new();
+    // the height of each case's first ballot reveal: the reveal window runs from it, so a seat that
+    // never reveals cannot hold deemed consent back (review finding D-8)
+    let mut first_reveal: HashMap<String, u32> = HashMap::new();
     let mut done: std::collections::HashSet<String> = Default::default();
     let mut stalled_once = false;
     let mut retried: std::collections::HashSet<(String, u32)> = Default::default();
@@ -435,6 +438,30 @@ fn pool_member(mut n: Node) -> i32 {
                 n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", bitaid_node::pre(&c, 8)));
             }
         }
+        // the reveal window closed with seats still silent: the dispute window starts all the same,
+        // and the silent seats count as no agreement (settle::decide takes 80% of the seats)
+        let tip_now = n.tip();
+        let closed: Vec<String> = first_reveal
+            .iter()
+            .filter(|(c, h)| {
+                !ready_at.contains_key(*c)
+                    && !done.contains(*c)
+                    && !esc.contains_key(*c)
+                    && alerts.get(*c).is_some_and(|a| tip_now >= **h + a.template.reveal_blocks)
+            })
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in closed {
+            let h = tip_now + alerts[&c].template.dispute_blocks;
+            n.log(&format!(
+                "case {}: the reveal window closed with {} of {} ballots; deemed consent at block {h} unless escalated",
+                bitaid_node::pre(&c, 8),
+                reveals.get(&c).map_or(0, |v| v.len()),
+                rosters.get(&c).map_or(0, |r| r.seats.len())
+            ));
+            ready_at.insert(c.clone(), h);
+            first_reveal.remove(&c);
+        }
         // deemed consent: every seat revealed and the dispute window has passed; each member reads
         // the outcome from the ballots itself and releases its own share
         let due: Vec<String> = ready_at
@@ -446,6 +473,7 @@ fn pool_member(mut n: Node) -> i32 {
             ready_at.remove(&c);
             let (a, r) = (&alerts[&c], &rosters[&c]);
             // an arbitrated case settles on its last tier's verdict; otherwise on the ballots
+            let mut ruled = verdicts.contains_key(&c);
             let mut ballots: Vec<Ballot> = match verdicts.get(&c) {
                 Some(v) => vec![v.clone()],
                 None => reveals[&c].values().cloned().collect(),
@@ -465,9 +493,16 @@ fn pool_member(mut n: Node) -> i32 {
                         ));
                     }
                     ballots = vec![v];
+                    ruled = true;
                 }
             }
-            match decide(r.seats.len(), a.template.pots, &a.template, &ballots) {
+            // a panel's ruling settles by the panel rules (a misuse ruling seizes); ballots by §9
+            let decision = if ruled && ballots.len() == 1 {
+                bitaid_node::settle::decide_panel(r.seats.len(), a.template.pots, &a.template, &ballots[0])
+            } else {
+                decide(r.seats.len(), a.template.pots, &a.template, &ballots)
+            };
+            match decision {
                 Decision::Settled(ends) => {
                     for e in ends {
                         // built on the set-bound case id: it completes only this roster's payouts
@@ -1317,9 +1352,11 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log("reveal ignored: does not match its commitment");
                     continue;
                 }
+                first_reveal.entry(case_id.clone()).or_insert(n.tip());
                 let rv = reveals.entry(case_id.clone()).or_default();
                 rv.insert(s.clone(), ballot.clone());
                 if rv.len() == r.seats.len() && !done.contains(case_id) {
+                    first_reveal.remove(case_id);
                     let h = n.tip() + alerts[case_id].template.dispute_blocks;
                     n.log(&format!(
                         "all {} ballots revealed for {}; deemed consent at block {h} unless escalated",
