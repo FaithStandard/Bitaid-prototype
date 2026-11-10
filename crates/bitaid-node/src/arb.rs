@@ -668,6 +668,12 @@ pub struct Replay {
     pub prior_overturns: HashMap<String, usize>,
     /// the bonded arbitrator that flagged the case, if the draw passed it over (§10.3)
     pub flagger: Option<String>,
+    /// each attendee's bond and its pre-signed loser-pays forfeiture (§9), checked
+    pub loser_pays: HashMap<String, (Bond, String)>,
+    /// one tier-1 panel fee: what a losing attendee pays
+    pub loser_fee: u64,
+    /// each attendee's revealed ballot, matching its first commitment
+    pub ballots: HashMap<String, Ballot>,
     /// units already released under their bonds' scripts: (tier, arbitrator)
     pub released: Vec<(u32, String)>,
     /// registered arbitrators who sat on none of the case's tiers: those a review could be drawn from
@@ -783,11 +789,46 @@ impl Replay {
             flagger: None,
             released: vec![],
             review_pool: usize::MAX,
+            loser_pays: HashMap::new(),
+            ballots: HashMap::new(),
+            loser_fee: loser_fee(a),
         };
         let mine: Vec<&Envelope> = hist
             .iter()
             .filter(|e| e.msg.case_id() == Some(case.as_str()))
             .collect();
+        // the attending vote and each attendee's loser-pays forfeiture (§9)
+        let mut bcommits: HashMap<&str, &str> = HashMap::new();
+        for e in &mine {
+            match &e.msg {
+                Msg::BallotCommit { commitment, .. } if r.seats.contains(&e.sender) => {
+                    bcommits.entry(e.sender.as_str()).or_insert(commitment.as_str());
+                }
+                Msg::BallotReveal { ballot, salt, .. } => {
+                    let ok = bcommits.get(e.sender.as_str()).is_some_and(|c| {
+                        *c == hex::encode(ballot.commitment(&wire::h32(salt).unwrap_or_default(), &e.sender))
+                    });
+                    if ok {
+                        rp.ballots.entry(e.sender.clone()).or_insert(ballot.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(spk) = rp.seizure_spk() {
+            for e in &mine {
+                if let Msg::Forfeits { tier: 0, sigs, .. } = &e.msg {
+                    if rp.loser_pays.contains_key(&e.sender) {
+                        continue;
+                    }
+                    let Some(b) = accepted_bond(&mine, &e.sender, rpc) else { continue };
+                    let (_, d) = loser_pays_tx(&b, &oracle, loser_fee(a), &spk);
+                    if sigs.len() == 1 && schnorr_ok(&b.scoped, &d, &sigs[0]) {
+                        rp.loser_pays.insert(e.sender.clone(), (b, sigs[0].clone()));
+                    }
+                }
+            }
+        }
         // tier by tier, since who may open a tier depends on the tier below it
         let max = mine
             .iter()
@@ -1138,6 +1179,26 @@ impl Replay {
                     digest,
                 });
             }
+        }
+        // the loser pays (§9): an attendee whose ballot the final ruling went against pays one tier-1
+        // panel fee from its bond, pre-signed at acceptance; tier 0 in the list
+        let lf = self.loser_fee;
+        for (w, (b, pre)) in &self.loser_pays {
+            let Some(mine) = self.ballots.get(w) else { continue };
+            if verdict_key(mine) == fk || lf == 0 {
+                continue;
+            }
+            let (tx, digest) = loser_pays_tx(b, &self.oracle, lf, &spk);
+            out.push(Penalty {
+                arbitrator: w.clone(),
+                tier: 0,
+                step: 0,
+                amount: lf.min(b.value),
+                bond: b.clone(),
+                pre: pre.clone(),
+                tx,
+                digest,
+            });
         }
         // one order for everyone (reveals arrive in different orders at different nodes): the
         // distribution spends these outputs in this order, so its txid depends on it
@@ -2190,6 +2251,36 @@ pub fn registry_at(hist: &[Envelope], height: u32) -> HashMap<String, Bond> {
 
 /// The entry bond's floor, 0.1 BTC provisional (§2.2, §10.2).
 pub const ENTRY_BOND: u64 = 10_000_000;
+
+/// One tier-1 panel fee: what an attendee whose ballot a panel rules against pays (§9, loser pays).
+pub fn loser_fee(a: &Alerted) -> u64 {
+    panel_size(1) as u64 * seat_fee(a.template.arb_fee, 1)
+}
+
+/// An attendee's loser-pays forfeiture: its bond pays `fee` into the case's seizure output, the rest
+/// re-bonded (the same forfeiture leaf as an arbitrator's penalties).
+pub fn loser_pays_tx(bond: &Bond, oracle: &XOnlyPublicKey, fee: u64, seizure: &ScriptBuf) -> (Transaction, [u8; 32]) {
+    bond.penalty_tx(oracle, fee, seizure)
+}
+
+/// The bond an attendee accepted the case with, as its Accept states it and the chain shows it.
+pub fn accepted_bond(mine: &[&Envelope], who: &str, rpc: &Rpc) -> Option<Bond> {
+    mine.iter().find_map(|e| match &e.msg {
+        Msg::Accept { bond, bond_scoped, bond_cold, bond_fallback, payout_spk, .. } if e.sender == who => {
+            let op = OutPoint::from_str(bond).ok()?;
+            let (value, _) = rpc.output(&op)?;
+            Some(Bond {
+                op,
+                value,
+                scoped: wire::xonly(bond_scoped)?,
+                cold: wire::xonly(bond_cold)?,
+                fallback: *bond_fallback,
+                payout: ScriptBuf::from_hex(payout_spk).ok()?,
+            })
+        }
+        _ => None,
+    })
+}
 
 /// Every arbitrator the log knows, by its first seat offer (registration or any case): the pool review
 /// panels are drawn from.
