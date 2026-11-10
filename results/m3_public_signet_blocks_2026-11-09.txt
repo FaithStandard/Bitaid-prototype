@@ -1,0 +1,163 @@
+Bitcoin's public signet, over Tor, PC + tablet + phone, 2026-11-09: the first public run with the protocol's
+deadlines in blocks (commit, reveal and dispute: 3 blocks each), the staged review at 100%, and a hostile
+peer two hours in. 81 passed, 1 failed.
+
+- The attending vote split; r1 (tablet) escalated. Tier 1 (three arbitrators drawn from block 330110, the
+  captured panel) ruled D,I for r1's false claim, committed in block 330113, final at block 330116 unless
+  appealed (pool members); nobody appealed.
+- The final panel was split, so the case was drawn for review (block 330115). Three review panels in turn
+  found I,D at 80%: in stage 1 three drawn reviewers would rather not serve and paid blind-drawn
+  replacements; in stages 2 and 3 a silent reviewer was replaced, and one that accepted and never revealed
+  was charged a missed reveal. The verdict was overturned; the two arbitrators who voted for it had their
+  whole units (20,000 sats each) forfeited by pre-signed forfeitures and the pool's co-signature, and the
+  seizure was distributed: the wronged responder, the dissenter who was right, the reviewers, the archivist.
+- The phone's lying pool member sent an invalid partial signature: caught, its seat given up, the set
+  re-signed. The hostile peer: 9 of 9 attacks handled during the case; every node refused its fake height.
+- The one failure: r1 could not broadcast the bounty payout, having no confirmed fee coin left after
+  escalating; the phone's caller broadcast the same payout later and every pot settled. Fixed in ce27914 /
+  46f003c (a party without a fee coin waits for another's broadcast; r1 gets 12 fee coins).
+- The phone lost its link to the PC's onion for a stretch after the evidence step (Tor 'host unreachable',
+  then flapping links); the Core logged no cause on its side. The case did not need the phone then.
+
+PC: 52 passed, 0 failed. Tablet (r1 + pool member 3): 16 passed, 1 failed. Phone (caller + lying pool
+member 4): 13 passed, 0 failed.
+
+===== archivist (PC)
+[PASS] archivist-pc case d78d6c12: drawn for review at block 330115 (100% for a split final panel); convening the staged review
+[PASS] archivist-pc review stage 1: 5 of the 23 eligible arbitrators in the pool drawn from block 330122; each must accept or pay its replacement
+[PASS] archivist-pc review stage 1: 9195eabc would rather not serve and posted a replacement fee from 330 sats
+[PASS] archivist-pc review stage 1: 39e2579e would rather not serve and posted a replacement fee from 330 sats
+[PASS] archivist-pc review stage 1: 9195eabc replaced at 330 sats by 8c8a4c72, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist-pc review stage 1: f0697a36 would rather not serve and posted a replacement fee from 330 sats
+[PASS] archivist-pc review stage 1: 39e2579e replaced at 330 sats by fb31aa64, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist-pc review stage 1: f0697a36 replaced at 330 sats by 5590c87a, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist-pc review stage 1: the leaver paid its replacement 8c8a4c72 the 330 sats on chain; the case disclosed to the replacement — 8615f3c614dd9561
+[PASS] archivist-pc review stage 1: the leaver paid its replacement fb31aa64 the 330 sats on chain; the case disclosed to the replacement — 8f53dc552c1f2386
+[PASS] archivist-pc review stage 1: the leaver paid its replacement 5590c87a the 330 sats on chain; the case disclosed to the replacement — 170475c6ff3db532
+[PASS] archivist-pc review stage 1: 5 of 5 findings revealed and committed on chain; 80% found I,D — 3617.2 s from convening
+[PASS] archivist-pc review stage 2: 5 of the 15 eligible arbitrators in the pool drawn from block 330128; each must accept or pay its replacement
+[PASS] archivist-pc review stage 2: d0948239 silent past the window — one declined assignment toward the inactivity rule, no momentum; ba8af468 drawn in its place
+[PASS] archivist-pc review stage 2: 9d325659 accepted and never revealed its finding — charged as a missed reveal in its momentum
+[PASS] archivist-pc review stage 2: 4 of 5 findings revealed and committed on chain; 80% found I,D — 7710.1 s from convening
+[PASS] archivist-pc review stage 3: 5 of the 9 eligible arbitrators in the pool drawn from block 330141; each must accept or pay its replacement
+[PASS] archivist-pc review stage 3: bfe568b8 silent past the window — one declined assignment toward the inactivity rule, no momentum; f59352f7 drawn in its place
+[PASS] archivist-pc review stage 3: 5 of 5 findings revealed and committed on chain; 80% found I,D — 404.3 s from convening
+[PASS] archivist-pc case d78d6c12: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist-pc case d78d6c12: 2 arbitrator(s) voted for the overturned verdict; 2 unit(s) still held, 0 already released
+[PASS] archivist-pc tier 1 arbitrator 6bb2df42: its whole unit (20000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 531e5c349f5575bc (pool members [1, 2, 3])
+[PASS] archivist-pc tier 1 arbitrator 83c61780: its whole unit (20000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 7a9bb19c0b432135 (pool members [2, 1, 3])
+[PASS] archivist-pc review seizure distributed (§12) by the pool and the archivist: 3600 sats to a responder, 990 sats to a vindicated dissenter, 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 990 sats to a reviewer (premium), 21550 sats to the archivist (retention of the case's evidence) — 0062325335abe43d
+===== r3 (PC)
+[PASS] r3-pc alert d78d6c12 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r3-pc pre-signed set v1 verified (seat 0) — 39 payouts
+[PASS] r3-pc incident transaction on chain: every pot output exists — 502b16e8f4f6f4dd1ca8f9c9be5587f9ab3cda616197d4e5b79edb0655249448
+[PASS] r3-pc evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[PASS] r3-pc deposit: "returned" completes with the attestation
+[PASS] r3-pc reward: "paid (3, 7)" completes with the attestation
+[PASS] r3-pc bounty: "split (3, 7)" completes with the attestation
+[PASS] r3-pc my shares arrived at my payout address — 1800 sats
+[r3-pc] 8 passed, 0 failed
+===== r4 (PC)
+[PASS] r4-pc-cheat alert d78d6c12 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r4-pc-cheat dropped from the set after sending a bad partial signature (expected for this test)
+[r4-pc-cheat] 2 passed, 0 failed
+===== rogue (PC)
+rogue: waiting 7200 s, so the attacks land while a case runs
+[PASS] rogue control: a fresh, validly signed message is forwarded
+[PASS] rogue a message dated two days ago and one dated tomorrow: neither forwarded
+[PASS] rogue replay of a message already seen (599c8348…): not forwarded again
+[PASS] rogue an escalation claiming block 10,000,000 relayed for the nodes to judge (they should log 'refused Escalate')
+[PASS] rogue a 2176 KiB message with no end: link closed
+[PASS] rogue 1050 lines of garbage: link closed
+[PASS] rogue flood of validly signed messages: link closed after 22990 sent in 26.6 s (limit: a burst of 20000, then 100/s)
+[PASS] rogue 80 connections at once: 51 closed by the Core (it keeps at most 64 incoming)
+[PASS] rogue after the storm: a new peer accepted and its message forwarded
+[rogue] 9 passed, 0 failed
+===== arb1 (PC)
+[PASS] arb1-pc case d78d6c12: review draw at block 330115 (100% for a split final panel): drawn for review; units held
+[PASS] arb1-pc case d78d6c12: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
+===== arb4 (PC)
+[PASS] arb4-pc case d78d6c12: review draw at block 330115 (100% for a split final panel): drawn for review; units held
+[PASS] arb4-pc case d78d6c12: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+===== arb8 (PC)
+[PASS] arb8-pc case d78d6c12: review draw at block 330115 (100% for a split final panel): drawn for review; units held
+[PASS] arb8-pc case d78d6c12: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+===== arb21 (PC)
+[PASS] arb21-pc review stage 1: replaced by 5590c87a, drawn blind from 1 offer(s); paid it 17621 sats — 170475c6ff3db532
+===== arb23 (PC)
+[PASS] arb23-pc review stage 1: replaced by 8c8a4c72, drawn blind from 1 offer(s); paid it 444 sats — 8615f3c614dd9561
+===== arb24 (PC)
+[PASS] arb24-pc review stage 1: replaced by fb31aa64, drawn blind from 1 offer(s); paid it 1027 sats — 8f53dc552c1f2386
+===== pool members (PC), deadline lines
+[pool1-pc 5815.97s] all 2 ballots revealed for d78d6c12; deemed consent at block 330112 unless escalated
+[pool1-pc 7225.12s] refused escalate from 7aed1862: claims height 10000000 (chain at 330109)
+[pool1-pc 8910.30s] tier 1 verdict D,I committed on chain in block 330113; final at block 330116 unless appealed
+[pool2-pc-stall 5815.97s] all 2 ballots revealed for d78d6c12; deemed consent at block 330112 unless escalated
+[pool2-pc-stall 7225.12s] refused escalate from 7aed1862: claims height 10000000 (chain at 330109)
+[pool2-pc-stall 8910.30s] tier 1 verdict D,I committed on chain in block 330113; final at block 330116 unless appealed
+
+===== tablet (r1)
+TOR_READY socks 127.0.0.1:9160
+[r1] gossip: dialling 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700 through Tor …
+gossip: link up (to 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700)
+[r1    0.00s] responder on 1 link(s), identity 93fd8c3403c26698
+[r1  927.02s] bond 60d17c53e39a posted; listening on 7 cells around 886d75db27fffff
+huygy5yju[PASS] r1 alert d78d6c12 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r1 1689.20s] ACCEPT sent
+[r1 1780.28s] set v0 failed: signer 2: invalid partial signature on message 0; waiting for a re-roll
+[r1 1796.78s] set v1 complete: 39 payouts + 3 refunds, 3 signers, 6.88 s
+[PASS] r1 pre-signed set v1 verified (seat 1) — 39 payouts
+[PASS] r1 incident transaction on chain: every pot output exists — 502b16e8f4f6f4dd1ca8f9c9be5587f9ab3cda616197d4e5b79edb0655249448
+[PASS] r1 evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 6.56 s
+[r1 2711.37s] 2 of 2 commitments in; revealing
+[PASS] r1 attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
+[r1 2712.32s] ESCALATE tier 1 (3 seats): seat 0: no 80% agreement on its class
+[PASS] r1 tier 1: 3 of 3 offering arbitrators drawn from block 330110, case disclosed only to them — 1538.1 s after escalating
+[r1 4274.84s] refused escalate from 7aed1862: claims height 10000000 (chain at 330110)
+[PASS] r1 tier 1: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[PASS] r1 tier 1: 3 × 330 sats paid to the seats — 7b47c6325e836614
+[PASS] r1 tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — bb6efda73f06e9ec700ed851f8b0a946789bd7a30f0dccfd27aaf1845e2880b5
+[PASS] r1 tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 3101.4 s from escalation
+[r1 5813.75s] standing verdict after tier 1: D,I — upholds my claim
+[PASS] r1 deposit: "returned" completed by the attestation and broadcast
+[PASS] r1 reward: "paid (3, 7)" completed by the attestation and broadcast
+[FAIL] r1 bounty: "split (3, 7)" completed by the attestation and broadcast — no wallet coin to pay the fee
+[r1 7835.61s] FAIL bounty: "split (3, 7)" completed by the attestation and broadcast — no wallet coin to pay the fee
+[PASS] r1 my shares arrived at my payout address — 4200 sats
+[PASS] r1 tier 1 arbitrator a5538140: 2.0× the 330-sat fee (660 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 0527a6b4dd540459 (pool members [1, 2, 3])
+[PASS] r1 seizure distribution signed by 1 of 1 archivist(s) after their own replay
+[PASS] r1 seizure output distributed (§12) by the pool and the archivists: 660 sats to the archivists — c1fdb8a9b5ea2c58
+[r1] 16 passed, 1 failed
+
+===== phone (caller)
+TOR_READY socks 127.0.0.1:9160
+[caller] gossip: dialling 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700 through Tor …
+[caller    0.00s] caller on 1 link(s), identity e89386c15b6c6940
+[PASS] caller oracle pool found and checked: 4 members, threshold 3, 60 nonces — 7bb164e412e2ce30
+[caller   20.62s] pool 7bb164e412e2…, 1 archivist(s)
+[caller   20.62s] pool ready; alerting in 15 s so responders can start listening
+[PASS] caller 26 arbitrators registered before the alert — 26 registered
+[PASS] caller registration: funding output (no key path) and template committed — 7917b824e235bb1af3f5a4764054d2980c42d8cb1397909741345bc37c4610ee:0
+[caller 1561.06s] ALERT case d78d6c12 in H3 cell 886d75db27fffff
+[caller 1570.18s] accepted by e7311a1f (bond ed652ada1958)
+[caller 1574.19s] accepted by 09bd8fc5 (bond dce736d4d3d5)
+[caller 1581.03s] accepted by 93fd8c34 (bond 60d17c53e39a)
+[PASS] caller 3 responder(s) accepted within the joining window, bonds checked on chain — first after 13.01 s
+[caller 1594.04s] nonces [34, 52, 47] reserved by 4 of 4 members
+[caller 1597.05s] ROSTER v0: 3 seat(s), incident 4a62740a
+[caller 1666.86s] set v0 failed: signer 2: invalid partial signature on message 0
+[PASS] caller signer 2 caught sending an invalid partial signature; its seat is given up and the set re-signed — signer 2: invalid partial signature on message 0
+[caller 1666.87s] ROSTER v1: 2 seat(s), incident 502b16e8
+[caller 1675.30s] set v1 complete: 39 payouts + 3 refunds, 3 signers, 8.41 s
+[PASS] caller pre-signed set v1 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
+[caller 1712.22s] pool member 2 committed but did not sign session 1; replaced
+[PASS] caller pool co-signed the incident (FROST, 3 of 4 members) — 2 session(s), signers [1, 3, 4], 48.42 s
+[PASS] caller incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
+[caller 2574.74s] time from alert to a funded, fully pre-signed incident: 1017.57 s
+[PASS] caller evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 54.78 s
+[PASS] caller deposit: "returned" completed by the attestation and broadcast — already broadcast by another party
+[PASS] caller reward: "paid (3, 7)" completed by the attestation and broadcast — already broadcast by another party
+[PASS] caller bounty: "split (3, 7)" completed by the attestation and broadcast
+[PASS] caller all 3 pots settled on chain by the attested outcome (3 payouts confirmed) — deposit: returned; reward: paid (3, 7); bounty: split (3, 7)
+[caller] 13 passed, 0 failed
+keeping pool member up 36000 s for penalties
