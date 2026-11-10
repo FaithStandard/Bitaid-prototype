@@ -2051,11 +2051,21 @@ fn upload_evidence(
     for (_, _, url) in archivists {
         let mut all = true;
         for b in &blobs {
-            // one retry: a first connection to an onion service can time out while its circuit builds
-            let r = blossom::upload(url, &n.keys, &c, b).or_else(|e| {
-                n.log(&format!("upload to {url} failed ({e}); retrying"));
-                blossom::upload(url, &n.keys, &c, b)
-            });
+            // retried: a first connection to an onion service can time out while its circuit builds,
+            // and an archivist busy convening a review may not have read the roster yet (401); a
+            // refusal is retried with backoff for up to two minutes
+            let mut r = blossom::upload(url, &n.keys, &c, b);
+            let t_up = Instant::now();
+            let mut wait = 1u64;
+            while let Err(e) = &r {
+                if t_up.elapsed() > secs(bitaid_node::slow(120)) {
+                    break;
+                }
+                n.log(&format!("upload to {url} failed ({e}); retrying in {wait} s"));
+                std::thread::sleep(Duration::from_secs(wait));
+                wait = (wait * 2).min(15);
+                r = blossom::upload(url, &n.keys, &c, b);
+            }
             if let Err(e) = &r {
                 n.log(&format!("upload to {url} failed: {e}"));
             }
