@@ -1905,7 +1905,9 @@ fn read_tier(
     let late: Vec<String> = vcommits
         .keys()
         .filter(|w| match (t.seat_height.get(*w), commit_h.get(*w)) {
-            (Some(sh), Some(ch)) => *ch >= deadline(w, *sh),
+            // the fee confirms at or after the draw, so a commit before draw + commit_blocks is in
+            // time without looking the fee up (the lookup is costly in a replay)
+            (Some(sh), Some(ch)) => *ch >= sh + commit_blocks && *ch >= deadline(w, *sh),
             _ => false,
         })
         .cloned()
