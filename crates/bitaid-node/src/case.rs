@@ -33,7 +33,13 @@ pub struct Alerted {
     pub wallet_key: String,
     pub scoped_key: String,
     pub oracle_key: String,
+    pub attest_key: String,
     pub fallback_height: u32,
+}
+
+/// How a registration names its pool: the co-signing key, then the attestation key.
+pub fn pool_id(cosign: &str, attest: &str) -> String {
+    format!("{cosign}{attest}")
 }
 
 impl Alerted {
@@ -65,6 +71,7 @@ impl Alerted {
             wallet_key,
             scoped_key,
             oracle_key,
+            attest_key,
             fallback_height,
             template: rt,
             wallet_sig,
@@ -75,8 +82,12 @@ impl Alerted {
         if &rt != template {
             return Err("alert economics differ from the registered template".into());
         }
-        if oracle_key != oracle_expected {
-            return Err("funding output names another oracle".into());
+        // `oracle_expected` is the pool's id: both its keys, which must be distinct (or, for a replay
+        // of the log that relies on no attestation, the co-signing key alone)
+        let named = pool_id(&oracle_key, &attest_key) == oracle_expected
+            || (oracle_expected.len() == 64 && oracle_key == oracle_expected);
+        if !named || oracle_key == attest_key {
+            return Err("registration names another oracle".into());
         }
         let d = registration_digest(&scoped_key, &rt, &funding);
         let sig: [u8; 64] = hex::decode(&wallet_sig)
@@ -120,6 +131,7 @@ impl Alerted {
             wallet_key,
             scoped_key,
             oracle_key,
+            attest_key,
             fallback_height,
         })
     }
@@ -300,7 +312,7 @@ pub fn terms(a: &Alerted, r: &Rostered) -> IncidentTerms {
             good_faith_pct: a.template.good_faith_pct as u64,
         },
         signers: signers(a, r),
-        oracle: point_from(&format!("02{}", a.oracle_key)).unwrap(),
+        oracle: point_from(&format!("02{}", a.attest_key)).unwrap(),
         oracle_nonces: r.oracle_nonces,
         refund_height: r.refund_height,
     }
