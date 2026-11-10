@@ -13,6 +13,36 @@ use musig2::secp::{Point, Scalar};
 use musig2::{AggNonce, KeyAggContext, PartialSignature, PubNonce, SecNonce};
 
 /// Everything fixed at acceptance.
+/// The case id the outcome messages of one signing set are built on (Specification B.2): the case id
+/// bound to the set's incident transaction, signers, payout scripts, refund height, pots and oracle
+/// nonces. An attestation for an outcome of one set therefore completes no other set's payouts, even if
+/// a roster were replaced or a nonce reused.
+pub fn set_bound_id(terms: &IncidentTerms, incident: &bitcoin::Txid) -> [u8; 32] {
+    use bitcoin::hashes::Hash;
+    let mut b = terms.case_id.to_vec();
+    b.extend_from_slice(&incident.to_byte_array());
+    b.extend_from_slice(&terms.set_version.to_le_bytes());
+    for p in &terms.pots {
+        b.extend_from_slice(&p.to_le_bytes());
+    }
+    for k in &terms.signers {
+        b.extend_from_slice(&k.serialize());
+    }
+    let script = |b: &mut Vec<u8>, s: &bitcoin::ScriptBuf| {
+        b.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        b.extend_from_slice(s.as_bytes());
+    };
+    script(&mut b, &terms.parties.caller);
+    for s in &terms.parties.responders {
+        script(&mut b, s);
+    }
+    b.extend_from_slice(&terms.refund_height.to_le_bytes());
+    for r in &terms.oracle_nonces {
+        b.extend_from_slice(&r.serialize());
+    }
+    crate::hashes::tagged("Bitaid/set", &b)
+}
+
 #[derive(Clone, Debug)]
 pub struct IncidentTerms {
     pub case_id: [u8; 32],
@@ -47,6 +77,8 @@ pub struct Refund {
 }
 
 pub struct IncidentSet {
+    /// the case id bound to this set, which every outcome message is built on (set_bound_id)
+    pub bound: [u8; 32],
     pub terms: IncidentTerms,
     pub ctx: KeyAggContext,
     pub pot_spk: ScriptBuf,
@@ -80,6 +112,7 @@ impl IncidentSet {
             }
         }
         let k = terms.signers.len() - 1;
+        let bound = set_bound_id(&terms, &incident_txid);
         let mut payouts = Vec::new();
         for e in endings(k) {
             let i = e.pot.index();
@@ -95,7 +128,7 @@ impl IncidentSet {
                     script_pubkey: pot_spk.clone(),
                 }],
             );
-            let m = e.message(&terms.case_id, terms.set_version);
+            let m = e.message(&bound, terms.set_version);
             let point = attestation_point(&terms.oracle_nonces[i], &terms.oracle, &m);
             payouts.push(Payout {
                 ending: e,
@@ -126,6 +159,7 @@ impl IncidentSet {
             }
         }
         IncidentSet {
+            bound,
             terms,
             ctx,
             pot_spk,
@@ -172,7 +206,7 @@ impl IncidentSet {
     pub fn message(&self, pot: Pot, label: &str) -> Option<[u8; 32]> {
         self.find(pot, label).map(|p| {
             p.ending
-                .message(&self.terms.case_id, self.terms.set_version)
+                .message(&self.bound, self.terms.set_version)
         })
     }
 

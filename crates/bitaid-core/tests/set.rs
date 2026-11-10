@@ -143,3 +143,37 @@ fn distributed_signing_matches_and_catches_bad_partials() {
     assert!(err.starts_with("signer 2"), "{err}");
     assert!(fresh.payouts.iter().all(|p| p.presig.is_none()));
 }
+
+/// Outcome messages are bound to the set (Specification B.2): two rosters for the same case, same set
+/// version and same oracle nonces, differing only in one responder's payout script, sign different
+/// messages for every ending, so an attestation produced under one set completes nothing in the other.
+#[test]
+fn messages_bound_to_the_set() {
+    let secrets: Vec<_> = (0..3).map(|_| random_scalar()).collect();
+    let signers: Vec<Point> = secrets.iter().map(|s| *s * G).collect();
+    let mut oracle = Oracle::new();
+    let case = case_id("case-bound");
+    let nonces = Pot::ALL.map(|p| oracle.announce(&event_id(&case, p)));
+    let terms = |r2: u8| IncidentTerms {
+        case_id: case,
+        set_version: 0,
+        pots: [100_000, 600_000, 300_000],
+        parties: Parties {
+            caller: spk(0),
+            responders: vec![spk(1), spk(r2)],
+            merit: vec![1, 1],
+            good_faith_pct: 50,
+        },
+        signers: signers.clone(),
+        oracle: oracle.pubkey(),
+        oracle_nonces: nonces,
+        refund_height: 1_000,
+    };
+    let a = IncidentSet::build(terms(2), Txid::all_zeros());
+    let b = IncidentSet::build(terms(9), Txid::all_zeros());
+    assert_ne!(a.bound, b.bound);
+    for p in &a.payouts {
+        let m = a.message(p.ending.pot, &p.ending.label).unwrap();
+        assert_ne!(Some(m), b.message(p.ending.pot, &p.ending.label), "{}", p.ending.label);
+    }
+}

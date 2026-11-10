@@ -1,6 +1,6 @@
 //! The incident as every party reconstructs it from the alert and the roster, so that each builds
 //! byte-identical transactions without trusting anyone else's copy.
-use crate::node::point_from;
+use crate::node::{point_from, point_hex};
 use crate::wire::{self, h32, Msg, Template};
 use bitaid_core::hashes::tagged;
 use bitaid_core::oracle::verify_bip340;
@@ -184,6 +184,88 @@ impl Rostered {
             archivists: archivists.clone(),
         })
     }
+}
+
+/// What a responder's signed Accept committed to, as the pool reads it from the log.
+#[derive(Clone, Debug)]
+pub struct AcceptInfo {
+    pub musig_key: String,
+    pub payout_spk: String,
+    pub bond: String,
+    pub bond_scoped: String,
+    pub bond_cold: String,
+    pub bond_fallback: u32,
+}
+
+/// A pool member's check of a roster before it confirms it, co-signs its incident or attests under it
+/// (Specification §3.2): every seat accepted this case with exactly these keys and payout scripts, each
+/// seat's bond is on chain with the bond script, at least `min_bond` and at least `fallback_margin`
+/// blocks of its fallback left, the refund height is a full refund delay away, and the incident
+/// transaction is the template's. `utxo` reads an unspent output.
+#[allow(clippy::too_many_arguments)]
+pub fn check_roster(
+    a: &Alerted,
+    r: &Rostered,
+    accepts: &std::collections::HashMap<String, AcceptInfo>,
+    utxo: impl Fn(&OutPoint) -> Option<bitcoin::TxOut>,
+    tip: u32,
+    min_bond: u64,
+    fallback_margin: u32,
+) -> Result<(), String> {
+    use std::collections::HashSet;
+    if r.seats.is_empty() || r.seats.len() > a.template.max_signers as usize {
+        return Err(format!("{} seats", r.seats.len()));
+    }
+    if r.seats.iter().collect::<HashSet<_>>().len() != r.seats.len() {
+        return Err("a seat listed twice".into());
+    }
+    if r.musig_keys.len() != r.seats.len() || r.payout_spks.len() != r.seats.len() {
+        return Err("keys or payout scripts do not match the seats".into());
+    }
+    // a little slack: the caller set it a few blocks ago
+    if r.refund_height + 12 < tip + a.template.refund_delay {
+        return Err(format!(
+            "refund height {} is less than the refund delay ({}) away from block {tip}",
+            r.refund_height, a.template.refund_delay
+        ));
+    }
+    let secp = Secp256k1::verification_only();
+    let oracle = wire::xonly(&a.oracle_key).ok_or("oracle key")?;
+    for (i, who) in r.seats.iter().enumerate() {
+        let acc = accepts
+            .get(who)
+            .ok_or_else(|| format!("seat {} never accepted this case", &who[..8.min(who.len())]))?;
+        if point_hex(&r.musig_keys[i]) != acc.musig_key {
+            return Err(format!("seat {i}: not the signing key it accepted with"));
+        }
+        if r.payout_spks[i].to_hex_string() != acc.payout_spk {
+            return Err(format!("seat {i}: not the payout script it accepted with"));
+        }
+        if acc.bond_fallback < tip + fallback_margin {
+            return Err(format!("seat {i}: its bond's fallback (block {}) is too near", acc.bond_fallback));
+        }
+        let op: OutPoint = acc.bond.parse().map_err(|_| format!("seat {i}: bond outpoint"))?;
+        let out = utxo(&op).ok_or_else(|| format!("seat {i}: its bond is not an unspent output"))?;
+        let t = bitaid_core::outputs::bond(
+            &secp,
+            &wire::xonly(&acc.bond_scoped).ok_or("bond key")?,
+            &wire::xonly(&acc.bond_cold).ok_or("bond key")?,
+            &oracle,
+            acc.bond_fallback,
+        );
+        if out.script_pubkey != t.script_pubkey() || out.value.to_sat() < min_bond {
+            return Err(format!("seat {i}: not a bond of at least {min_bond} sats"));
+        }
+    }
+    if incident_tx(a, r).compute_txid() != r.incident_txid {
+        return Err("not the template's incident transaction".into());
+    }
+    Ok(())
+}
+
+/// The set-bound case id of this roster's outcome messages (Specification B.2).
+pub fn bound_id(a: &Alerted, r: &Rostered) -> [u8; 32] {
+    bitaid_core::presign::set_bound_id(&terms(a, r), &r.incident_txid)
 }
 
 /// The signers in order: the caller's scoped key, then the seats.

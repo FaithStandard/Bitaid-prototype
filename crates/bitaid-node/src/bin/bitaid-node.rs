@@ -323,6 +323,10 @@ fn pool_member(mut n: Node) -> i32 {
     n.subscribe("all", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
     let mut alerts: HashMap<String, Alerted> = HashMap::new();
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
+    // per case, what each responder's signed Accept committed to; and the cases whose incident this
+    // member has co-signed (their roster can no longer be replaced)
+    let mut accepted: HashMap<String, HashMap<String, case::AcceptInfo>> = HashMap::new();
+    let mut cosigned: std::collections::HashSet<String> = Default::default();
     let mut assigned: HashMap<String, Vec<u32>> = HashMap::new();
     let mut taken: HashMap<u32, String> = HashMap::new();
     let mut digests: HashMap<(String, u32), [u8; 32]> = HashMap::new();
@@ -446,7 +450,8 @@ fn pool_member(mut n: Node) -> i32 {
             match decide(r.seats.len(), a.template.pots, &a.template, &ballots) {
                 Decision::Settled(ends) => {
                     for e in ends {
-                        let msg = e.message(&a.case_id, r.set_version);
+                        // built on the set-bound case id: it completes only this roster's payouts
+                        let msg = e.message(&case::bound_id(a, r), r.set_version);
                         let index = assigned[&c][e.pot.index()] as usize;
                         match m.attest(index, &msg) {
                             Ok(share) => {
@@ -579,11 +584,60 @@ fn pool_member(mut n: Node) -> i32 {
                     &case_id[..8]
                 ));
             }
+            Msg::Accept {
+                case_id,
+                musig_key,
+                bond,
+                bond_scoped,
+                bond_cold,
+                bond_fallback,
+                payout_spk,
+            } => {
+                accepted.entry(case_id.clone()).or_default().insert(
+                    s.clone(),
+                    case::AcceptInfo {
+                        musig_key: musig_key.clone(),
+                        payout_spk: payout_spk.clone(),
+                        bond: bond.clone(),
+                        bond_scoped: bond_scoped.clone(),
+                        bond_cold: bond_cold.clone(),
+                        bond_fallback: *bond_fallback,
+                    },
+                );
+            }
             Msg::Roster { case_id, .. } => {
                 let (Some(a), Some(r)) = (alerts.get(case_id), Rostered::from_msg(&env.msg)) else {
                     continue;
                 };
                 if a.caller != s {
+                    continue;
+                }
+                // once the incident is co-signed, the set is fixed: a replacement could seat the
+                // caller's own identities and steer the vote (review finding: roster swap)
+                if cosigned.contains(case_id) {
+                    n.log(&format!(
+                        "roster v{} for {} refused: the incident is already co-signed",
+                        r.set_version,
+                        &case_id[..8]
+                    ));
+                    continue;
+                }
+                let empty = HashMap::new();
+                let acc = accepted.get(case_id).unwrap_or(&empty);
+                if r.seats.iter().any(|x| !acc.contains_key(x)) {
+                    // an acceptance not yet seen here: look again shortly
+                    later!();
+                }
+                if let Err(e) = case::check_roster(
+                    a,
+                    &r,
+                    acc,
+                    |op| n.rpc.utxo(op),
+                    n.rpc.height(),
+                    bitaid_node::sats(BOND_FLOOR),
+                    fallback_blocks() / 2,
+                ) {
+                    n.log(&format!("roster v{} for {} refused: {e}", r.set_version, &case_id[..8]));
                     continue;
                 }
                 // the roster must use the nonces this member reserved for the case
@@ -607,7 +661,15 @@ fn pool_member(mut n: Node) -> i32 {
                 }
                 commits.remove(case_id);
                 reveals.remove(case_id);
+                // tell the seats: they sign only a set a threshold of members has confirmed
+                let ack = Msg::RosterAck {
+                    case_id: case_id.clone(),
+                    set_version: r.set_version,
+                    bound: hex::encode(case::bound_id(a, &r)),
+                };
+                let seats = r.seats.clone();
                 rosters.insert(case_id.clone(), r);
+                n.send_case(case_id, &seats, ack, false);
             }
             Msg::CosignRequest {
                 case_id,
@@ -626,7 +688,9 @@ fn pool_member(mut n: Node) -> i32 {
                     && t.compute_txid() == case::incident_tx(a, r).compute_txid()
                     && t.compute_txid() == r.incident_txid
                 {
-                    // the template's incident transaction for this roster
+                    // the template's incident transaction for this roster, whose roster this member
+                    // checked; from now on the roster cannot be replaced
+                    cosigned.insert(case_id.clone());
                     let tree = a.funding_tree();
                     txbuild::scriptspend_digest(
                         &t,
@@ -1441,6 +1505,33 @@ fn archivist(mut n: Node) -> i32 {
 
 /// Runs both signing rounds for this signer over the relays and completes the set.
 /// Returns the set, or Err naming the signer whose partial signature failed.
+/// Waits until a threshold of the pool's members has confirmed this exact roster (RosterAck with its
+/// set-bound case id): they checked every seat's acceptance and bond, the refund height and their own
+/// nonces, and will attest only under it. Nobody signs a set the pool has not confirmed.
+fn wait_roster_acks(n: &mut Node, view: &pool::PoolView, a: &Alerted, r: &Rostered) -> Result<usize, String> {
+    let want = hex::encode(case::bound_id(a, r));
+    let ids: std::collections::HashSet<String> = view.identities().into_iter().collect();
+    let (c, v) = (a.case_hex.clone(), r.set_version);
+    let mut from = std::collections::HashSet::new();
+    let got = n.collect(
+        secs(bitaid_node::slow(60)),
+        |env, _| match &env.msg {
+            Msg::RosterAck { case_id, set_version, bound }
+                if *case_id == c && *set_version == v && *bound == want && ids.contains(&env.sender) =>
+            {
+                from.insert(env.sender.clone()).then_some(())
+            }
+            _ => None,
+        },
+        |x| x.len() >= view.t,
+    );
+    if got.len() >= view.t {
+        Ok(got.len())
+    } else {
+        Err(format!("{} of {} pool members confirmed the roster", got.len(), view.t))
+    }
+}
+
 fn sign_set(
     n: &mut Node,
     a: &Alerted,
@@ -1627,7 +1718,7 @@ fn settle(
     for (pot, (m, sc)) in got {
         let p = Pot::ALL[pot as usize];
         let Some(payout) = set.payouts.iter().find(|x| {
-            x.ending.pot == p && x.ending.message(&a.case_id, set.terms.set_version) == m
+            x.ending.pot == p && x.ending.message(&set.bound, set.terms.set_version) == m
         }) else {
             n.check(
                 &format!(
@@ -5141,6 +5232,10 @@ fn caller(mut n: Node) -> i32 {
             r.seats.len(),
             &r.incident_txid.to_string()[..8]
         ));
+        if let Err(e) = wait_roster_acks(&mut n, &view, &a, &r) {
+            n.check("the pool confirmed the roster", false, &e);
+            return n.summary();
+        }
         match sign_set(&mut n, &a, &r, 0, &k, false) {
             Ok(s) => break (s, r),
             Err(e) => {
@@ -5420,6 +5515,26 @@ fn responder(mut n: Node) -> i32 {
                 "",
             );
             return n.summary();
+        }
+        // my own entry is what I accepted with, and the refund is a full refund delay away: a caller
+        // cannot redirect my pay or refund the pots right after the incident confirms
+        let mine_ok = r.musig_keys.get(seat) == Some(&(sk * G))
+            && r.payout_spks.get(seat) == Some(&payout)
+            && r.refund_height + 12 >= n.rpc.height() + a.template.refund_delay;
+        if !mine_ok {
+            n.check(
+                "roster carries my signing key and payout script, and a full refund delay",
+                false,
+                &format!("v{}", r.set_version),
+            );
+            return n.summary();
+        }
+        match wait_roster_acks(&mut n, &view, &a, &r) {
+            Ok(k) => n.log(&format!("roster v{} confirmed by {k} pool members", r.set_version)),
+            Err(e) => {
+                n.log(&format!("roster v{} not confirmed: {e}; waiting for another", r.set_version));
+                continue;
+            }
         }
         match sign_set(&mut n, &a, &r, seat + 1, &sk, corrupt) {
             Ok(s) => break (s, r, seat),

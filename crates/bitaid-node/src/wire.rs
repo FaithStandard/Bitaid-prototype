@@ -172,6 +172,15 @@ pub enum Msg {
         /// identity keys of the case's archivists: they co-sign the seizure output's distribution (§12)
         archivists: Vec<Hex32>,
     },
+    /// A pool member's confirmation that it checked a roster (every seat accepted with these keys and
+    /// payout scripts, bonds on chain, refund height, its own reserved nonces) and will attest under it:
+    /// `bound` is the set-bound case id the outcome messages are built on. A responder signs only once
+    /// a threshold of members has confirmed the exact set it is asked to sign.
+    RosterAck {
+        case_id: Hex32,
+        set_version: u32,
+        bound: Hex32,
+    },
     /// Every signer, round 1: nonces for every message of the set (encrypted with the case key).
     SigNonces {
         case_id: Hex32,
@@ -429,6 +438,7 @@ impl Msg {
             Msg::NonceRequest { .. } => "nonce-request",
             Msg::NonceAssignment { .. } => "nonce-assignment",
             Msg::Roster { .. } => "roster",
+            Msg::RosterAck { .. } => "roster-ack",
             Msg::SigNonces { .. } => "sig-nonces",
             Msg::SigPartials { .. } => "sig-partials",
             Msg::CosignRequest { .. } => "cosign-request",
@@ -481,6 +491,7 @@ impl Msg {
             | Msg::NonceRequest { case_id, .. }
             | Msg::NonceAssignment { case_id, .. }
             | Msg::Roster { case_id, .. }
+            | Msg::RosterAck { case_id, .. }
             | Msg::SigNonces { case_id, .. }
             | Msg::SigPartials { case_id, .. }
             | Msg::CosignRequest { case_id, .. }
