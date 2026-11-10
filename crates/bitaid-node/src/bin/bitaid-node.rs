@@ -5627,8 +5627,9 @@ fn responder(mut n: Node) -> i32 {
             }
             Ok(a) if a.template.pots[2] >= min_bounty => break a,
             Ok(_) => n.log("alert below my price; ignored"),
-            // an earlier case, replayed from the log: its funding is already spent
-            Err(e) if e.contains("missing or spent") => {}
+            // an earlier case, replayed from the log: its funding is already spent, or it names a
+            // pool from an earlier run
+            Err(e) if e.contains("missing or spent") || e.contains("another oracle") => {}
             Err(e) => n.check("alert checked", false, &e),
         }
     };
