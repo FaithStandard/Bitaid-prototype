@@ -422,6 +422,10 @@ pub enum Msg {
         case_id: Hex32,
         tier: u32,
         txid: String,
+        /// the seats whose reveals the commitment counts: a reveal published after it is not counted,
+        /// so a seat cannot un-commit a tier by revealing late (review finding)
+        #[serde(default)]
+        revealed: Vec<Hex32>,
     },
     /// Pool member: the case's last tier hung with no verdict below it and no party re-rolled it within
     /// the window, so the deadlock stands and the incident output closes by its refund locktime (§10.5).

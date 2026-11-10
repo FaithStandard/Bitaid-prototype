@@ -1904,11 +1904,26 @@ fn read_tier(
         }
     }
     for e in mine {
-        if let Msg::TierCommitted { tier, txid, .. } = &e.msg {
-            let cm = tier_commitment(case, k, &t.seats, &t.reveals);
-            if *tier == k && t.fee_paid && !t.committed && rpc.has_op_return(txid, &cm) {
+        if let Msg::TierCommitted { tier, txid, revealed, .. } = &e.msg {
+            if *tier != k || !t.fee_paid || t.committed {
+                continue;
+            }
+            // the reveals the commitment counts: those it lists (each a valid reveal of a seat), or,
+            // for a commitment that lists none, every reveal in the log
+            let counted: Vec<(String, Ballot)> = if revealed.is_empty() {
+                t.reveals.clone()
+            } else {
+                t.reveals.iter().filter(|x| revealed.contains(&x.0)).cloned().collect()
+            };
+            if !revealed.is_empty() && counted.len() != revealed.len() {
+                continue;
+            }
+            if rpc.has_op_return(txid, &tier_commitment(case, k, &t.seats, &counted)) {
                 t.committed = true;
                 t.commit_txid = Some(txid.clone());
+                // a reveal published after the commitment is not counted: that seat is charged as a
+                // missed reveal, and the committed verdict stands
+                t.reveals = counted;
             }
         }
     }

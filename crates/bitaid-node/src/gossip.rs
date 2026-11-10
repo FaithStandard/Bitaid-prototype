@@ -345,6 +345,9 @@ fn check_proof(
         return Err(format!("proof signed for another address ({to})"));
     }
     let xk: XOnlyPublicKey = key.parse().map_err(|_| "bad key".to_string())?;
+    // the key as one spelling: bans and the per-key limit must not be dodged by changing the case of a
+    // hex letter (review finding, reproduced)
+    let key = xk.to_string();
     let sig = hex::decode(&sig)
         .ok()
         .and_then(|b| schnorr::Signature::from_slice(&b).ok())

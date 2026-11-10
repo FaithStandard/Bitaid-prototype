@@ -379,7 +379,11 @@ fn pool_member(mut n: Node) -> i32 {
     let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut verdicts: HashMap<String, Ballot> = HashMap::new();
     #[allow(clippy::type_complexity)]
-    let mut lapse: HashMap<String, (Instant, Option<(u32, String, u32)>)> = HashMap::new();
+    // per escalated case: when it lapses if never seated, the escalation it replaced, and the deemed-
+    // consent height it cancelled (given back if it lapses: an unpaid escalation must not send a case
+    // the ballots settled to the refund, review finding)
+    #[allow(clippy::type_complexity)]
+    let mut lapse: HashMap<String, (Instant, Option<(u32, String, u32)>, Option<u32>)> = HashMap::new();
     let idle = num("--exit-after", 900u64);
     let mut last = Instant::now();
     loop {
@@ -402,11 +406,11 @@ fn pool_member(mut n: Node) -> i32 {
         }
         let lapsed: Vec<String> = lapse
             .iter()
-            .filter(|(_, (t, _))| Instant::now() >= *t)
+            .filter(|(_, (t, _, _))| Instant::now() >= *t)
             .map(|(c, _)| c.clone())
             .collect();
         for c in lapsed {
-            let (_, prev) = lapse.remove(&c).unwrap();
+            let (_, prev, consent) = lapse.remove(&c).unwrap();
             match prev {
                 Some(p) => esc.insert(c.clone(), p),
                 None => esc.remove(&c),
@@ -417,6 +421,13 @@ fn pool_member(mut n: Node) -> i32 {
                     &c[..8]
                 ));
                 ready_at.insert(c.clone(), 0);
+            } else if let Some(h) = consent {
+                // the ballots had settled it: deemed consent comes back, at the height it had
+                n.log(&format!(
+                    "case {}: the escalation was never seated and lapses; deemed consent stands (block {h})",
+                    &c[..8]
+                ));
+                ready_at.insert(c.clone(), h);
             } else {
                 n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", &c[..8]));
             }
@@ -908,6 +919,7 @@ fn pool_member(mut n: Node) -> i32 {
                     (
                         Instant::now() + secs(num("--seat-wait", 300u64)),
                         esc.get(case_id).cloned(),
+                        ready_at.get(case_id).copied(),
                     ),
                 );
                 // the height the draw must come after: the escalator's, as its signed envelope states
@@ -1152,12 +1164,25 @@ fn pool_member(mut n: Node) -> i32 {
                 case_id,
                 tier,
                 txid,
+                revealed,
             } => {
                 let key = (case_id.clone(), *tier);
                 let (Some(seats), Some(rv)) =
                     (panels.get(&key).cloned(), vreveals.get(&key).cloned())
                 else {
                     later!();
+                };
+                // only the reveals the commitment lists count (a reveal after it does not)
+                let rv: Vec<(String, Ballot)> = if revealed.is_empty() {
+                    rv
+                } else {
+                    let c: Vec<(String, Ballot)> =
+                        rv.into_iter().filter(|x| revealed.contains(&x.0)).collect();
+                    if c.len() != revealed.len() {
+                        // a listed reveal not yet seen here
+                        later!();
+                    }
+                    c
                 };
                 let deadline_passed = all_committed_at
                     .get(&key)
@@ -2552,6 +2577,7 @@ fn escalate_tier(
             case_id,
             tier: t,
             txid,
+            ..
         } if *case_id == cc && *t == tier => Some(txid.clone()),
         _ => None,
     });
@@ -2574,6 +2600,7 @@ fn escalate_tier(
                     case_id: c.clone(),
                     tier,
                     txid: txid.to_string(),
+                    revealed: reveals.iter().map(|x| x.0.clone()).collect(),
                 },
                 false,
             );
@@ -3604,6 +3631,7 @@ fn review_stage(
                 case_id,
                 tier: t,
                 txid,
+                ..
             } if *case_id == cc && *t == k => Some(txid.clone()),
             _ => None,
         },
@@ -3620,6 +3648,7 @@ fn review_stage(
                     case_id: c.clone(),
                     tier: k,
                     txid: txid.to_string(),
+                    revealed: reveals.iter().map(|x| x.0.clone()).collect(),
                 },
                 false,
             );
@@ -4739,7 +4768,7 @@ fn arbitrator(mut n: Node) -> i32 {
                     }
                 }
             }
-            Msg::TierCommitted { case_id, tier, txid } => {
+            Msg::TierCommitted { case_id, tier, txid, .. } => {
                 let key = (case_id.clone(), tier);
                 if !flag("--challenge") || tier >= num("--max-tier", 2u32) {
                     continue;
@@ -4798,6 +4827,7 @@ fn arbitrator(mut n: Node) -> i32 {
                                     case_id: case_id.clone(),
                                     tier,
                                     txid: txid.to_string(),
+                                    revealed: list.iter().map(|x| x.0.clone()).collect(),
                                 },
                                 false,
                             );
