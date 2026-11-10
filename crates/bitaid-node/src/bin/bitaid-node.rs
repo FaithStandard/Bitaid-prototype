@@ -96,6 +96,12 @@ fn fallback_blocks() -> u32 {
         .unwrap_or(if bitaid_node::sats(100) < 100 { 144 } else { 52_560 })
 }
 
+/// How far ahead a funding output's wallet-alone fallback must be when an alert is accepted: 30 days
+/// (Specification §3.1), or half the fallback window on a test chain whose outputs fall back in a day.
+fn funding_margin() -> u32 {
+    (fallback_blocks() / 2).min(4_320)
+}
+
 fn name_of(n: &Node) -> String {
     n.name.clone()
 }
@@ -549,6 +555,16 @@ fn pool_member(mut n: Node) -> i32 {
                 if a.caller != s || indices.len() != 3 || assigned.contains_key(case_id) {
                     continue;
                 }
+                // the funding output must stay locked well past the case: a caller whose wallet-alone
+                // fallback is near could race the incident with it (review finding: fallback heights)
+                if a.fallback_height < n.rpc.height() + funding_margin() {
+                    n.log(&format!(
+                        "alert {}: its funding fallback (block {}) is too near; no nonces reserved",
+                        &case_id[..8],
+                        a.fallback_height
+                    ));
+                    continue;
+                }
                 // reserve only indices this member has not given to another case
                 let free = indices.iter().all(|j| {
                     (*j as usize) < m.batch.r.len()
@@ -934,9 +950,12 @@ fn pool_member(mut n: Node) -> i32 {
                         &wire::xonly(&okey)?,
                         *bond_fallback,
                     );
+                    // and its fallback far enough ahead: a bond its cold key can sweep before the case
+                    // is ruled backs nothing (review finding: fallback heights unchecked)
                     (u.script_pubkey == t.script_pubkey()
                         && u.value.to_sat() == *bond_value
-                        && u.value.to_sat() >= bitaid_node::sats(ARB_BOND_FLOOR).max(2 * value))
+                        && u.value.to_sat() >= bitaid_node::sats(ARB_BOND_FLOOR).max(2 * value)
+                        && *bond_fallback >= n.rpc.height() + fallback_blocks() / 2)
                     .then_some(())
                 })()
                 .is_some();
@@ -5128,7 +5147,9 @@ fn caller(mut n: Node) -> i32 {
                 &wire::xonly(&okey)?,
                 bf,
             );
-            (utxo.value.to_sat() >= bitaid_node::sats(BOND_FLOOR) && utxo.script_pubkey == t.script_pubkey())
+            (utxo.value.to_sat() >= bitaid_node::sats(BOND_FLOOR)
+                && utxo.script_pubkey == t.script_pubkey()
+                && bf >= n.rpc.height() + fallback_blocks() / 2)
                 .then_some(())
         })();
         if ok.is_none() {
@@ -5442,6 +5463,9 @@ fn responder(mut n: Node) -> i32 {
             return n.summary();
         };
         match Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &okey) {
+            Ok(a) if a.fallback_height < n.rpc.height() + funding_margin() => {
+                n.log("alert whose funding fallback is too near; ignored")
+            }
             Ok(a) if a.template.pots[2] >= min_bounty => break a,
             Ok(_) => n.log("alert below my price; ignored"),
             // an earlier case, replayed from the log: its funding is already spent

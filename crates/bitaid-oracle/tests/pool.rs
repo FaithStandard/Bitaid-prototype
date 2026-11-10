@@ -88,6 +88,13 @@ fn pool_end_to_end() {
         attest::combine(&keys[0].pool(), &views[&1].public(), &shares, &m, t).is_err(),
         "three shares are not enough"
     );
+    // a member sending its share twice does not make up the threshold, nor block combining later
+    let dup = shares[0].clone();
+    shares.insert(0, dup);
+    assert!(
+        attest::combine(&keys[0].pool(), &views[&1].public(), &shares, &m, t).is_err(),
+        "a repeated share is not a fourth member"
+    );
     shares.push(attest::share(&keys[2], views.get_mut(&3).unwrap(), 1, &m).unwrap());
     // a corrupted share is rejected by anyone
     let mut forged = shares[0].clone();

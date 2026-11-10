@@ -571,7 +571,10 @@ pub fn verify_forfeits(
             .iter()
             .zip(sigs)
             .all(|(d, g)| schnorr_ok(&bond.scoped, d, g))
-        && rpc.paid_to(&st.op.txid.to_string(), &bond.tree(oracle).script_pubkey()) >= value)
+        // the named output itself: under the bond script and holding exactly the declared value, or the
+        // pre-signed forfeitures (whose signatures commit to that amount) would be void on chain
+        && rpc.output_paying(&st.op.txid.to_string(), st.op.vout, &bond.tree(oracle).script_pubkey())
+            == Some(value))
         .then_some(st)
 }
 

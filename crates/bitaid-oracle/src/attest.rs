@@ -69,9 +69,14 @@ pub fn combine(
     m: &[u8; 32],
     t: usize,
 ) -> Result<Scalar, &'static str> {
+    // one share per member, all on the same nonce index: a member that sends its share twice (or
+    // a share on another index) cannot make the interpolation fail (review finding)
+    let mut seen = std::collections::BTreeSet::new();
+    let index = shares.iter().find(|s| &s.message == m).map(|s| s.index);
     let valid: Vec<&Share> = shares
         .iter()
-        .filter(|s| &s.message == m && verify(pool, batch, s))
+        .filter(|s| &s.message == m && Some(s.index) == index && verify(pool, batch, s))
+        .filter(|s| seen.insert(s.member))
         .take(t)
         .collect();
     if valid.len() < t {

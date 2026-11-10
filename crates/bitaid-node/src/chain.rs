@@ -618,6 +618,15 @@ impl Rpc {
     }
 
     /// What `txid` paid to `spk` (0 if unknown).
+    /// The value of output `vout` of `txid` if it pays exactly `spk` (spent or not: a replay reads
+    /// stakes long after they were forfeited).
+    pub fn output_paying(&self, txid: &str, vout: u32, spk: &ScriptBuf) -> Option<u64> {
+        let h = spk.to_hex_string();
+        let v = self.tx_json(txid)?;
+        let o = v["vout"].as_array()?.iter().find(|x| x["n"].as_u64() == Some(vout as u64))?.clone();
+        (o["scriptPubKey"]["hex"] == h).then(|| (o["value"].as_f64().unwrap_or(0.0) * 1e8).round() as u64)
+    }
+
     pub fn paid_to(&self, txid: &str, spk: &ScriptBuf) -> u64 {
         let h = spk.to_hex_string();
         self.tx_json(txid)
