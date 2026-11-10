@@ -171,6 +171,8 @@ pub struct Rostered {
     pub incident_txid: Txid,
     pub sealed_keys: Vec<String>,
     pub archivists: Vec<String>,
+    /// the caller's fresh pot key for this case (None: an older roster, the scoped key)
+    pub caller_musig: Option<Point>,
 }
 
 impl Rostered {
@@ -185,6 +187,7 @@ impl Rostered {
             incident_txid,
             sealed_keys,
             archivists,
+            caller_musig,
             ..
         } = m
         else {
@@ -204,6 +207,7 @@ impl Rostered {
             incident_txid: Txid::from_str(incident_txid).ok()?,
             sealed_keys: sealed_keys.clone(),
             archivists: archivists.clone(),
+            caller_musig: point_from(caller_musig),
         })
     }
 }
@@ -292,7 +296,7 @@ pub fn bound_id(a: &Alerted, r: &Rostered) -> [u8; 32] {
 
 /// The signers in order: the caller's scoped key, then the seats.
 pub fn signers(a: &Alerted, r: &Rostered) -> Vec<Point> {
-    let mut v = vec![a.caller_point()];
+    let mut v = vec![r.caller_musig.unwrap_or_else(|| a.caller_point())];
     v.extend(r.musig_keys.iter().copied());
     v
 }

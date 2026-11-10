@@ -5346,6 +5346,8 @@ fn caller(mut n: Node) -> i32 {
     let mut seated = accepts.clone();
     let mut version = 0u32;
     let refund_height = n.rpc.height() + template.refund_delay;
+    // the caller's pot key: fresh for this case, never the scoped key (review finding 16)
+    let pot_k = random_scalar();
     let (set, roster) = loop {
         let mut r = Rostered {
             set_version: version,
@@ -5364,6 +5366,7 @@ fn caller(mut n: Node) -> i32 {
             incident_txid: bitcoin::Txid::from_str(&"00".repeat(32)).unwrap(),
             sealed_keys: vec![],
             archivists: archivists.iter().map(|x| x.0.clone()).collect(),
+            caller_musig: Some(pot_k * G),
         };
         r.incident_txid = case::incident_tx(&a, &r).compute_txid();
         let mut sealed: Vec<String> = r
@@ -5398,6 +5401,7 @@ fn caller(mut n: Node) -> i32 {
             incident_txid: r.incident_txid.to_string(),
             sealed_keys: sealed.clone(),
             archivists: r.archivists.clone(),
+            caller_musig: point_hex(&(pot_k * G)),
         };
         r.sealed_keys = sealed;
         n.send_case(&c, &r.seats.clone(), msg, false);
@@ -5410,7 +5414,7 @@ fn caller(mut n: Node) -> i32 {
             n.check("the pool confirmed the roster", false, &e);
             return n.summary();
         }
-        match sign_set(&mut n, &a, &r, 0, &k, false) {
+        match sign_set(&mut n, &a, &r, 0, &pot_k, false) {
             Ok(s) => break (s, r),
             Err(e) => {
                 n.log(&format!("set v{version} failed: {e}"));

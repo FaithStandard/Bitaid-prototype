@@ -220,6 +220,10 @@ pub enum Msg {
         sealed_keys: Vec<String>,
         /// identity keys of the case's archivists: they co-sign the seizure output's distribution (§12)
         archivists: Vec<Hex32>,
+        /// the caller's pot key for this case (MuSig2), fresh per case: not its scoped key, which
+        /// signs only the incident transaction (review finding 16)
+        #[serde(default)]
+        caller_musig: String,
     },
     /// A pool member's confirmation that it checked a roster (every seat accepted with these keys and
     /// payout scripts, bonds on chain, refund height, its own reserved nonces) and will attest under it:
