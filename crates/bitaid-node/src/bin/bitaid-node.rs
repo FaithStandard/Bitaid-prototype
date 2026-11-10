@@ -349,6 +349,8 @@ fn pool_member(mut n: Node) -> i32 {
     // the height of each case's first ballot reveal: the reveal window runs from it, so a seat that
     // never reveals cannot hold deemed consent back (review finding D-8)
     let mut first_reveal: HashMap<String, u32> = HashMap::new();
+    // archivists announced on the log: only these may be named in a roster
+    let mut archivists_known: std::collections::HashSet<String> = Default::default();
     let mut done: std::collections::HashSet<String> = Default::default();
     let mut stalled_once = false;
     let mut retried: std::collections::HashSet<(String, u32)> = Default::default();
@@ -670,6 +672,9 @@ fn pool_member(mut n: Node) -> i32 {
                     },
                 );
             }
+            Msg::Announce { role, .. } if role == "archivist" => {
+                archivists_known.insert(s.clone());
+            }
             Msg::Roster { case_id, .. } => {
                 let (Some(a), Some(r)) = (alerts.get(case_id), Rostered::from_msg(&env.msg)) else {
                     continue;
@@ -686,6 +691,16 @@ fn pool_member(mut n: Node) -> i32 {
                         bitaid_node::pre(&case_id, 8)
                     ));
                     continue;
+                }
+                // the case's archivists convene its review and hold its seizure output: each must be
+                // an archivist the log knows, never a key the caller made up (review finding 12)
+                let known = |k: &String| archivists_known.contains(k);
+                if r.archivists.is_empty() || !r.archivists.iter().all(known) {
+                    if r.archivists.iter().all(known) {
+                        n.log(&format!("roster v{} for {} refused: no archivists", r.set_version, bitaid_node::pre(&case_id, 8)));
+                        continue;
+                    }
+                    later!();
                 }
                 let empty = HashMap::new();
                 let acc = accepted.get(case_id).unwrap_or(&empty);
@@ -2328,20 +2343,13 @@ fn escalate_tier(
     n.check(&format!("tier {tier}: {size} of {} offering arbitrators drawn from block {h}, case disclosed only to them", ids.len()), true, &format!("{:.1} s after escalating", t0.elapsed().as_secs_f64()));
     // each seat pre-signs its bond's forfeitures before it is paid (§10.4, §12)
     let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
-    let r_arch = n
-        .history
-        .iter()
-        .rev()
-        .find_map(|e| match &e.msg {
-            Msg::Roster {
-                case_id,
-                archivists,
-                ..
-            } if *case_id == c && e.sender == a.caller => Some(archivists.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let seizure = arb::seizure_tree(&r_arch, &oxo).map(|t| t.0.script_pubkey());
+    let r_last = n.history.iter().rev().find_map(|e| match &e.msg {
+        Msg::Roster { case_id, .. } if *case_id == c && e.sender == a.caller => Rostered::from_msg(&e.msg),
+        _ => None,
+    });
+    let seizure = r_last.as_ref().and_then(|r| {
+        arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r)).map(|t| t.0.script_pubkey())
+    });
     let mut stakes: HashMap<String, (arb::Bond, String)> = HashMap::new();
     // per seat, the height its commit deadline counts from: the block that confirmed its fee (a
     // review seat, which this escalator does not pay, from its draw)
@@ -2975,7 +2983,7 @@ fn take_seat(
         fallback: k.bf,
         payout: k.payout.clone(),
     };
-    let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo) else {
+    let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r)) else {
         n.log("case names no archivists; no seizure output to forfeit to");
         return None;
     };

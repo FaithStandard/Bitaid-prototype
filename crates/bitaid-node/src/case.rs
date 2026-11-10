@@ -301,6 +301,14 @@ pub fn signers(a: &Alerted, r: &Rostered) -> Vec<Point> {
     v
 }
 
+/// The parties' aggregate key (the caller's pot key and every seat's, MuSig2, untweaked): the
+/// seizure output's fallback after a year pays them together, not an archivist (review finding 12).
+pub fn parties_key(a: &Alerted, r: &Rostered) -> bitcoin::XOnlyPublicKey {
+    let ctx = musig2::KeyAggContext::new(signers(a, r)).expect("valid key set");
+    let p: Point = ctx.aggregated_pubkey();
+    bitcoin::XOnlyPublicKey::from_slice(&p.serialize_xonly()).expect("x-only")
+}
+
 pub fn pot_spk(a: &Alerted, r: &Rostered) -> ScriptBuf {
     bitaid_core::musig::pot_script_pubkey(&bitaid_core::musig::taproot_ctx(&signers(a, r)))
 }
