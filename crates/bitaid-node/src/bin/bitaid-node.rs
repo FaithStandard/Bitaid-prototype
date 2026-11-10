@@ -2237,7 +2237,7 @@ fn escalate_tier(
     let c = a.case_hex.clone();
     let value: u64 = a.template.pots.iter().sum();
     let size = bitaid_node::arb::panel_size(tier);
-    // a stage of the staged review (§10.3): seats unpaid and unstaked, an 80% finding
+    // a stage of the staged review (§10.3): seats unpaid and unstaked, a two-thirds finding
     let review = arb::is_review(tier);
     let okey = view.key_hex();
     // the escalation's height (its envelope states it): the panel is drawn from the block draw_blocks()
@@ -2755,15 +2755,15 @@ fn escalate_tier(
     n.check(&format!("tier {tier}: {} of {size} verdicts revealed; roster and answers committed on chain (OP_RETURN)", reveals.len()), on_chain, &committed.unwrap_or_default());
     let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
     if review {
-        let v = arb::supermajority_of(size, &votes, 4, 5);
+        let v = arb::supermajority(size, &votes);
         n.check(
             &format!(
                 "review stage {}: {} of {size} findings revealed; {}",
                 tier - arb::REVIEW_BASE,
                 votes.len(),
                 match &v {
-                    Some(v) => format!("80% found {}", verdict_classes(v)),
-                    None => "no 80% finding".into(),
+                    Some(v) => format!("two thirds found {}", verdict_classes(v)),
+                    None => "no two-thirds finding".into(),
                 }
             ),
             true,
@@ -3355,7 +3355,7 @@ fn convene_review(
         arb::ReviewState::Confirmed(v) => {
             n.check(
                 &format!(
-                    "case {}: three review panels in turn found {} at 80%: the verdict is overturned",
+                    "case {}: three review panels in turn found {} by two thirds: the verdict is overturned",
                     bitaid_node::pre(&c, 8),
                     verdict_classes(&v)
                 ),
@@ -3372,7 +3372,8 @@ fn convene_review(
 /// the whole pool (everyone registered who sat on neither the case nor an earlier stage); each drawn
 /// reviewer accepts, and gets the case key, or posts a replacement fee, and the seat goes to one drawn
 /// blind from those who offer for it once the leaver has paid; a reviewer silent past the window is
-/// counted as declining and its seat drawn again. Then the findings, by commit-reveal, at 80%.
+/// counted as declining and its seat drawn again. Then the findings, by commit-reveal, at two thirds
+/// (80% at every stage is needed only to take an entry bond or expel).
 fn review_stage(
     n: &mut Node,
     a: &Alerted,
@@ -3829,14 +3830,14 @@ fn review_stage(
             "",
         );
     }
-    let v = arb::supermajority_of(size, &votes, 4, 5);
+    let v = arb::supermajority(size, &votes);
     n.check(
         &format!(
             "review stage {st}: {} of {size} findings revealed and committed on chain; {}",
             votes.len(),
             match &v {
-                Some(v) => format!("80% found {}", verdict_classes(v)),
-                None => "no 80% finding".into(),
+                Some(v) => format!("two thirds found {}", verdict_classes(v)),
+                None => "no two-thirds finding".into(),
             }
         ),
         on_chain,

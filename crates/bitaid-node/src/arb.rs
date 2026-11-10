@@ -601,12 +601,9 @@ impl Tier {
             return None;
         }
         let v: Vec<Ballot> = self.reveals.iter().map(|x| x.1.clone()).collect();
-        if self.review {
-            // each review panel decides at 80% (§10.3)
-            supermajority_of(self.seats.len(), &v, 4, 5)
-        } else {
-            supermajority(self.seats.len(), &v)
-        }
+        // every panel decides at two thirds, review panels too: three in turn overturn a verdict
+        // (§10.3); the entry bond and expulsion need 80% at each stage (`Replay::review_strong`)
+        supermajority(self.seats.len(), &v)
     }
 }
 
@@ -1354,6 +1351,22 @@ impl Replay {
             .collect()
     }
 
+    /// A confirmed review whose every stage found its verdict at 80%: only such a review takes an
+    /// entry bond or expels (§10.3, two bars). Two thirds at each stage overturns and pays restitution
+    /// from the units; the higher bar guards the livelihood.
+    pub fn review_strong(&self) -> bool {
+        let ReviewState::Confirmed(cv) = &self.review else {
+            return false;
+        };
+        let ck = verdict_key(cv);
+        (1..=REVIEW_STAGES).all(|st| {
+            self.reviews.get(&(REVIEW_BASE + st)).is_some_and(|t| {
+                let v: Vec<Ballot> = t.reveals.iter().map(|x| x.1.clone()).collect();
+                supermajority_of(t.seats.len(), &v, 4, 5).is_some_and(|b| verdict_key(&b) == ck)
+            })
+        })
+    }
+
     /// Who voted, on any arbitration tier, for the verdict a confirmed review overturned (§12).
     pub fn overturned_voters(&self) -> Vec<(u32, String)> {
         let (ReviewState::Confirmed(_), Some((_, fv))) = (&self.review, self.final_ruling()) else {
@@ -1433,8 +1446,9 @@ impl Replay {
         let due = self.due_before_excess(a, r);
         let mut who: Vec<(String, Option<u64>)> = vec![];
         for (k, w) in &voters {
-            if self.prior_overturns.get(w).copied().unwrap_or(0) >= 1 {
-                // a second confirmed overturn: the whole entry bond, and the arbitrator is out (§12)
+            if self.prior_overturns.get(w).copied().unwrap_or(0) >= 1 && self.review_strong() {
+                // a second confirmed overturn, this one at 80% at every stage: the whole entry bond,
+                // and the arbitrator is out (§12)
                 who.push((w.clone(), None));
             } else if self.released.iter().any(|x| x.0 == *k && x.1 == *w) {
                 // a first offense found after the unit was released: the entry bond pays what the
@@ -2315,9 +2329,14 @@ pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
 pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
     let before: Vec<&TierLog> = logs.iter().filter(|l| l.height < height).collect();
     let mut standing: HashMap<&str, (&TierLog, Ballot)> = HashMap::new();
+    // the verdict a confirmed review overturned, per case
+    let mut kept: HashMap<&str, Vec<u8>> = HashMap::new();
     for l in &before {
         // a confirmed review overturns the standing verdict from its last stage on (§10.3)
         if let Some(b) = &l.overturn {
+            if let Some((_, old)) = standing.get(l.case.as_str()) {
+                kept.insert(l.case.as_str(), verdict_key(old));
+            }
             let fin = standing.get(l.case.as_str()).map(|x| x.0).unwrap_or(l);
             standing.insert(l.case.as_str(), (fin, b.clone()));
             continue;
@@ -2340,7 +2359,22 @@ pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
         let hung = !l.review && supermajority(l.seats.len(), &l.reveals.iter().map(|x| x.1.clone()).collect::<Vec<_>>()).is_none();
         for seat in &l.seats {
             if l.review {
-                // a review seat is charged only for a finding it owed and never revealed
+                // a review seat is charged for a finding it owed and never revealed, and, once the
+                // three stages confirm an overturn, for a vote to keep the overturned verdict; a vote
+                // to overturn that was not confirmed is never charged, so a blocking bloc cannot mark
+                // honest reviewers (§10.3, two bars)
+                let kept_vote = kept.get(l.case.as_str()).is_some_and(|ok| {
+                    l.reveals.iter().any(|x| &x.0 == seat && verdict_key(&x.1) == *ok)
+                });
+                if kept_vote {
+                    let mean = if votes > 0 { sum / votes as f64 } else { 0.0 };
+                    if seat == arbitrator {
+                        d = (LAMBDA * d + 1.0 - MARGIN * mean).max(0.0);
+                    }
+                    sum += 1.0;
+                    votes += 1;
+                    continue;
+                }
                 if l.reveals.iter().any(|x| &x.0 == seat) || !l.committers.contains(seat) {
                     continue;
                 }
