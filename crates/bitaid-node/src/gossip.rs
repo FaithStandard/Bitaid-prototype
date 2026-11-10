@@ -11,7 +11,17 @@
 //! before it is stored, forwarded or delivered, so a peer can drop messages but never forge or alter
 //! one. Not yet built: the DHT for peer discovery (peers come from a bootstrap list) and geofenced
 //! forwarding (every message is flooded; subscribers filter by cell).
+//!
+//! Bonded links: there is no free tier. A Core opens every incoming link with a fresh challenge, and
+//! the peer has 30 s to prove control of a link key with a stake on chain: an unspent, confirmed
+//! output paying at least the link stake to that key alone. Until then the peer is sent nothing and
+//! what it sends is dropped. A key cut for abuse (flooding, junk, oversized messages) is banned for an
+//! hour, and one key holds at most two links at once, so a connection storm needs a stake per
+//! connection. The stake is a fidelity bond: it costs the locked coins' time and a fresh output per
+//! identity, and is not yet forfeitable (that needs the pool-co-signed path the role bonds have).
 use crate::nostr::{now, Event, Filter};
+use bitcoin::hashes::{sha256, Hash};
+use bitcoin::secp256k1::{schnorr, Keypair, Message, Secp256k1, XOnlyPublicKey};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -40,6 +50,53 @@ pub const BURST: f64 = 20_000.0;
 pub const RATE: f64 = 100.0;
 /// Lines that are not valid signed messages an incoming link may send before it is closed.
 pub const MAX_JUNK: u32 = 1_000;
+/// Seconds a peer has to prove its link stake.
+pub const PROOF_SECS: u64 = 30;
+/// Links one link key may hold at once.
+pub const PER_KEY: usize = 2;
+/// How long a key cut for abuse is refused.
+pub const BAN_SECS: u64 = 3_600;
+
+/// What a dialling node proves with: its link key and the outpoint (`txid:vout`) of its stake.
+#[derive(Clone)]
+pub struct Credential {
+    pub keys: Keypair,
+    pub stake: String,
+}
+
+/// Checks a claimed stake: (link key, outpoint) → Ok if it is an unspent, confirmed output paying at
+/// least the link stake to that key alone.
+pub type Verify = Arc<dyn Fn(&XOnlyPublicKey, &str) -> Result<(), String> + Send + Sync>;
+
+/// What a Core needs to demand proofs: the checker, and the addresses it is dialled at (a proof
+/// signed for another address is refused, so a hostile Core cannot pass on a peer's proof).
+#[derive(Clone)]
+pub struct Demand {
+    pub verify: Verify,
+    pub names: Vec<String>,
+}
+
+/// The digest a link key signs: the domain tag, the Core's challenge and the address dialled.
+pub fn link_digest(challenge: &[u8; 32], to: &str) -> [u8; 32] {
+    let mut v = b"bitaid/link/v1".to_vec();
+    v.extend_from_slice(challenge);
+    v.extend_from_slice(to.as_bytes());
+    sha256::Hash::hash(&v).to_byte_array()
+}
+
+/// The proof line a dialler sends in answer to `challenge`.
+pub fn proof_line(c: &Credential, challenge: &[u8; 32], to: &str) -> String {
+    let secp = Secp256k1::new();
+    let msg = Message::from_digest(link_digest(challenge, to));
+    let sig = secp.sign_schnorr(&msg, &c.keys);
+    serde_json::json!({"proof": {
+        "key": c.keys.x_only_public_key().0.to_string(),
+        "stake": c.stake,
+        "to": to,
+        "sig": hex::encode(sig.as_ref()),
+    }})
+    .to_string()
+}
 
 /// A set that forgets its oldest members past `cap`.
 pub struct Bounded {
@@ -83,6 +140,8 @@ struct Link {
     useful: u64,
     /// to close it from outside (eviction)
     stream: Option<TcpStream>,
+    /// proved its stake (or one we dialled): only these are sent messages
+    authed: bool,
 }
 
 #[derive(Default)]
@@ -94,6 +153,9 @@ struct Shared {
     /// incoming links accepted, counted from the moment of accepting (before the link's thread has
     /// registered it), so a burst of connections cannot slip past MAX_IN
     incoming: usize,
+    /// link keys refused until the given time, and links held per key
+    banned: HashMap<String, Instant>,
+    per_key: HashMap<String, usize>,
 }
 
 /// Why a message was not admitted.
@@ -224,24 +286,27 @@ fn read_line(r: &mut BufReader<TcpStream>, buf: &mut Vec<u8>) -> std::io::Result
     Ok(Some(()))
 }
 
-/// Makes room for a new incoming link if all slots are taken: a link up a minute or more that has
-/// never brought a new message is closed. A link that has brought messages is never closed to make
-/// room for a stranger, so a connection storm cannot cut honest peers off; it can only fill the
-/// free slots, which costs it the slots and nothing else. False if no slot can be freed.
+/// Makes room for a new incoming link if all slots are taken: a link still without its proof of stake
+/// after 10 s is closed. A staked link is never closed to make room for a stranger, so a connection
+/// storm cannot cut honest peers off; it can only hold free slots for the proof window, and filling
+/// them with staked links takes a stake per two links. False if no slot can be freed.
 fn make_room(shared: &Arc<Mutex<Shared>>) -> bool {
     let mut g = shared.lock().unwrap();
     if g.incoming < MAX_IN {
         g.incoming += 1;
         return true;
     }
+    // only a link still without its proof after 10 s gives up its slot: a stranger never pushes out
+    // a peer that has proved its stake, even one that only listens
     let victim = g
         .links
         .values()
-        .filter(|l| l.incoming && l.useful == 0 && l.since.elapsed() > Duration::from_secs(60))
+        .filter(|l| l.incoming && !l.authed && l.since.elapsed() > Duration::from_secs(10))
         .min_by_key(|l| l.since);
     match victim.and_then(|l| l.stream.as_ref()) {
         Some(s) => {
             // the victim's slot passes to the newcomer (its own count is given back when it ends)
+            eprintln!("gossip: making room: closing {:?}, still without a proof", s.peer_addr().ok());
             let _ = s.shutdown(std::net::Shutdown::Both);
             g.incoming += 1;
             true
@@ -254,8 +319,9 @@ fn make_room(shared: &Arc<Mutex<Shared>>) -> bool {
 /// reading) is closed.
 fn forward(g: &Shared, line: &Arc<str>, except: Option<u64>) {
     for (lid, l) in g.links.iter() {
-        if Some(*lid) != except {
+        if Some(*lid) != except && l.authed {
             if let Err(TrySendError::Full(_)) = l.out.try_send(line.clone()) {
+                eprintln!("gossip: link {lid} not reading (its queue is full); closing it");
                 if let Some(s) = &l.stream {
                     let _ = s.shutdown(std::net::Shutdown::Both);
                 }
@@ -264,114 +330,277 @@ fn forward(g: &Shared, line: &Arc<str>, except: Option<u64>) {
     }
 }
 
+/// Checks a proof line against `challenge`; Ok(link key) or why it was refused.
+fn check_proof(
+    shared: &Arc<Mutex<Shared>>,
+    d: &Demand,
+    challenge: &[u8; 32],
+    line: &[u8],
+) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_slice(line).map_err(|_| "not a proof".to_string())?;
+    let p = v.get("proof").ok_or("not a proof")?;
+    let field = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let (key, stake, to, sig) = (field("key"), field("stake"), field("to"), field("sig"));
+    if !d.names.is_empty() && !d.names.iter().any(|n| *n == to) {
+        return Err(format!("proof signed for another address ({to})"));
+    }
+    let xk: XOnlyPublicKey = key.parse().map_err(|_| "bad key".to_string())?;
+    let sig = hex::decode(&sig)
+        .ok()
+        .and_then(|b| schnorr::Signature::from_slice(&b).ok())
+        .ok_or("bad signature")?;
+    let msg = Message::from_digest(link_digest(challenge, &to));
+    Secp256k1::verification_only()
+        .verify_schnorr(&sig, &msg, &xk)
+        .map_err(|_| "signature does not match the challenge".to_string())?;
+    {
+        let g = shared.lock().unwrap();
+        if let Some(t) = g.banned.get(&key) {
+            if Instant::now() < *t {
+                return Err(format!("key {} banned", &key[..8]));
+            }
+        }
+        if g.per_key.get(&key).copied().unwrap_or(0) >= PER_KEY {
+            return Err(format!("key {} already holds {PER_KEY} links", &key[..8]));
+        }
+    }
+    (d.verify)(&xk, &stake).map_err(|e| format!("stake {stake}: {e}"))?;
+    let mut g = shared.lock().unwrap();
+    // checked again under the lock: two links of one key proving at once
+    let n = g.per_key.entry(key.clone()).or_insert(0);
+    if *n >= PER_KEY {
+        return Err(format!("key {} already holds {PER_KEY} links", &key[..8]));
+    }
+    *n += 1;
+    Ok(key)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_link(
     shared: Arc<Mutex<Shared>>,
     local: Sender<Event>,
     s: TcpStream,
     label: String,
     incoming: bool,
+    demand: Option<Demand>,
+    cred: Option<Credential>,
+    to: String,
 ) {
     let _ = s.set_nodelay(true);
-    let (otx, orx) = sync_channel::<Arc<str>>(MAX_STORE + 10_000);
-    let id = {
-        let mut g = shared.lock().unwrap();
-        g.next += 1;
-        let id = g.next;
-        // replay the recent log first, so a peer that connects late catches up
-        for (_, l) in &g.store {
-            let _ = otx.try_send(l.clone());
-        }
-        g.links.insert(
-            id,
-            Link {
-                out: otx,
-                incoming,
-                since: Instant::now(),
-                useful: 0,
-                stream: s.try_clone().ok(),
-            },
-        );
-        id
-    };
     let mut w = match s.try_clone() {
         Ok(w) => w,
         Err(_) => return,
     };
-    // a peer that does not read what it is sent for a minute is cut off rather than waited for
     let _ = w.set_write_timeout(Some(Duration::from_secs(60)));
+    let mut r = BufReader::new(match s.try_clone() {
+        Ok(x) => x,
+        Err(_) => return,
+    });
+    let mut buf = Vec::new();
+    // every incoming link opens with a fresh challenge; a dialler answers it with its proof
+    let challenge: [u8; 32] = rand::random();
+    let mut first: Option<Vec<u8>> = None;
+    if incoming {
+        let l = format!("{{\"challenge\":\"{}\"}}\n", hex::encode(challenge));
+        if w.write_all(l.as_bytes()).is_err() {
+            return;
+        }
+    } else {
+        let _ = s.set_read_timeout(Some(Duration::from_secs(PROOF_SECS)));
+        if let Ok(Some(())) = read_line(&mut r, &mut buf) {
+            let ch = serde_json::from_slice::<serde_json::Value>(&buf)
+                .ok()
+                .and_then(|v| v.get("challenge").and_then(|c| c.as_str()).map(String::from))
+                .and_then(|h| hex::decode(h).ok())
+                .and_then(|b| <[u8; 32]>::try_from(b).ok());
+            match (ch, &cred) {
+                (Some(ch), Some(c)) => {
+                    let l = proof_line(c, &ch, &to) + "\n";
+                    if w.write_all(l.as_bytes()).is_err() {
+                        return;
+                    }
+                }
+                (Some(_), None) => {}
+                // a Core that opens with a message, not a challenge: keep it
+                (None, _) => first = Some(buf.clone()),
+            }
+        }
+        let _ = s.set_read_timeout(None);
+    }
+    let must_prove = incoming && demand.is_some();
+    let (otx, orx) = sync_channel::<Arc<str>>(MAX_STORE + 10_000);
+    let replay = |g: &Shared, tx: &SyncSender<Arc<str>>| {
+        // the recent log first, so a peer that connects late catches up
+        for (_, l) in &g.store {
+            let _ = tx.try_send(l.clone());
+        }
+    };
+    let id = {
+        let mut g = shared.lock().unwrap();
+        g.next += 1;
+        let id = g.next;
+        if !must_prove {
+            replay(&g, &otx);
+        }
+        g.links.insert(
+            id,
+            Link {
+                out: otx.clone(),
+                incoming,
+                since: Instant::now(),
+                useful: 0,
+                stream: s.try_clone().ok(),
+                authed: !must_prove,
+            },
+        );
+        id
+    };
+    let wl = label.clone();
     std::thread::spawn(move || {
         for line in orx {
-            if w.write_all(line.as_bytes()).is_err() || w.write_all(b"\n").is_err() {
+            if let Err(e) = w.write_all(line.as_bytes()).and_then(|_| w.write_all(b"\n")) {
+                eprintln!("gossip: write to {wl} failed ({e}); closing the link");
                 // the reader side ends with it, so the peer redials and catches up from the replay
                 let _ = w.shutdown(std::net::Shutdown::Both);
                 break;
             }
         }
     });
-    eprintln!("gossip: link up ({label})");
-    let mut r = BufReader::new(s);
-    let mut buf = Vec::new();
+    let mut key: Option<String> = None;
+    let mut junk = 0u32;
+    let mut why: Option<String> = None;
+    if must_prove {
+        let d = demand.as_ref().unwrap();
+        let end = Instant::now() + Duration::from_secs(PROOF_SECS);
+        let _ = s.set_read_timeout(Some(Duration::from_secs(PROOF_SECS)));
+        why = Some(loop {
+            if Instant::now() > end {
+                break ": no proof of stake in time".into();
+            }
+            match read_line(&mut r, &mut buf) {
+                Ok(Some(())) => {}
+                Ok(None) => break String::new(),
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                    break ": no proof of stake in time".into()
+                }
+                Err(e) => break format!(": {e}"),
+            }
+            if !buf.starts_with(b"{\"proof\"") {
+                // anything else before the proof is dropped unread
+                junk += 1;
+                if junk > MAX_JUNK {
+                    break ": too many lines before a proof".into();
+                }
+                continue;
+            }
+            match check_proof(&shared, d, &challenge, &buf) {
+                Ok(k) => {
+                    key = Some(k);
+                    break String::new();
+                }
+                Err(e) => break format!(": no valid proof of stake ({e})"),
+            }
+        });
+        if key.is_some() {
+            why = None;
+            let _ = s.set_read_timeout(None);
+            let mut g = shared.lock().unwrap();
+            replay(&g, &otx);
+            if let Some(l) = g.links.get_mut(&id) {
+                l.authed = true;
+            }
+            drop(g);
+            eprintln!("gossip: link up ({label}), key {}", &key.as_ref().unwrap()[..16]);
+        }
+    } else {
+        eprintln!("gossip: link up ({label})");
+    }
+    drop(otx);
     // an incoming link (a peer we did not choose) is rate-limited: a burst, then RATE new messages a
     // second; links we dialled ourselves are trusted with their replay of a full log
-    let (mut tokens, mut t0, mut junk) = (BURST, Instant::now(), 0u32);
-    let why = loop {
-        match read_line(&mut r, &mut buf) {
-            Ok(Some(())) => {}
-            Ok(None) => break String::new(),
-            Err(e) => break format!(": {e}"),
-        }
-        let e = match std::str::from_utf8(&buf)
-            .ok()
-            .and_then(|l| serde_json::from_str::<Event>(l).ok())
-        {
-            Some(e) => e,
-            None => {
-                junk += 1;
-                if incoming && junk > MAX_JUNK {
-                    break ": too many malformed lines".into();
+    let (mut tokens, mut t0) = (BURST, Instant::now());
+    let why = match why {
+        Some(w) => w,
+        None => loop {
+            if let Some(f) = first.take() {
+                buf = f;
+            } else {
+                match read_line(&mut r, &mut buf) {
+                    Ok(Some(())) => {}
+                    Ok(None) => break String::new(),
+                    Err(e) => break format!(": {e}"),
                 }
-                continue;
             }
-        };
-        let line = match admit(&shared, &e) {
-            Admit::Seen => continue,
-            Admit::Invalid => {
-                junk += 1;
-                if incoming && junk > MAX_JUNK {
-                    break ": too many invalid messages".into();
+            let e = match std::str::from_utf8(&buf)
+                .ok()
+                .and_then(|l| serde_json::from_str::<Event>(l).ok())
+            {
+                Some(e) => e,
+                None => {
+                    junk += 1;
+                    if incoming && junk > MAX_JUNK {
+                        break ": too many malformed lines".into();
+                    }
+                    continue;
                 }
-                continue;
+            };
+            let line = match admit(&shared, &e) {
+                Admit::Seen => continue,
+                Admit::Invalid => {
+                    junk += 1;
+                    if incoming && junk > MAX_JUNK {
+                        break ": too many invalid messages".into();
+                    }
+                    continue;
+                }
+                Admit::New(l) => l,
+            };
+            if incoming {
+                tokens = (tokens + t0.elapsed().as_secs_f64() * RATE).min(BURST);
+                t0 = Instant::now();
+                tokens -= 1.0;
+                if tokens < 0.0 {
+                    break ": flooding (new messages above the rate limit)".into();
+                }
             }
-            Admit::New(l) => l,
-        };
-        if incoming {
-            tokens = (tokens + t0.elapsed().as_secs_f64() * RATE).min(BURST);
-            t0 = Instant::now();
-            tokens -= 1.0;
-            if tokens < 0.0 {
-                break ": flooding (new messages above the rate limit)".into();
+            // forward to every other link, deliver locally
+            let mut g = shared.lock().unwrap();
+            if let Some(l) = g.links.get_mut(&id) {
+                l.useful += 1;
             }
-        }
-        // forward to every other link, deliver locally
-        let mut g = shared.lock().unwrap();
-        if let Some(l) = g.links.get_mut(&id) {
-            l.useful += 1;
-        }
-        forward(&g, &line, Some(id));
-        drop(g);
-        let _ = local.send(e);
+            forward(&g, &line, Some(id));
+            drop(g);
+            let _ = local.send(e);
+        },
     };
+    let abuse = why.contains("flooding")
+        || why.contains("malformed")
+        || why.contains("invalid messages")
+        || why.contains("longer than the limit");
     {
         let mut g = shared.lock().unwrap();
         g.links.remove(&id);
         if incoming {
             g.incoming = g.incoming.saturating_sub(1);
         }
+        if let Some(k) = &key {
+            if let Some(n) = g.per_key.get_mut(k) {
+                *n = n.saturating_sub(1);
+            }
+            if abuse {
+                g.banned
+                    .insert(k.clone(), Instant::now() + Duration::from_secs(BAN_SECS));
+            }
+        }
     }
     // close the socket outright: the writer thread may be blocked sending to a peer that stopped
     // reading, and would otherwise hold the socket (and itself) open for ever
-    let _ = r.get_ref().shutdown(std::net::Shutdown::Both);
-    eprintln!("gossip: link down ({label}){why}");
+    let _ = s.shutdown(std::net::Shutdown::Both);
+    let banned = match (&key, abuse) {
+        (Some(k), true) => format!("; key {} banned for {} min", &k[..16], BAN_SECS / 60),
+        _ => String::new(),
+    };
+    eprintln!("gossip: link down ({label}){why}{banned}");
 }
 
 impl Gossip {
@@ -382,11 +611,23 @@ impl Gossip {
         peers: &[String],
         socks: Option<&str>,
     ) -> std::io::Result<Gossip> {
+        Self::start_with(listen, peers, socks, None, None)
+    }
+
+    /// As `start`, with bonded links: `demand` makes this Core require a proof of stake on every
+    /// incoming link; `cred` is what this node proves with when it dials.
+    pub fn start_with(
+        listen: Option<&str>,
+        peers: &[String],
+        socks: Option<&str>,
+        demand: Option<Demand>,
+        cred: Option<Credential>,
+    ) -> std::io::Result<Gossip> {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (tx, rx) = channel();
         if let Some(addr) = listen {
             let l = TcpListener::bind(addr)?;
-            let (sh, t) = (shared.clone(), tx.clone());
+            let (sh, t, demand) = (shared.clone(), tx.clone(), demand.clone());
             std::thread::spawn(move || {
                 for s in l.incoming().flatten() {
                     if !make_room(&sh) {
@@ -394,21 +635,22 @@ impl Gossip {
                         let _ = s.shutdown(std::net::Shutdown::Both);
                         continue;
                     }
-                    let (sh, t) = (sh.clone(), t.clone());
+                    let (sh, t, d) = (sh.clone(), t.clone(), demand.clone());
                     let label = s
                         .peer_addr()
                         .map(|a| format!("incoming {a}"))
                         .unwrap_or("incoming".into());
-                    std::thread::spawn(move || run_link(sh, t, s, label, true));
+                    std::thread::spawn(move || run_link(sh, t, s, label, true, d, None, String::new()));
                 }
             });
         }
         for p in peers {
-            let (sh, t, p, sx) = (
+            let (sh, t, p, sx, c) = (
                 shared.clone(),
                 tx.clone(),
                 p.clone(),
                 socks.map(String::from),
+                cred.clone(),
             );
             // keep the link up: redial with backoff whenever it drops
             std::thread::spawn(move || {
@@ -416,7 +658,7 @@ impl Gossip {
                 loop {
                     let t0 = Instant::now();
                     match dial(&p, sx.as_deref()) {
-                        Ok(s) => run_link(sh.clone(), t.clone(), s, format!("to {p}"), false),
+                        Ok(s) => run_link(sh.clone(), t.clone(), s, format!("to {p}"), false, None, c.clone(), p.clone()),
                         Err(e) => eprintln!("gossip: cannot reach {p}: {e}"),
                     }
                     if t0.elapsed() > Duration::from_secs(30) {

@@ -118,3 +118,47 @@ fn socks5_dial_passes_the_name_unresolved() {
     let la = local.local_addr().unwrap().to_string();
     assert!(dial(&la, Some("127.0.0.1:1")).is_ok());
 }
+
+/// Bonded links: a Core that demands a proof of stake carries the messages of a dialler that proves
+/// one, and gives nothing to one that does not (its message is dropped, its link closed).
+#[test]
+fn bonded_links() {
+    use bitaid_node::gossip::{Credential, Demand};
+    use std::sync::Arc;
+    let core_addr = free();
+    let staked = kp();
+    let good = staked.x_only_public_key().0;
+    // the stand-in for the chain: one key has a stake at outpoint "s:0"
+    let verify: bitaid_node::gossip::Verify = Arc::new(move |k, stake| {
+        if *k == good && stake == "s:0" {
+            Ok(())
+        } else {
+            Err("no such stake".into())
+        }
+    });
+    let demand = Demand { verify, names: vec![] };
+    let _core = Gossip::start_with(Some(&core_addr), &[], None, Some(demand), None).unwrap();
+    let cred = Credential { keys: staked, stake: "s:0".into() };
+    let mut a = Gossip::start_with(None, std::slice::from_ref(&core_addr), None, None, Some(cred.clone())).unwrap();
+    let mut b = Gossip::start_with(None, std::slice::from_ref(&core_addr), None, None, Some(cred)).unwrap();
+    let mut stranger = Gossip::start(None, std::slice::from_ref(&core_addr), None).unwrap();
+    a.wait_links(1, Duration::from_secs(5));
+    b.wait_links(1, Duration::from_secs(5));
+    stranger.wait_links(1, Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(500));
+    for g in [&mut a, &mut b, &mut stranger] {
+        g.subscribe("x", vec![Filter::kinds(&[kind::CASE])]);
+    }
+    let k = kp();
+    let mk = |t: &str| Event::new(&k, kind::CASE, vec![vec!["t".into(), t.into()]], String::new());
+    // the staked peer's message reaches the other staked peer, and not the stranger
+    let e1 = mk("from a");
+    a.publish(&e1);
+    let got = b.next_event(Duration::from_secs(5)).map(|x| x.1.id);
+    assert_eq!(got.as_deref(), Some(e1.id.as_str()));
+    assert!(stranger.next_event(Duration::from_secs(2)).is_none(), "the stranger was sent a message");
+    // the stranger's message goes nowhere
+    let e2 = mk("from the stranger");
+    stranger.publish(&e2);
+    assert!(b.next_event(Duration::from_secs(3)).is_none(), "a message without a stake was carried");
+}

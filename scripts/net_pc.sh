@@ -102,7 +102,7 @@ start)
     # coins left in the test wallets by earlier runs count: each is only topped up to what it needs
     # the arbitrators' wallet scales with their number (ten: 0.015 in 12 coins and 25 fee coins)
     A=${ARBS:-10}
-    topup w $(python3 -c "print('%.4f' % (0.0015*$A))") $(( A * 5 / 2 )) $(( A + 2 )); for w in caller r3 r4; do topup $w 0.001 6; done; topup r1 0.001 12  # r1 escalates: tier fees and units take fee coins too
+    topup w $(python3 -c "print('%.4f' % (0.0015*$A + 0.0006))") $(( A * 5 / 2 )) $(( A + 2 )); for w in caller r3 r4; do topup $w 0.001 6; done; topup r1 0.001 12  # r1 escalates: tier fees and units take fee coins too
     echo "wallets funded; waiting for the funding to confirm (about 10 minutes, sometimes more)"
     wait_funded
   else
@@ -145,7 +145,9 @@ start)
   export BITAID_INDEX_FROM=${INDEX_FROM:-$(( $($CLI getblockcount) - 1 ))}
   X="--exit-after ${WAIT:-10800}"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
-  BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
+  # bonded links: the Core demands a proof of stake from every peer; a proof names the address the
+  # peer dialled, so the Core accepts its own onion address besides the local port
+  BITAID_LINK_NAMES="$ONION.onion:7700" BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
   sleep 1
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
@@ -181,7 +183,7 @@ start)
   # runs (examples/rogue.rs): oversized and malformed messages, stale and future-dated ones, a replay,
   # a height from the future, a flood and a connection storm; the honest nodes must still finish
   if [ "${ROGUE:-0}" = 1 ] && [ -x target/release/examples/rogue ]; then
-    nohup target/release/examples/rogue --peer 127.0.0.1:7700 --wait ${ROGUE_WAIT:-7200} >"$L/rogue.out" 2>"$L/rogue.log" </dev/null &
+    BITAID_WALLET=w nohup target/release/examples/rogue --peer 127.0.0.1:7700 --wait ${ROGUE_WAIT:-7200} >"$L/rogue.out" 2>"$L/rogue.log" </dev/null &
   fi
   echo "$ONION" > "$L/onion.txt"
   echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE INDEX_FROM=$BITAID_INDEX_FROM"
@@ -192,9 +194,12 @@ report)
   cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
   ;;
 attack)
-  # the hostile peer against a lone Core on this machine (no chain needed): every attack of
-  # examples/rogue.rs, the connection storm included, on WSL as on the public runs
-  BITAID_RPC=http://u:p@127.0.0.1:1 nohup target/release/bitaid-node --role core --name core-attack --listen-gossip 127.0.0.1:7790 >/dev/null 2>"$L/core_attack.log" </dev/null &
+  # the hostile peer against a lone Core on this machine: every attack of examples/rogue.rs, the
+  # bonded-link ones included. The Core checks stakes on the chain (CHAIN=public: the Windows signet
+  # node), and the rogue pays its own stakes from wallet w (once; kept in ~/.bitaid and reused)
+  export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_WALLET=w
+  $CLI loadwallet w >/dev/null 2>&1
+  nohup target/release/bitaid-node --role core --name core-attack --listen-gossip 127.0.0.1:7790 >/dev/null 2>"$L/core_attack.log" </dev/null &
   sleep 3
   for i in 1 2; do
     timeout 900 target/release/examples/rogue --peer 127.0.0.1:7790 2>&1 | tee "$L/rogue_attack_$i.out" | grep -E "PASS|FAIL|passed"

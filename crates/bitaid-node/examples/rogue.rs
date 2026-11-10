@@ -1,13 +1,17 @@
-//! A hostile peer, for testing a Core's defences while a real case runs through it. It connects to
-//! the Core's gossip port like any stranger who learnt the onion address, and tries, one after
-//! another: a message longer than the limit, a stream of garbage, messages dated in the past and the
-//! future, a replay of a message already seen, an envelope claiming a block height the chain has
-//! not reached, a flood of validly signed junk, and more connections than the Core accepts. An
-//! observer link watches what the Core forwards. Each attack prints PASS or FAIL; the honest nodes'
-//! own checks show whether the case still finished.
+//! A hostile peer, for testing a Core's defences while a real case runs through it. First the bonded
+//! link itself: a stranger with no stake, a proof with a wrong signature, someone else's stake, a
+//! proof signed for another Core. Then, with stakes of its own (the Core's price of entry, paid like
+//! anyone's): a message longer than the limit, a stream of garbage, messages dated in the past and
+//! the future, a replay, an envelope claiming a block height the chain has not reached, a flood of
+//! validly signed junk, a banned key coming back, one key opening many links, and a storm of
+//! connections that never prove anything. An observer link watches what the Core forwards. Each
+//! attack prints PASS or FAIL; the honest nodes' own checks show whether the case still finished.
 //!
 //! cargo run --release --example rogue -- --peer 127.0.0.1:7700 [--wait SECS] [--flood N] [--storm N]
-use bitaid_node::gossip::{self, BURST, MAX_IN, MAX_JUNK, MAX_LINE};
+//! (needs BITAID_RPC and BITAID_WALLET: its stakes are paid from that wallet, kept in BITAID_LINK_DIR)
+use bitaid_node::chain::Rpc;
+use bitaid_node::gossip::{self, Credential, BURST, MAX_IN, MAX_JUNK, MAX_LINE, PER_KEY, PROOF_SECS};
+use bitaid_node::node::link_credential;
 use bitaid_node::nostr::{kind, now, Event};
 use bitaid_node::wire::{self, b64, Msg};
 use bitcoin::secp256k1::{Keypair, Secp256k1};
@@ -89,20 +93,57 @@ struct Observer {
     first: Arc<Mutex<Option<String>>>,
 }
 
+/// Dials and answers the Core's challenge with `proof` (built from the challenge); None: no proof.
+fn open(peer: &str, socks: Option<&str>, proof: Option<&dyn Fn(&[u8; 32]) -> String>) -> std::io::Result<TcpStream> {
+    let s = gossip::dial(peer, socks)?;
+    let _ = s.set_write_timeout(Some(Duration::from_secs(15)));
+    let _ = s.set_read_timeout(Some(Duration::from_secs(60)));
+    // the challenge line, read a byte at a time so nothing after it is consumed
+    let mut line = Vec::new();
+    let mut b = [0u8; 1];
+    let mut r = s.try_clone()?;
+    while r.read(&mut b)? == 1 && b[0] != b'\n' && line.len() < 4096 {
+        line.push(b[0]);
+    }
+    let _ = s.set_read_timeout(None);
+    let ch = serde_json::from_slice::<serde_json::Value>(&line)
+        .ok()
+        .and_then(|v| v["challenge"].as_str().and_then(|h| hex::decode(h).ok()))
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .ok_or_else(|| std::io::Error::other("no challenge from the Core"))?;
+    if let Some(f) = proof {
+        let mut w = s.try_clone()?;
+        w.write_all((f(&ch) + "\n").as_bytes())?;
+    }
+    Ok(s)
+}
+
+/// Dials with a proper proof for `c`.
+fn connect(peer: &str, socks: Option<&str>, c: &Credential) -> std::io::Result<TcpStream> {
+    open(peer, socks, Some(&|ch: &[u8; 32]| gossip::proof_line(c, ch, peer)))
+}
+
 impl Observer {
-    fn start(peer: &str, socks: Option<&str>) -> Observer {
-        let s = gossip::dial(peer, socks).expect("observer cannot connect");
+    fn start(peer: &str, socks: Option<&str>, c: &Credential) -> Observer {
+        let s = connect(peer, socks, c).expect("observer cannot connect");
         let seen = Arc::new(Mutex::new(HashSet::new()));
         let first = Arc::new(Mutex::new(None));
         let (sn, fs) = (seen.clone(), first.clone());
         std::thread::spawn(move || {
             for l in BufReader::new(s).lines() {
-                let Ok(l) = l else { break };
+                let l = match l {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("rogue: observer link ended: {e}");
+                        break;
+                    }
+                };
                 if let Ok(e) = serde_json::from_str::<Event>(&l) {
                     fs.lock().unwrap().get_or_insert(l.clone());
                     sn.lock().unwrap().insert(e.id);
                 }
             }
+            eprintln!("rogue: observer link closed by the Core");
         });
         Observer { seen, first }
     }
@@ -133,32 +174,63 @@ fn main() {
     let storm: usize = arg("--storm")
         .and_then(|v| v.parse().ok())
         .unwrap_or(MAX_IN + 16);
-    // every attacking socket gives up a write after 15 s: a peer that has cut the link must not leave
-    // this tool blocked in a write (seen on WSL1, where a blocked writer is not woken by the close)
-    let dial = || {
-        gossip::dial(&peer, socks).map(|s| {
-            let _ = s.set_write_timeout(Some(Duration::from_secs(15)));
-            s
-        })
-    };
+    // the stakes this stranger pays for its own keys, like anyone (kept and reused while unspent)
+    let rpc = Rpc::from_env();
+    let cred = |n: &str| link_credential(&format!("rogue-{n}"), &rpc).expect("cannot lock a link stake");
+    let (co, ca, cb, cc, cd, ce, cf) = (cred("obs"), cred("a"), cred("b"), cred("c"), cred("d"), cred("e"), cred("f"));
     if wait > 0 {
         println!("rogue: waiting {wait} s, so the attacks land while a case runs");
         std::thread::sleep(Duration::from_secs(wait));
     }
-    let obs = Observer::start(&peer, socks);
+    let obs = Observer::start(&peer, socks, &co);
     std::thread::sleep(Duration::from_secs(5));
     let k = keys();
+    let closed_by = PROOF_SECS + 15;
 
-    // 0. control: one fresh, valid message is forwarded
-    let mut a = dial().expect("cannot connect");
+    // A. the bonded link itself
+    // A1. a stranger with no stake: it is sent nothing, its message is dropped, the link is closed
+    let e0 = junk(&k, now());
+    match open(&peer, socks, None) {
+        Ok(mut s) => {
+            let _ = s.write_all(&line(&e0));
+            let cut = closed_within(&mut s, closed_by);
+            report(cut && !obs.got(&e0.id), "a stranger with no stake: its message dropped, the link closed after the proof window");
+        }
+        Err(e) => report(false, &format!("no-stake stranger: {e}")),
+    }
+    // A2. a proof whose signature is over another challenge
+    let bad = |ch: &[u8; 32]| {
+        let mut other = *ch;
+        other[0] ^= 1;
+        gossip::proof_line(&ca, &other, &peer)
+    };
+    match open(&peer, socks, Some(&bad)) {
+        Ok(mut s) => report(closed_within(&mut s, closed_by), "a proof signed over another challenge: refused, link closed"),
+        Err(e) => report(false, &format!("wrong signature: {e}")),
+    }
+    // A3. someone else's stake: a fresh key claiming another key's outpoint
+    let thief = Credential { keys: keys(), stake: ca.stake.clone() };
+    match open(&peer, socks, Some(&|ch: &[u8; 32]| gossip::proof_line(&thief, ch, &peer))) {
+        Ok(mut s) => report(closed_within(&mut s, closed_by), "another key's stake claimed: refused, link closed"),
+        Err(e) => report(false, &format!("stolen stake: {e}")),
+    }
+    // A4. a proof signed for another Core (what a hostile Core could pass on from its own peers)
+    match open(&peer, socks, Some(&|ch: &[u8; 32]| gossip::proof_line(&ca, ch, "elsewhere.onion:7700"))) {
+        Ok(mut s) => report(closed_within(&mut s, closed_by), "a proof signed for another Core's address: refused, link closed"),
+        Err(e) => report(false, &format!("proof for another address: {e}")),
+    }
+
+    // B. with a stake of its own
+    // B0. control: one fresh, valid message is forwarded
+    let mut a = connect(&peer, socks, &ca).expect("cannot connect");
     let ctl = junk(&k, now());
     a.write_all(&line(&ctl)).unwrap();
     report(
         obs.wait_for(&ctl.id, 20),
-        "control: a fresh, validly signed message is forwarded",
+        "control: a staked peer's fresh, validly signed message is forwarded",
     );
 
-    // 1. stale and future-dated messages are refused, not forwarded
+    // B1. stale and future-dated messages are refused, not forwarded
     let old = junk(&k, now() - 2 * 86_400);
     let fut = junk(&k, now() + 86_400);
     a.write_all(&line(&old)).unwrap();
@@ -169,7 +241,7 @@ fn main() {
         "a message dated two days ago and one dated tomorrow: neither forwarded",
     );
 
-    // 2. a replay of a message the Core has already seen goes nowhere
+    // B2. a replay of a message the Core has already seen goes nowhere
     let replay = obs.first.lock().unwrap().clone();
     if let Some(l) = replay {
         let e: Event = serde_json::from_str(&l).unwrap();
@@ -186,8 +258,8 @@ fn main() {
         );
     }
 
-    // 3. an envelope claiming a block height the chain has not reached (honest nodes refuse it and
-    //    log 'refused … claims height'; the Core only relays, so it reaches them)
+    // B3. an envelope claiming a block height the chain has not reached (honest nodes refuse it and
+    //     log 'refused … claims height'; the Core only relays, so it reaches them)
     let ek = keys();
     let case = rand_hex();
     let bytes = wire::sign(
@@ -212,8 +284,8 @@ fn main() {
     );
     drop(a);
 
-    // 4. a message longer than the limit closes the link
-    let mut b = dial().expect("cannot connect");
+    // B4. a message longer than the limit closes the link, and its key is banned
+    let mut b = connect(&peer, socks, &cb).expect("cannot connect");
     let chunk = vec![b'x'; 1 << 16];
     let mut sent = 0;
     while sent <= MAX_LINE + (1 << 16) {
@@ -226,9 +298,19 @@ fn main() {
         closed_within(&mut b, 30),
         &format!("a {} KiB message with no end: link closed", sent >> 10),
     );
+    std::thread::sleep(Duration::from_secs(2));
+    match connect(&peer, socks, &cb) {
+        Ok(mut s) => {
+            let probe = junk(&k, now());
+            let _ = s.write_all(&line(&probe));
+            let cut = closed_within(&mut s, closed_by);
+            report(cut && !obs.got(&probe.id), "the same key back after its abuse: banned, its link refused at the proof");
+        }
+        Err(_) => report(true, "the same key back after its abuse: banned, refused"),
+    }
 
-    // 5. garbage lines close the link
-    let mut c = dial().expect("cannot connect");
+    // B5. garbage lines close the link
+    let mut c = connect(&peer, socks, &cc).expect("cannot connect");
     for i in 0..(MAX_JUNK + 50) {
         if c.write_all(format!("not a message {i}\n").as_bytes()).is_err() {
             break;
@@ -236,18 +318,16 @@ fn main() {
     }
     report(
         closed_within(&mut c, 30),
-        &format!("{} lines of garbage: link closed", MAX_JUNK + 50),
+        &format!("{} lines of garbage: link closed, key banned", MAX_JUNK + 50),
     );
 
-    // 6. a flood of validly signed junk is cut at the rate limit
-    let mut d = dial().expect("cannot connect");
+    // B6. a flood of validly signed junk is cut at the rate limit
+    let mut d = connect(&peer, socks, &cd).expect("cannot connect");
     let t0 = Instant::now();
     let mut n = 0;
-    let mut last = String::new();
     for i in 0..flood {
         let kk = if i % 100 == 0 { keys() } else { k };
         let e = junk(&kk, now());
-        last = e.id.clone();
         if d.write_all(&line(&e)).is_err() {
             break;
         }
@@ -257,49 +337,54 @@ fn main() {
     report(
         cut,
         &format!(
-            "flood of validly signed messages: link closed after {n} sent in {:.1} s (limit: a burst of {}, then {}/s)",
+            "flood of validly signed messages: link closed after {n} sent in {:.1} s (limit: a burst of {}, then {}/s), key banned",
             t0.elapsed().as_secs_f64(),
             BURST,
             gossip::RATE
         ),
     );
-    let _ = last;
 
-    // 7. more connections than the Core accepts: the excess are closed, and once the storm is over
-    //    a new peer is accepted and a fresh message forwarded
-    let mut held = vec![];
-    for _ in 0..storm {
-        if let Ok(s) = dial() {
-            held.push(s);
+    // B7. one key opening many links: at most PER_KEY are kept
+    let mut many = vec![];
+    for _ in 0..8 {
+        if let Ok(s) = connect(&peer, socks, &ce) {
+            many.push(s);
         }
     }
     std::thread::sleep(Duration::from_secs(5));
-    let mut refused = 0;
-    for s in held.iter_mut() {
-        if closed_within(s, 1) {
-            refused += 1;
+    let mut open_n = 0;
+    for s in many.iter_mut() {
+        if !closed_within(s, 1) {
+            open_n += 1;
         }
     }
     report(
-        refused > 0,
-        &format!(
-            "{storm} connections at once: {refused} closed by the Core (it keeps at most {MAX_IN} incoming)"
-        ),
+        open_n <= PER_KEY,
+        &format!("one staked key opening 8 links: {open_n} kept (at most {PER_KEY} per key)"),
     );
-    drop(held);
-    std::thread::sleep(Duration::from_secs(5));
+    drop(many);
+
+    // B8. a storm of connections that never prove anything: they hold no slot past the proof
+    //     window, and a staked newcomer is accepted and its message forwarded
+    let mut held = vec![];
+    for _ in 0..storm {
+        if let Ok(s) = open(&peer, socks, None) {
+            held.push(s);
+        }
+    }
+    std::thread::sleep(Duration::from_secs(15));
     let after = junk(&k, now());
-    match dial() {
+    match connect(&peer, socks, &cf) {
         Ok(mut s) => {
             let _ = s.write_all(&line(&after));
-            let fresh = Observer::start(&peer, socks);
             report(
-                obs.wait_for(&after.id, 30) || fresh.wait_for(&after.id, 30),
-                "after the storm: a new peer accepted and its message forwarded",
+                obs.wait_for(&after.id, 40),
+                &format!("{storm} connections without a proof (the Core keeps at most {MAX_IN} incoming): a staked newcomer still accepted and its message forwarded"),
             );
         }
         Err(e) => report(false, &format!("after the storm: cannot connect ({e})")),
     }
+    drop(held);
 
     let p = PASSED.lock().unwrap();
     println!("[rogue] {} passed, {} failed", p.0, p.1);
