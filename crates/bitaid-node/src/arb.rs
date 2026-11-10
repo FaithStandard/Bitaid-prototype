@@ -1054,9 +1054,11 @@ impl Replay {
             if !t.committed {
                 continue;
             }
-            // each incoherent vote, and each commitment never revealed (charged at the isolation penalty)
+            // each incoherent vote, and each commitment never revealed (charged at the isolation penalty);
+            // a hung tier (no two thirds) has no dissenters, only its silent seats (§10.5)
+            let hung = t.verdict().is_none();
             let mut owed: Vec<(String, f64)> = vec![];
-            for (arb, v) in &t.reveals {
+            for (arb, v) in t.reveals.iter().filter(|_| !hung) {
                 let vk = verdict_key(v);
                 if vk == fk {
                     continue;
@@ -2222,6 +2224,8 @@ pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
             continue;
         };
         let fk = verdict_key(fv);
+        // a tier with no two thirds of its own (hung) charges no one for disagreeing (§10.5)
+        let hung = !l.review && supermajority(l.seats.len(), &l.reveals.iter().map(|x| x.1.clone()).collect::<Vec<_>>()).is_none();
         for seat in &l.seats {
             if l.review {
                 // a review seat is charged only for a finding it owed and never revealed
@@ -2237,7 +2241,7 @@ pub fn momentum(logs: &[TierLog], arbitrator: &str, height: u32) -> f64 {
                 continue;
             }
             let e = match l.reveals.iter().find(|x| &x.0 == seat) {
-                Some((_, v)) if verdict_key(v) == fk => 0.0,
+                Some((_, v)) if verdict_key(v) == fk || hung => 0.0,
                 Some((_, v)) => {
                     let vk = verdict_key(v);
                     let agree = fin
