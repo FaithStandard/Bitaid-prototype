@@ -1473,6 +1473,24 @@ fn archivist(mut n: Node) -> i32 {
             std::env::temp_dir().join(format!("bitaid-archive-{}", bitaid_node::pre(&n.me(), 8)))
         });
     let srv = blossom::spawn(&listen, dir, blossom::Policy::default()).expect("listen");
+    // uploaders are admitted as their alert and roster arrive, even while the main loop is busy
+    // convening a review (a case's parties upload within seconds of its roster)
+    {
+        let pol = srv.policy.clone();
+        let mut callers: HashMap<String, String> = HashMap::new();
+        n.observer = Some(Box::new(move |env: &wire::Envelope| match &env.msg {
+            Msg::Alert { case_id, .. } => {
+                callers.entry(case_id.clone()).or_insert(env.sender.clone());
+                pol.allow(case_id, &env.sender);
+            }
+            Msg::Roster { case_id, seats, .. } if callers.get(case_id) == Some(&env.sender) => {
+                for s in seats {
+                    pol.allow(case_id, s);
+                }
+            }
+            _ => {}
+        }));
+    }
     let port = srv.url.rsplit(':').next().unwrap_or("7480").to_string();
     let url = match arg("--public-url").as_deref() {
         // the address this machine uses to reach the relay, which is the one other devices can reach
