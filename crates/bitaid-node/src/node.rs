@@ -85,8 +85,16 @@ pub fn scalar_hex(s: &Scalar) -> String {
     hex::encode(s.serialize())
 }
 
-/// The link stake a node locks to dial a Core (before SAT_SCALE): a fidelity bond per identity.
-pub const LINK_STAKE: u64 = 100_000;
+/// The link stake a node locks to dial a Core, for a link that receives (Specification §7.1: 20,000
+/// sats; a relaying Core's is larger): a fidelity bond per identity. Scaled by SAT_SCALE on a test
+/// chain, never below LINK_STAKE_FLOOR (an output must stay above dust).
+pub const LINK_STAKE: u64 = 20_000;
+pub const LINK_STAKE_FLOOR: u64 = 1_000;
+
+/// The link stake in sats on this chain.
+pub fn link_stake() -> u64 {
+    crate::sats(LINK_STAKE).max(LINK_STAKE_FLOOR)
+}
 
 /// The script a link stake pays to: the link key alone (taproot, key path only).
 pub fn link_spk(k: &XOnlyPublicKey) -> bitcoin::ScriptBuf {
@@ -105,7 +113,7 @@ pub fn link_verifier() -> Verify {
         if out.script_pubkey != link_spk(k) {
             return Err("does not pay the key".into());
         }
-        if out.value.to_sat() < crate::sats(LINK_STAKE) {
+        if out.value.to_sat() < link_stake() {
             return Err(format!("{} sats, below the link stake", out.value.to_sat()));
         }
         Ok(())
@@ -132,7 +140,7 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
             .and_then(|op| rpc.confirmed_utxo(&op))
             .map(|(o, _)| {
                 o.script_pubkey == link_spk(&kp.x_only_public_key().0)
-                    && o.value.to_sat() >= crate::sats(LINK_STAKE)
+                    && o.value.to_sat() >= link_stake()
             })
             .unwrap_or(false)
     };
@@ -153,8 +161,8 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
     }
     let kp = Keypair::new(&secp, &mut rand::thread_rng());
     let spk = link_spk(&kp.x_only_public_key().0);
-    eprintln!("[{name}] gossip: locking a link stake of {} sats (once; reused while unspent)", crate::sats(LINK_STAKE));
-    let txid = match rpc.pay_many(&[(spk.clone(), crate::sats(LINK_STAKE))]) {
+    eprintln!("[{name}] gossip: locking a link stake of {} sats (once; reused while unspent)", link_stake());
+    let txid = match rpc.pay_many(&[(spk.clone(), link_stake())]) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("[{name}] gossip: cannot lock a link stake ({e}); dialling without one");
