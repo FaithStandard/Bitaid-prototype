@@ -928,6 +928,17 @@ fn pool_member(mut n: Node) -> i32 {
                 // height gains nothing, since the draw must also come after every listed offer, and the
                 // offering arbitrators state their own heights
                 let h0 = env.height;
+                // a fresh escalation whose draw block already exists is refused: its escalator could
+                // have chosen it knowing the hash (an escalation replayed from the log is old and exempt)
+                if bitaid_node::nostr::now().saturating_sub(sent_at) < 300
+                    && h0 + bitaid_node::draw_blocks() <= n.rpc.height()
+                {
+                    n.log(&format!(
+                        "case {}: escalation to tier {tier} refused: it states block {h0}, its draw block is already mined",
+                        &case_id[..8]
+                    ));
+                    continue;
+                }
                 esc.insert(case_id.clone(), (*tier, s.clone(), h0));
                 ready_at.remove(case_id);
                 deadlock_at.remove(case_id);
@@ -999,19 +1010,19 @@ fn pool_member(mut n: Node) -> i32 {
                     .cloned()
                     .unwrap_or_default();
                 let size = bitaid_node::arb::panel_size(*tier);
-                // the draw must be reproducible: a block mined after escalation, offers this member
-                // saw with valid bonds, and the seats the block's hash picks among them
-                let after_offers = listed
-                    .iter()
-                    .filter_map(|o| seen.get(o).map(|x| x.2))
-                    .max()
-                    .unwrap_or(0);
-                let block_ok = *height > h0
-                    && *height > after_offers
+                // the draw must be reproducible and leave the escalator no choice: the block the
+                // escalation fixed (draw_blocks() after it), and exactly the offers with valid bonds
+                // stated from the escalation to two blocks before that block, none left out
+                let in_window = |oh: u32| oh + 2 <= *height;
+                let block_ok = *height == h0 + bitaid_node::draw_blocks()
                     && n.rpc.block_hash(*height).as_deref() == Some(block_hash.as_str());
                 let offers_ok = listed
                     .iter()
-                    .all(|o| seen.get(o).map(|x| x.0).unwrap_or(false));
+                    .all(|o| seen.get(o).map(|x| x.0 && in_window(x.2)).unwrap_or(false))
+                    && seen
+                        .iter()
+                        .filter(|(_, x)| x.0 && in_window(x.2))
+                        .all(|(o, _)| listed.contains(o));
                 let draw_ok =
                     bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
                 if block_ok && offers_ok && draw_ok {
@@ -2112,6 +2123,11 @@ fn escalate_tier(
     // a stage of the staged review (§10.3): seats unpaid and unstaked, an 80% finding
     let review = arb::is_review(tier);
     let okey = view.key_hex();
+    // the escalation's height (its envelope states it): the panel is drawn from the block draw_blocks()
+    // later, from every offer stated up to two blocks before it
+    n.refresh_height();
+    let h_esc = n.height();
+    let draw_h = h_esc + bitaid_node::draw_blocks();
     n.send_case(
         &c,
         &[],
@@ -2122,23 +2138,30 @@ fn escalate_tier(
         },
         false,
     );
-    n.log(&format!("ESCALATE tier {tier} ({size} seats): {reason}"));
+    n.log(&format!("ESCALATE tier {tier} ({size} seats): {reason}; drawn from block {draw_h}"));
     let t0 = Instant::now();
     // blind taking: offers name only a bond and a payout address
-    let end = Instant::now() + secs(num("--offer-window", 25u64));
     let mut offers: Vec<(String, bitcoin::ScriptBuf, arb::Bond)> = vec![];
     let oxo = wire::xonly(&okey).unwrap();
-    while Instant::now() < end {
-        let left = end.saturating_duration_since(Instant::now());
+    let cap = Instant::now() + secs(bitaid_node::slow(3600));
+    while Instant::now() < cap {
+        if n.tip() >= draw_h {
+            break;
+        }
         let cc = c.clone();
-        let Some((who, offer)) = n.wait(left, |env, _| match &env.msg {
+        let Some((who, offer, oh)) = n.wait(Duration::from_secs(2), |env, _| match &env.msg {
             Msg::SeatOffer {
                 case_id, tier: t, ..
-            } if *case_id == cc && *t == tier => Some((env.sender.clone(), env.msg.clone())),
+            } if *case_id == cc && *t == tier => Some((env.sender.clone(), env.msg.clone(), env.height)),
             _ => None,
         }) else {
-            break;
+            continue;
         };
+        // stated at least two blocks before the draw, as every member checks (no lower bound: an offer
+        // whose stated height is a little stale gains nothing, as every offer in the window counts)
+        if oh + 2 > draw_h {
+            continue;
+        }
         if offers.iter().any(|o| o.0 == who) {
             continue;
         }
@@ -2193,9 +2216,13 @@ fn escalate_tier(
         );
         return None;
     }
-    // the draw uses a block mined after offers closed, so no one could aim for a seat
-    n.rpc.mine(1).ok();
-    let h = n.rpc.height();
+    // the draw uses the block the escalation fixed, mined after it was published, so no one could aim
+    // for a seat, and no one could try blocks until one suited them
+    while n.rpc.height() < draw_h {
+        n.rpc.mine(1).ok();
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    let h = draw_h;
     let bh = n.rpc.block_hash(h).unwrap_or_default();
     let ids: Vec<String> = offers.iter().map(|o| o.0.clone()).collect();
     let seats = bitaid_node::arb::draw(&bh, &c, tier, &ids, size);

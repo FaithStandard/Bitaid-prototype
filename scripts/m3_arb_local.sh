@@ -15,6 +15,9 @@ for w in caller r1 r3; do
 done
 mine1
 P="--peer 127.0.0.1:7700 --pool arb"
+# a panel is drawn from the block draw_blocks() after its escalation; at 2 s blocks plus the blocks
+# mined on demand, 10 leave arbitrators time to offer
+export BITAID_DRAW_BLOCKS=${BITAID_DRAW_BLOCKS:-10}
 # protocol deadlines are block heights: on regtest a block clock makes a block every BLOCK seconds
 # (default 2), as a real chain would, beside the blocks nodes mine on demand
 [ "$CHAIN" = signet ] || { CLI="$CLI" BLOCK=${BLOCK:-2} sh scripts/block_producer.sh & PIDS="$!"; }

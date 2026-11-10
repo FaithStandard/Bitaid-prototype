@@ -3,6 +3,17 @@
 //! evidence on Blossom-compatible servers.
 //!
 //! This is a prototype for testing and review, not production software. It must not hold real funds.
+/// Blocks from an escalation to the block whose hash draws its panel (Specification §10.2): the draw
+/// block is fixed by the escalation, so no one can try blocks until one suits them, and its hash is
+/// unknown when the escalation is published. Offers stated up to two blocks before it are all drawn
+/// from. BITAID_DRAW_BLOCKS sets it (default 3).
+pub fn draw_blocks() -> u32 {
+    std::env::var("BITAID_DRAW_BLOCKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3)
+}
+
 /// Long waits (a minute or more) stretched for slow chains: `BITAID_TIME_SCALE` (default 1) multiplies
 /// every wait that may span blocks — a node's idle exit, settlement, a panel's seating, the chain's
 /// own confirmations — while message-level timeouts under a minute stay as they are. On a chain with

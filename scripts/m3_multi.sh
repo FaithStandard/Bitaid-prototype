@@ -18,6 +18,9 @@ $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/n
 P="--peer 127.0.0.1:7700 --pool multi"
 X="--exit-after 1800"
 BITAID_WALLET=w $BIN/bitaid-node --role core --name core --listen-gossip 127.0.0.1:7700 2>$L/core.log & PIDS="$!"
+# a panel is drawn from the block draw_blocks() after its escalation; at 2 s blocks plus the blocks
+# mined on demand, 10 leave arbitrators time to offer
+export BITAID_DRAW_BLOCKS=${BITAID_DRAW_BLOCKS:-10}
 # protocol deadlines are block heights: on regtest a block clock makes a block every BLOCK seconds (default 2)
 [ "$CHAIN" = signet ] || { CLI="$CLI" BLOCK=${BLOCK:-2} sh scripts/block_producer.sh & PIDS="$PIDS $!"; }
 sleep 0.5

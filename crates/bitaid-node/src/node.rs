@@ -599,6 +599,12 @@ impl Node {
         out
     }
 
+    /// Forgets the cached height, so the next message is signed with the chain's height now (an
+    /// escalation's height fixes its draw block, which must not be mined yet when it arrives).
+    pub fn refresh_height(&mut self) {
+        self.height_at = None;
+    }
+
     /// The chain height for judging deadlines: as `height`, but refreshed every 2 s.
     pub fn tip(&mut self) -> u32 {
         if self
