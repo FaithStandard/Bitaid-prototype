@@ -305,6 +305,20 @@ impl Rpc {
         })
     }
 
+    /// The output at `op` if it is unspent and in a block: (output, confirmations).
+    pub fn confirmed_utxo(&self, op: &OutPoint) -> Option<(TxOut, u32)> {
+        let v = self
+            .call("gettxout", json!([op.txid.to_string(), op.vout, false]))
+            .ok()?;
+        if v.is_null() {
+            return None;
+        }
+        let value = Amount::from_btc(v["value"].as_f64()?).ok()?;
+        let spk = ScriptBuf::from_hex(v["scriptPubKey"]["hex"].as_str()?).ok()?;
+        let c = v["confirmations"].as_u64().unwrap_or(0) as u32;
+        Some((TxOut { value, script_pubkey: spk }, c))
+    }
+
     pub fn confirmations(&self, txid: &Txid) -> u32 {
         self.raw_tx(&txid.to_string())
             .and_then(|v| v["confirmations"].as_u64())

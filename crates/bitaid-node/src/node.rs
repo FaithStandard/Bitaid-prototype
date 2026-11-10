@@ -2,12 +2,13 @@
 //! tests), a chain connection, case keys, and a mailbox that
 //! keeps messages until the step that needs them asks for them.
 use crate::chain::Rpc;
-use crate::gossip::Gossip;
+use crate::gossip::{Credential, Demand, Gossip, Verify};
 use crate::nostr::{kind, Client, Event, Filter};
 use crate::wire::{self, b64, unb64, Envelope, Msg};
 use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey, XOnlyPublicKey};
 use musig2::secp::{Point, Scalar};
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How messages travel: the Specification's gossip between Cores (over Tor onion services), or
@@ -84,6 +85,96 @@ pub fn scalar_hex(s: &Scalar) -> String {
     hex::encode(s.serialize())
 }
 
+/// The link stake a node locks to dial a Core (before SAT_SCALE): a fidelity bond per identity.
+pub const LINK_STAKE: u64 = 100_000;
+
+/// The script a link stake pays to: the link key alone (taproot, key path only).
+pub fn link_spk(k: &XOnlyPublicKey) -> bitcoin::ScriptBuf {
+    bitcoin::ScriptBuf::new_p2tr(&Secp256k1::verification_only(), *k, None)
+}
+
+/// A Core's check of a claimed link stake: unspent, in a block, paying at least the link stake to
+/// the key alone.
+pub fn link_verifier() -> Verify {
+    let rpc = Arc::new(Rpc::from_env());
+    Arc::new(move |k: &XOnlyPublicKey, stake: &str| {
+        let op: bitcoin::OutPoint = stake.parse().map_err(|_| "not an outpoint".to_string())?;
+        let (out, _) = rpc
+            .confirmed_utxo(&op)
+            .ok_or("not an unspent output in a block")?;
+        if out.script_pubkey != link_spk(k) {
+            return Err("does not pay the key".into());
+        }
+        if out.value.to_sat() < crate::sats(LINK_STAKE) {
+            return Err(format!("{} sats, below the link stake", out.value.to_sat()));
+        }
+        Ok(())
+    })
+}
+
+/// This node's link credential: kept in BITAID_LINK_DIR (default ~/.bitaid) as link_<name>.json and
+/// reused while its stake stays unspent; otherwise a new key and stake are made and confirmed (on a
+/// test chain the secret is kept, so the stake can be spent back). BITAID_LINK_STAKE=0: none.
+pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
+    if std::env::var("BITAID_LINK_STAKE").map(|v| v == "0").unwrap_or(false) {
+        return None;
+    }
+    let dir = std::env::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
+        format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into()))
+    });
+    let _ = std::fs::create_dir_all(&dir);
+    let path = format!("{dir}/link_{name}.json");
+    let secp = Secp256k1::new();
+    let usable = |kp: &Keypair, stake: &str| {
+        stake
+            .parse::<bitcoin::OutPoint>()
+            .ok()
+            .and_then(|op| rpc.confirmed_utxo(&op))
+            .map(|(o, _)| {
+                o.script_pubkey == link_spk(&kp.x_only_public_key().0)
+                    && o.value.to_sat() >= crate::sats(LINK_STAKE)
+            })
+            .unwrap_or(false)
+    };
+    if let Ok(t) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
+            let kp = v["secret"]
+                .as_str()
+                .and_then(|h| hex::decode(h).ok())
+                .and_then(|b| SecretKey::from_slice(&b).ok())
+                .map(|sk| Keypair::from_secret_key(&secp, &sk));
+            let stake = v["stake"].as_str().unwrap_or("").to_string();
+            if let Some(kp) = kp {
+                if usable(&kp, &stake) {
+                    return Some(Credential { keys: kp, stake });
+                }
+            }
+        }
+    }
+    let kp = Keypair::new(&secp, &mut rand::thread_rng());
+    let spk = link_spk(&kp.x_only_public_key().0);
+    eprintln!("[{name}] gossip: locking a link stake of {} sats (once; reused while unspent)", crate::sats(LINK_STAKE));
+    let txid = match rpc.pay_many(&[(spk.clone(), crate::sats(LINK_STAKE))]) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[{name}] gossip: cannot lock a link stake ({e}); dialling without one");
+            return None;
+        }
+    };
+    rpc.confirm(&[txid]);
+    let vout = (0..8u32).find(|v| {
+        rpc.utxo(&bitcoin::OutPoint { txid, vout: *v })
+            .map(|o| o.script_pubkey == spk)
+            .unwrap_or(false)
+    })?;
+    let stake = format!("{txid}:{vout}");
+    let _ = std::fs::write(
+        &path,
+        serde_json::json!({"secret": hex::encode(kp.secret_bytes()), "stake": stake, "who": name}).to_string(),
+    );
+    Some(Credential { keys: kp, stake })
+}
+
 impl Node {
     pub fn new(name: &str, relays: &[String], rpc: Rpc, secret: Option<[u8; 32]>) -> Node {
         let secp = Secp256k1::new();
@@ -121,7 +212,27 @@ impl Node {
         secret: Option<[u8; 32]>,
         wait: Duration,
     ) -> Node {
-        let g = Gossip::start(listen, peers, socks).expect("gossip listen");
+        // bonded links: a Core demands a proof of stake on every incoming link (BITAID_OPEN_LINKS=1
+        // opens them, for tests); a node that dials proves with its link stake
+        let demand = match listen {
+            Some(l) if std::env::var("BITAID_OPEN_LINKS").is_err() => {
+                let mut names = vec![l.to_string()];
+                if let Ok(v) = std::env::var("BITAID_LINK_NAMES") {
+                    names.extend(v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()));
+                }
+                Some(Demand {
+                    verify: link_verifier(),
+                    names,
+                })
+            }
+            _ => None,
+        };
+        let cred = if peers.is_empty() {
+            None
+        } else {
+            link_credential(name, &rpc)
+        };
+        let g = Gossip::start_with(listen, peers, socks, demand, cred).expect("gossip listen");
         if let Some(l) = listen {
             eprintln!("[{name}] gossip: listening on {l}");
         }
