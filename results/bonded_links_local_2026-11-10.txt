@@ -1,0 +1,84 @@
+Bonded links, local regtest, 2026-11-10.
+
+1. cargo test --test gossip bonded_links: a staked dialler's messages carried, a stranger sent nothing and its message dropped.
+2. sh scripts/m3_local.sh: every node locks a link stake and proves it to the Core: 33 passed, 0 failed.
+3. The hostile peer against a lone Core (examples/rogue.rs): 14 passed, 0 failed: no stake, a wrong signature,
+   another key's stake, a proof signed for another Core, then with stakes of its own the older attacks, a banned
+   key coming back, one key opening eight links (two kept), and 80 connections that never prove anything
+   (a staked newcomer still accepted; the observer, a staked peer that only listens, kept its link).
+4. REVIEW_PCT=100 ARBS=26 CAPTURE=1 NOAPPEAL=1 sh scripts/m3_arb_local.sh: 34 staked links, none refused;
+   the captured verdict overturned by three review panels and the units seized: 73 checks passed, 0 failed.
+
+[PASS] arb1 case 50611b45: review draw at block 901 (100% for a split final panel): drawn for review; units held
+[PASS] arb1 the pool refuses to release a 2000000-sat unit of a case drawn for review — no session completed
+[PASS] arb1 case 50611b45: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
+[PASS] arb21 review stage 3: replaced by 1bc698e4, drawn blind from 1 offer(s); paid it 25488 sats — 41b245e1dd302d0f
+[PASS] arb22 review stage 1: replaced by abfae5c0, drawn blind from 1 offer(s); paid it 25488 sats — b38e458c035985c1
+[PASS] arb23 review stage 1: replaced by 3a8aa3d3, drawn blind from 1 offer(s); paid it 25488 sats — 3e59a7558fa08f08
+[PASS] arb24 review stage 2: replaced by ee096b05, drawn blind from 1 offer(s); paid it 25488 sats — 641f5895bdb6d1d8
+[PASS] arb4 case 50611b45: review draw at block 901 (100% for a split final panel): drawn for review; units held
+[PASS] arb4 case 50611b45: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+[PASS] arb8 case 50611b45: review draw at block 901 (100% for a split final panel): drawn for review; units held
+[PASS] arb8 case 50611b45: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+[PASS] archivist case 50611b45: drawn for review at block 901 (100% for a split final panel); convening the staged review
+[PASS] archivist review stage 1: 5 of the 23 eligible arbitrators in the pool drawn from block 917; each must accept or pay its replacement
+[PASS] archivist review stage 1: b9f6806e would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 1: 1634484c would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 1: 1634484c replaced at 25488 sats by abfae5c0, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist review stage 1: the leaver paid its replacement abfae5c0 the 25488 sats on chain; the case disclosed to the replacement — b38e458c035985c1
+[PASS] archivist review stage 1: b9f6806e replaced at 25488 sats by 3a8aa3d3, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist review stage 1: the leaver paid its replacement 3a8aa3d3 the 25488 sats on chain; the case disclosed to the replacement — 3e59a7558fa08f08
+[PASS] archivist review stage 1: 4db6081e silent past the window — one declined assignment toward the inactivity rule, no momentum; 13a96d5d drawn in its place
+[PASS] archivist review stage 1: 5 of 5 findings revealed and committed on chain; 80% found I,D — 35.5 s from convening
+[PASS] archivist review stage 2: 5 of the 15 eligible arbitrators in the pool drawn from block 943; each must accept or pay its replacement
+[PASS] archivist review stage 2: b11f6e65 would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 2: b11f6e65 replaced at 25488 sats by ee096b05, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist review stage 2: the leaver paid its replacement ee096b05 the 25488 sats on chain; the case disclosed to the replacement — 641f5895bdb6d1d8
+[PASS] archivist review stage 2: 5 of 5 findings revealed and committed on chain; 80% found I,D — 19.2 s from convening
+[PASS] archivist review stage 3: 5 of the 9 eligible arbitrators in the pool drawn from block 958; each must accept or pay its replacement
+[PASS] archivist review stage 3: ebd24c91 would rather not serve and posted a replacement fee from 20000 sats
+[PASS] archivist review stage 3: ebd24c91 replaced at 25488 sats by 1bc698e4, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[PASS] archivist review stage 3: the leaver paid its replacement 1bc698e4 the 25488 sats on chain; the case disclosed to the replacement — 41b245e1dd302d0f
+[PASS] archivist review stage 3: b483f3c2 silent past the window — one declined assignment toward the inactivity rule, no momentum; ed32c54e drawn in its place
+[PASS] archivist review stage 3: 5 of 5 findings revealed and committed on chain; 80% found I,D — 35.1 s from convening
+[PASS] archivist case 50611b45: three review panels in turn found I,D at 80%: the verdict is overturned
+[PASS] archivist case 50611b45: 2 arbitrator(s) voted for the overturned verdict; 2 unit(s) still held, 0 already released
+[PASS] archivist tier 1 arbitrator 51d43473: its whole unit (2000000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 576f8ec5851a0f37 (pool members [2, 4, 3])
+[PASS] archivist tier 1 arbitrator c9c642d4: its whole unit (2000000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 02d69dfd7cbf1205 (pool members [1, 4, 2])
+[PASS] archivist review seizure distributed (§12) by the pool and the archivist: 360000 sats to a responder, 60000 sats to a vindicated dissenter, 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 60000 sats to a reviewer (premium), 6000
+[PASS] caller oracle pool found and checked: 4 members, threshold 3, 60 nonces — 0ecb84dbb5021495
+[PASS] caller registration: funding output (no key path) and template committed — 6c6596c762afd0a7084d2578699b4c26603398c4b550c7f1c601191bb39f6aaa:1
+[PASS] caller 2 responder(s) accepted within the joining window, bonds checked on chain — first after 0.33 s
+[PASS] caller pre-signed set v0 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
+[PASS] caller pool co-signed the incident (FROST, 3 of 4 members) — 1 session(s), signers [3, 4, 2], 0.74 s
+[PASS] caller incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
+[PASS] caller evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[PASS] caller deposit: "returned" completed by the attestation and broadcast — broadcast by another party first
+[PASS] caller reward: "paid (3, 7)" completed by the attestation and broadcast — already broadcast by another party
+[PASS] caller bounty: "split (3, 7)" completed by the attestation and broadcast — broadcast by another party first
+[PASS] caller all 3 pots settled on chain by the attested outcome (3 payouts confirmed) — deposit: returned; reward: paid (3, 7); bounty: split (3, 7)
+[PASS] r1-liar alert 50611b45 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r1-liar pre-signed set v0 verified (seat 1) — 39 payouts
+[PASS] r1-liar incident transaction on chain: every pot output exists — 532dad0c92b31d1114087abd9f6dac4377175184a22fbed646d3f592a3d3790f
+[PASS] r1-liar evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[PASS] r1-liar attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
+[PASS] r1-liar tier 1: 3 of 3 offering arbitrators drawn from block 891, case disclosed only to them — 8.0 s after escalating
+[PASS] r1-liar tier 1: every seat committed a case unit of at least twice the case value (2000000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[PASS] r1-liar tier 1: 3 × 20000 sats paid to the seats — c8e460720cc1f4ec
+[PASS] r1-liar tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 51bf5066adef9bc1a8697921d3b1f4bdb902c7debe9d5785538cc87aef8c166b
+[PASS] r1-liar tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 12.3 s from escalation
+[PASS] r1-liar deposit: "returned" completes with the attestation
+[PASS] r1-liar reward: "paid (3, 7)" completes with the attestation
+[PASS] r1-liar bounty: "split (3, 7)" completes with the attestation
+[PASS] r1-liar my shares arrived at my payout address — 630000 sats
+[PASS] r1-liar tier 1 arbitrator aa34b458: 2.0× the 20000-sat fee (40000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 6047e8ba65b0ab91 (pool members [4, 3, 2])
+[PASS] r1-liar seizure distribution signed by 1 of 1 archivist(s) after their own replay
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 40000 sats to the archivists — 281cc3c69cab9de4
+[PASS] r3 alert 50611b45 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r3 pre-signed set v0 verified (seat 0) — 39 payouts
+[PASS] r3 incident transaction on chain: every pot output exists — 532dad0c92b31d1114087abd9f6dac4377175184a22fbed646d3f592a3d3790f
+[PASS] r3 evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.00 s
+[PASS] r3 deposit: "returned" completed by the attestation and broadcast
+[PASS] r3 reward: "paid (3, 7)" completed by the attestation and broadcast
+[PASS] r3 bounty: "split (3, 7)" completed by the attestation and broadcast
+[PASS] r3 my shares arrived at my payout address — 270000 sats
