@@ -6180,8 +6180,9 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
         false,
     );
     let (cc, tt, aa) = (c.clone(), txid.clone(), arch.clone());
+    // an archivist convening a review stage answers between its steps: up to the length of a stage
     let got = n.collect(
-        secs(90),
+        secs(bitaid_node::slow(360)),
         |env, _| match &env.msg {
             Msg::SeizureSig {
                 case_id,
