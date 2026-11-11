@@ -199,6 +199,10 @@ impl Store {
         self.by_src.remove(src);
     }
     pub fn insert(&mut self, e: Event, line: Arc<str>, src: &str, t: u64) {
+        // an id already kept is not counted twice (its bytes would never be released)
+        if self.items.contains_key(&e.id) {
+            return;
+        }
         let n = line.len();
         self.order.push_back(e.id.clone());
         self.by_src.entry(src.into()).or_default().push_back(e.id.clone());
@@ -208,8 +212,21 @@ impl Store {
         while self.src_bytes.get(src).copied().unwrap_or(0) > MAX_SOURCE_BYTES {
             self.drop_oldest(src);
         }
-        while self.bytes > MAX_STORE_BYTES || self.items.len() > MAX_STORE {
+        // over the byte budget: the source holding the most bytes loses its oldest; over the count:
+        // the source holding the most messages (small messages cannot push out others by count)
+        while self.bytes > MAX_STORE_BYTES {
             let Some(big) = self.src_bytes.iter().max_by_key(|x| *x.1).map(|x| x.0.clone()) else {
+                break;
+            };
+            self.drop_oldest(&big);
+        }
+        while self.items.len() > MAX_STORE {
+            let Some(big) = self
+                .by_src
+                .iter()
+                .max_by_key(|x| x.1.iter().filter(|id| self.items.contains_key(*id)).count())
+                .map(|x| x.0.clone())
+            else {
                 break;
             };
             self.drop_oldest(&big);

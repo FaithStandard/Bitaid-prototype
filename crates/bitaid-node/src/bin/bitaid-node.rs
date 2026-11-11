@@ -392,7 +392,7 @@ fn pool_member(mut n: Node) -> i32 {
     > = HashMap::new();
     // arbitration, per case: the current tier, who escalated it and at what height
     let mut esc: HashMap<String, (u32, String, u32)> = HashMap::new();
-    let mut offers: HashMap<(String, u32), HashMap<String, (bool, String, u32)>> = HashMap::new(); // sender -> (bond ok, payout, its height when offering)
+    let mut offers: HashMap<(String, u32), HashMap<String, (bool, String, u32, String)>> = HashMap::new(); // sender -> (bond ok, payout, its height when offering, bond)
     let mut panels: HashMap<(String, u32), Vec<String>> = HashMap::new();
     let mut fees_ok: std::collections::HashSet<(String, u32)> = Default::default();
     // the height at which each seat's fee confirmed: its commit deadline runs from there (§10.4)
@@ -1140,9 +1140,10 @@ fn pool_member(mut n: Node) -> i32 {
                 let h0 = env.height;
                 // a fresh escalation whose draw block already exists is refused: its escalator could
                 // have chosen it knowing the hash (an escalation replayed from the log is old and exempt)
-                if bitaid_node::nostr::now().saturating_sub(sent_at) < 300
-                    && h0 + bitaid_node::draw_blocks() <= n.rpc.height()
-                {
+                // (judged by this member's chain when it first sees it, never by the sender's stated
+                // time, which it could backdate; a pool member never replays escalations from before
+                // its own start, its keys living only as long as it runs)
+                if h0 + bitaid_node::draw_blocks() <= n.rpc.height() {
                     n.log(&format!(
                         "case {}: escalation to tier {tier} refused: it states block {h0}, its draw block is already mined",
                         bitaid_node::pre(&case_id, 8)
@@ -1193,10 +1194,13 @@ fn pool_member(mut n: Node) -> i32 {
                     .then_some(())
                 })()
                 .is_some();
-                offers
-                    .entry((case_id.clone(), *tier))
-                    .or_default()
-                    .insert(s.clone(), (ok, payout_spk.clone(), env.height));
+                // one offer per bond per tier, the first (as the replay and the escalator count them)
+                let m = offers.entry((case_id.clone(), *tier)).or_default();
+                if m.contains_key(&s) {
+                    continue;
+                }
+                let dup = m.values().any(|x| x.3 == *bond);
+                m.insert(s.clone(), (ok && !dup, payout_spk.clone(), env.height, bond.clone()));
             }
             Msg::Seated {
                 case_id,
@@ -1657,8 +1661,9 @@ fn archivist(mut n: Node) -> i32 {
                     .unwrap_or(false)
                 {
                     if let Some(i) = archivists.iter().position(|x| *x == me) {
-                        let pos = sealed_keys.len() - archivists.len() + i;
-                        if let Some(k) = hex::decode(&sealed_keys[pos]).ok().and_then(|k| {
+                        // a roster with fewer sealed keys than archivists is malformed: no panic
+                        let pos = (sealed_keys.len() + i).checked_sub(archivists.len());
+                        if let Some(k) = pos.and_then(|p| sealed_keys.get(p)).and_then(|k| hex::decode(k).ok()).and_then(|k| {
                             wire::unseal(
                                 &n.keys,
                                 &wire::xonly(&env.sender).unwrap(),
@@ -2409,7 +2414,11 @@ fn escalate_tier(
         if oh + 2 > draw_h {
             continue;
         }
-        if offers.iter().any(|o| o.0 == who) {
+        // one offer per identity, and one per bond (as the replay counts them)
+        if offers
+            .iter()
+            .any(|o| o.0 == who || arb::Bond::from_offer(&offer).is_some_and(|b| b.op == o.2.op))
+        {
             continue;
         }
         // suspended for inactivity: no seats (§10.3)
@@ -3393,12 +3402,9 @@ fn convene_review(
         }
         arb::ReviewState::Pending(st) => {
             let k = arb::REVIEW_BASE + st;
-            if rp.reviews.contains_key(&k)
-                || n.history.iter().any(|e| {
-                    matches!(&e.msg, Msg::Escalate { case_id, tier, .. } if *case_id == c && *tier == k)
-                })
-            {
-                // convened already; its panel has not committed yet
+            // seated validly already (by anyone), or convened by me: its panel has not committed yet.
+            // Someone else's opening alone holds nothing back (review): only a valid seating counts
+            if rp.reviews.contains_key(&k) || first_seen.contains_key(&format!("conv:{c}:{k}")) {
                 return false;
             }
             // the first archivist convenes; each later one only once the stage has been due for a
@@ -3455,7 +3461,11 @@ fn convene_review(
                     "",
                 );
             }
-            review_stage(n, a, r, view, k, rp.flagger.clone());
+            first_seen.insert(format!("conv:{c}:{k}"), Instant::now());
+            if review_stage(n, a, r, view, k, rp.flagger.clone()).is_none() {
+                // not convened (its block not known yet, or the stage failed): may be tried again
+                first_seen.remove(&format!("conv:{c}:{k}"));
+            }
             false
         }
         arb::ReviewState::Cleared(st) => {
@@ -3509,9 +3519,10 @@ fn review_stage(
     let size = arb::panel_size(k);
     let oxo = wire::xonly(&view.key_hex()).unwrap();
     let t0 = Instant::now();
-    // the opening fixes the draw block, draw_blocks() later; the list is the whole eligible pool
-    n.refresh_height();
-    let draw_h = n.height() + bitaid_node::draw_blocks();
+    // the draw block is fixed by the chain (Replay::stage_draw_height), not by this convener; the
+    // list is the whole eligible pool
+    let draw_h = arb::Replay::build_core(&n.history, a, r, &n.rpc)
+        .and_then(|rp| rp.stage_draw_height(a, &n.rpc, &n.history, st))?;
     n.send_case(
         &c,
         &[],
@@ -6132,7 +6143,7 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
             .find(|x| arb::verdict_key(&x.1) == fk)
             .map(|x| x.0.clone());
         if let (Some(who), Some(spk)) = (coherent, rp.seizure_spk()) {
-            let b = fin.offers[&who].clone();
+            let Some(b) = fin.offers.get(&who).cloned() else { return };
             let (tx, d) = b.penalty_tx(&oxo, 4 * arb::seat_fee(rp.base_fee, ft), &spk);
             let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, 900);
             n.check(

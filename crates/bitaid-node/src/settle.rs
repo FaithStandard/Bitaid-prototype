@@ -149,7 +149,10 @@ fn decide_of(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot], of: usi
 /// seats; otherwise the vote stays split (whoever wants it decided pays a panel, or the refund).
 pub fn decide_unpaid_dissent(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot]) -> Decision {
     let first = decide(k, pots, t, ballots);
-    if matches!(first, Decision::Settled(_)) || ballots.iter().any(|b| b.misuse) {
+    // a misuse flag is an answer like any other: unpaid, it is dropped with the rest of the dissent
+    // (review: a free holdout otherwise); attendees alone never seize, so a winning group that
+    // claims misuse still does not settle
+    if matches!(first, Decision::Settled(_)) {
         return first;
     }
     let key = |b: &Ballot| crate::arb::verdict_key(b);
