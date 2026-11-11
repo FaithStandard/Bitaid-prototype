@@ -824,6 +824,49 @@ fn pool_member(mut n: Node) -> i32 {
                         n.log(&format!("incident of {} not co-signed: {e}", bitaid_node::pre(&case_id, 8)));
                         continue;
                     }
+                    // every seat has pre-signed its loser-pays forfeiture (§9) before the pots exist
+                    let seizure = arb::seizure_tree(&r.archivists, &wire::xonly(&a.oracle_key).unwrap(), &case::parties_key(a, r))
+                        .map(|t| t.0.script_pubkey());
+                    let fee = arb::loser_fee(a);
+                    let acc_map = accepted.get(case_id).cloned().unwrap_or_default();
+                    let missing: Vec<String> = r
+                        .seats
+                        .iter()
+                        .filter(|w| {
+                            let ok = (|| {
+                                let acc = acc_map.get(*w)?;
+                                let op: OutPoint = acc.bond.parse().ok()?;
+                                let value = n.rpc.utxo(&op)?.value.to_sat();
+                                let b = arb::Bond {
+                                    op,
+                                    value,
+                                    scoped: wire::xonly(&acc.bond_scoped)?,
+                                    cold: wire::xonly(&acc.bond_cold)?,
+                                    fallback: acc.bond_fallback,
+                                    payout: bitcoin::ScriptBuf::from_hex(&acc.payout_spk).ok()?,
+                                };
+                                let (_, d) = arb::loser_pays_tx(&b, &wire::xonly(&a.oracle_key)?, fee, seizure.as_ref()?);
+                                n.history.iter().rev().find_map(|e| match &e.msg {
+                                    Msg::Forfeits { case_id: cc, tier: 0, sigs, .. }
+                                        if cc == case_id && e.sender == **w && sigs.len() == 1 =>
+                                    {
+                                        arb::schnorr_ok(&b.scoped, &d, &sigs[0]).then_some(())
+                                    }
+                                    _ => None,
+                                })
+                            })();
+                            ok.is_none()
+                        })
+                        .cloned()
+                        .collect();
+                    if !missing.is_empty() {
+                        n.log(&format!(
+                            "incident of {}: {} seat(s) without a valid loser-pays forfeiture yet",
+                            bitaid_node::pre(&case_id, 8),
+                            missing.len()
+                        ));
+                        later!();
+                    }
                 }
                 let d = if is_incident {
                     // the template's incident transaction for this roster, whose roster this member
@@ -1430,6 +1473,24 @@ fn archivist(mut n: Node) -> i32 {
             std::env::temp_dir().join(format!("bitaid-archive-{}", bitaid_node::pre(&n.me(), 8)))
         });
     let srv = blossom::spawn(&listen, dir, blossom::Policy::default()).expect("listen");
+    // uploaders are admitted as their alert and roster arrive, even while the main loop is busy
+    // convening a review (a case's parties upload within seconds of its roster)
+    {
+        let pol = srv.policy.clone();
+        let mut callers: HashMap<String, String> = HashMap::new();
+        n.observer = Some(Box::new(move |env: &wire::Envelope| match &env.msg {
+            Msg::Alert { case_id, .. } => {
+                callers.entry(case_id.clone()).or_insert(env.sender.clone());
+                pol.allow(case_id, &env.sender);
+            }
+            Msg::Roster { case_id, seats, .. } if callers.get(case_id) == Some(&env.sender) => {
+                for s in seats {
+                    pol.allow(case_id, s);
+                }
+            }
+            _ => {}
+        }));
+    }
     let port = srv.url.rsplit(':').next().unwrap_or("7480").to_string();
     let url = match arg("--public-url").as_deref() {
         // the address this machine uses to reach the relay, which is the one other devices can reach
@@ -5778,6 +5839,38 @@ fn responder(mut n: Node) -> i32 {
                 continue;
             }
         }
+        // the loser pays (§9): pre-sign, before the incident, a forfeiture of one tier-1 panel fee
+        // from my bond into the case's seizure output, taken only if a panel rules against my ballot
+        {
+            let my_bond = arb::Bond {
+                op: bond,
+                value: amt("--bond", RESPONDER_BOND),
+                scoped: xo(&bond_scoped),
+                cold: xo(&bond_cold),
+                fallback: bf,
+                payout: payout.clone(),
+            };
+            if let Some((st, _)) =
+                arb::seizure_tree(&r.archivists, &wire::xonly(&okey).unwrap(), &case::parties_key(&a, &r))
+            {
+                let fee = arb::loser_fee(&a);
+                let (_, d) = arb::loser_pays_tx(&my_bond, &wire::xonly(&okey).unwrap(), fee, &st.script_pubkey());
+                n.send_case(
+                    &c,
+                    &[],
+                    Msg::Forfeits {
+                        case_id: c.clone(),
+                        tier: 0,
+                        stake: bond.to_string(),
+                        value: my_bond.value,
+                        sigs: vec![hex::encode(sign_bip340(&bond_scoped, &d))],
+                        holders: vec![],
+                    },
+                    false,
+                );
+                n.log(&format!("loser-pays forfeiture of {fee} sats pre-signed for roster v{}", r.set_version));
+            }
+        }
         match sign_set(&mut n, &a, &r, seat + 1, &sk, corrupt) {
             Ok(s) => break (s, r, seat),
             Err(e) => n.log(&format!(
@@ -6010,14 +6103,22 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
         );
         session += 10;
         ok_all &= res.is_ok();
-        let what = format!(
-            "tier {} arbitrator {}: {:.1}× the {}-sat fee ({} sats) forfeited from its stake",
-            p.tier,
-            bitaid_node::pre(&p.arbitrator, 8),
-            p.step as f64 / 10.0,
-            arb::seat_fee(rp.base_fee, p.tier),
-            p.amount
-        );
+        let what = if p.tier == 0 {
+            format!(
+                "attendee {}: the loser pays, one tier-1 panel fee ({} sats) forfeited from its bond",
+                bitaid_node::pre(&p.arbitrator, 8),
+                p.amount
+            )
+        } else {
+            format!(
+                "tier {} arbitrator {}: {:.1}× the {}-sat fee ({} sats) forfeited from its stake",
+                p.tier,
+                bitaid_node::pre(&p.arbitrator, 8),
+                p.step as f64 / 10.0,
+                arb::seat_fee(rp.base_fee, p.tier),
+                p.amount
+            )
+        };
         n.check(
             &format!("{what} into the case's seizure output by its pre-signed forfeiture and the pool's co-signature"),
             res.is_ok(),
@@ -6079,8 +6180,9 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
         false,
     );
     let (cc, tt, aa) = (c.clone(), txid.clone(), arch.clone());
+    // an archivist convening a review stage answers between its steps: up to the length of a stage
     let got = n.collect(
-        secs(90),
+        secs(bitaid_node::slow(360)),
         |env, _| match &env.msg {
             Msg::SeizureSig {
                 case_id,

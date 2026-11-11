@@ -63,6 +63,10 @@ pub const MAX_HISTORY: usize = 100_000;
 pub const MAX_AHEAD: u32 = 6;
 
 pub struct Node {
+    /// called on every message as it is read off the network, before anything else handles it: for
+    /// what must not wait on the main loop (an archivist admitting a case's uploaders while it is busy
+    /// convening a review)
+    pub observer: Option<Box<dyn FnMut(&Envelope)>>,
     pub name: String,
     pub keys: Keypair,
     pub client: Net,
@@ -334,6 +338,7 @@ impl Node {
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
             history: vec![],
+            observer: None,
             history_only: Default::default(),
             locked: vec![],
             t0: Instant::now(),
@@ -492,6 +497,9 @@ impl Node {
                 ));
                 return None;
             }
+        }
+        if let Some(f) = self.observer.as_mut() {
+            f(&env);
         }
         if env.msg.case_id().is_some() {
             self.history.push(env.clone());
