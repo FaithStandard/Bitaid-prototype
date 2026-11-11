@@ -532,6 +532,8 @@ pub struct Tier {
     pub review: bool,
     pub escalator: String,
     pub offers: HashMap<String, Bond>,
+    /// each offer's stated height
+    pub offer_height: HashMap<String, u32>,
     pub seats: Vec<String>,
     pub fee_paid: bool,
     pub reveals: Vec<(String, Ballot)>,
@@ -674,6 +676,8 @@ pub struct Replay {
     pub loser_fee: u64,
     /// the number of attending seats
     pub seats_n: usize,
+    /// the attending vote reached 80% on its own: an escalation of a settled vote charges no loser
+    pub attending_settled: bool,
     /// each attendee's revealed ballot, matching its first commitment
     pub ballots: HashMap<String, Ballot>,
     /// units already released under their bonds' scripts: (tier, arbitrator)
@@ -795,6 +799,7 @@ impl Replay {
             ballots: HashMap::new(),
             loser_fee: loser_fee(a),
             seats_n: r.seats.len(),
+            attending_settled: false,
         };
         let mine: Vec<&Envelope> = hist
             .iter()
@@ -818,6 +823,12 @@ impl Replay {
                 _ => {}
             }
         }
+        let bv: Vec<Ballot> = rp.ballots.values().cloned().collect();
+        rp.attending_settled = !bv.is_empty()
+            && matches!(
+                crate::settle::decide(r.seats.len(), a.template.pots, &a.template, &bv),
+                crate::settle::Decision::Settled(_)
+            );
         if let Some(spk) = rp.seizure_spk() {
             for e in &mine {
                 if let Msg::Forfeits { tier: 0, sigs, .. } = &e.msg {
@@ -906,17 +917,23 @@ impl Replay {
             if rp.review_state(a, rpc) != ReviewState::Pending(st) {
                 break;
             }
-            // any of the case's archivists or any registered arbitrator may convene a stage that is
-            // due, the first to open it counting: the draw leaves the convener no choice (below), so a
-            // caller's own archivist that never convenes cannot hold a case's review back
-            let opener = mine.iter().find(|e| {
-                matches!(&e.msg, Msg::Escalate { tier, .. } if *tier == k)
+            // the stage's draw block is fixed by the chain, not by whoever convenes it (review): the
+            // first valid seating by any of the case's archivists or any registered arbitrator counts,
+            // so an opening never seated holds nothing back and no convener chooses a block
+            let Some(due) = rp.stage_draw_height(a, rpc, hist, st) else { break };
+            let mut convs: Vec<&String> = vec![];
+            for e in &mine {
+                if matches!(&e.msg, Msg::Seated { tier, .. } if *tier == k)
                     && (r.archivists.contains(&e.sender) || reg_all.contains_key(&e.sender))
-            });
-            let Some(opener) = opener else { break };
-            let (conv, h_open) = (&opener.sender, opener.height);
+                    && !convs.contains(&&e.sender)
+                {
+                    convs.push(&e.sender);
+                }
+            }
             let reg = registry(hist);
             let payer = rp.flagger.clone();
+            let mut found = None;
+            for conv in convs {
             let mut t = read_tier(
                 &mine,
                 &case,
@@ -934,18 +951,21 @@ impl Replay {
             // earlier stage of its review
             let excluded = rp.review_excluded();
             if t.listed.iter().any(|x| excluded.contains(x)) {
-                break;
+                continue;
             }
             let h = t.seat_height.values().copied().min().unwrap_or(0);
             let off = inactive(hist, h);
             if t.listed.iter().any(|x| off.contains(x)) {
-                break;
+                continue;
             }
             // the block is fixed by the opening (draw_blocks() after it), and the list is the whole
             // eligible pool: everyone registered at least two blocks before the draw who sat on neither
             // the case nor an earlier stage and is not suspended; one may be left out only if its bond
             // is not a live entry bond
-            if !t.seats.is_empty() {
+            if t.seats.is_empty() {
+                continue;
+            }
+            {
                 let at = registry_at(hist, h.saturating_sub(2));
                 let listed: std::collections::HashSet<&String> = t.listed.iter().collect();
                 let live = |b: &Bond| {
@@ -959,10 +979,14 @@ impl Replay {
                     .filter(|(w, _)| !excluded.contains(*w) && !off.contains(*w))
                     .all(|(w, b)| listed.contains(w) || !live(b));
                 let inside = t.listed.iter().all(|w| at.contains_key(w));
-                if h != h_open + crate::draw_blocks() || !complete || !inside {
-                    break;
+                if h != due || !complete || !inside {
+                    continue;
                 }
             }
+            found = Some(t);
+            break;
+            }
+            let Some(t) = found else { break };
             rp.reviews.insert(k, t);
         }
         rp.review = rp.review_state(a, rpc);
@@ -992,6 +1016,28 @@ impl Replay {
 
     /// The review draw of a closed case (§10.3): the block whose hash seeds it, and whether it selected
     /// the case. None while the case has no committed verdict or the block is not yet mined.
+    /// The block a review stage is drawn from, fixed by the chain: stage 1 draw_blocks() after the
+    /// review draw (or after the flag, for a flagged case the draw passed over); each later stage
+    /// draw_blocks() after the one before had its full commit and reveal windows.
+    pub fn stage_draw_height(&self, a: &Alerted, rpc: &Rpc, hist: &[Envelope], st: u32) -> Option<u32> {
+        let base = if st == 1 {
+            let d = self.review_draw(a, rpc)?;
+            if d.drawn {
+                d.height
+            } else {
+                let f = self.flagger.as_ref()?;
+                hist.iter()
+                    .filter(|e| e.msg.case_id() == Some(a.case_hex.as_str()) && &e.sender == f)
+                    .find_map(|e| matches!(e.msg, Msg::Flag { .. }).then_some(e.height))?
+                    .max(d.height)
+            }
+        } else {
+            let prev = self.reviews.get(&(REVIEW_BASE + st - 1))?;
+            prev.seat_height.values().copied().min()? + a.template.commit_blocks + a.template.reveal_blocks
+        };
+        Some(base + crate::draw_blocks())
+    }
+
     pub fn review_draw(&self, a: &Alerted, rpc: &Rpc) -> Option<ReviewDraw> {
         let (ft, fv) = self.final_ruling()?;
         // closed at the last tier commitment on chain (a later tier that hung or lapsed included)
@@ -1215,7 +1261,9 @@ impl Replay {
                     verdict_key(mine) != fk && disputed.iter().any(|&i| m[i] != ruling[i])
                 }
             };
-            if !lost || lf == 0 {
+            // only a vote that did not settle on its own makes a loser: a majority escalating a vote
+            // that already had 80% pays its own panel (review)
+            if !lost || lf == 0 || self.attending_settled {
                 continue;
             }
             let (tx, digest) = loser_pays_tx(b, &self.oracle, lf, &spk);
@@ -1940,8 +1988,13 @@ fn read_tier(
         let s = &e.sender;
         match &e.msg {
             Msg::SeatOffer { tier, .. } if *tier == k => {
+                // one offer per bond per tier: one arbitrator cannot take several seats under several
+                // identities backed by one stake (review)
                 if let Some(b) = Bond::from_offer(&e.msg) {
-                    t.offers.entry(s.clone()).or_insert(b);
+                    if !t.offers.contains_key(s) && !t.offers.values().any(|x| x.op == b.op) {
+                        t.offer_height.insert(s.clone(), e.height);
+                        t.offers.insert(s.clone(), b);
+                    }
                 }
             }
             Msg::VerdictCommit {
@@ -1968,7 +2021,18 @@ fn read_tier(
             if *tier != k || e.sender != escalator || !t.seats.is_empty() {
                 continue;
             }
-            if offers.iter().all(|o| t.offers.contains_key(o))
+            // a tier's draw block is draw_blocks() after its escalation, as live members check it (D-1);
+            // a review stage's is checked by the caller of this function (stage_draw_height)
+            let h_esc = mine.iter().find_map(|x| match &x.msg {
+                Msg::Escalate { tier: et, .. } if *et == k && x.sender == escalator => Some(x.height),
+                _ => None,
+            });
+            let block_ok = registry.is_some() || h_esc.is_some_and(|h| *height == h + crate::draw_blocks());
+            // and every listed offer was stated at least two blocks before the draw
+            let window_ok = offers.iter().all(|o| t.offer_height.get(o).is_none_or(|oh| oh + 2 <= *height));
+            if block_ok
+                && window_ok
+                && offers.iter().all(|o| t.offers.contains_key(o))
                 && draw(block_hash, case, k, offers, panel_size(k)) == *seats
                 && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
             {
@@ -2109,7 +2173,9 @@ fn read_tier(
             || t.seats.iter().all(|x| {
                 fee_txs
                     .iter()
-                    .any(|txid| rpc.paid_to(txid, &t.offers[x].payout) >= fee)
+                    // a seat with no offer on record (a review replacement from outside the
+                    // registry) is unpaid, never a panic (review)
+                    .any(|txid| t.offers.get(x).is_some_and(|o| rpc.paid_to(txid, &o.payout) >= fee))
             }));
     for e in mine {
         if let Msg::VerdictReveal {

@@ -479,8 +479,12 @@ impl Node {
             raw
         };
         let env = wire::verify(&bytes).ok()?;
-        // the Bitaid signature and the event must be by the same key
-        if env.sender != e.pubkey {
+        // the Bitaid signature and the event must be by the same key, written one way only (lower-case
+        // hex): keys are compared as text, so another spelling of one key would count as another party
+        if env.sender != e.pubkey
+            || env.sender.len() != 64
+            || !env.sender.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
             return None;
         }
         // a sender claiming to see blocks this node's chain does not have is lying or on another
