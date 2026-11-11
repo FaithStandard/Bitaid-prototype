@@ -100,6 +100,18 @@ fn fallback_blocks() -> u32 {
 
 /// How far ahead a funding output's wallet-alone fallback must be when an alert is accepted: 30 days
 /// (Specification §3.1), or half the fallback window on a test chain whose outputs fall back in a day.
+/// Keeps a per-case secret on disk next to the link keys: the seizure output's fallback, after its
+/// lock, needs every party's per-case key (review N10). Test chains only, as every key file here.
+fn keep_case_key(n: &Node, case: &str, what: &str, k: &Scalar) {
+    let dir = std::env::var("BITAID_LINK_DIR")
+        .unwrap_or_else(|_| format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into())));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = format!("{dir}/case_{}_{what}_{}.key", bitaid_node::pre(case, 16), bitaid_node::pre(&n.me(), 8));
+    if std::fs::write(&path, hex::encode(k.serialize())).is_err() {
+        n.log(&format!("could not keep the {what} key of case {}", bitaid_node::pre(case, 8)));
+    }
+}
+
 fn funding_margin() -> u32 {
     (fallback_blocks() / 2).min(4_320)
 }
@@ -788,6 +800,21 @@ fn pool_member(mut n: Node) -> i32 {
                 let theirs: Vec<String> = r.oracle_nonces.iter().map(point_hex).collect();
                 if mine.as_ref() != Some(&theirs) {
                     n.log("roster ignored: oracle nonces are not the ones reserved for this case");
+                    continue;
+                }
+                // a bond backs one open case at a time: a second pre-signed forfeiture of the same
+                // output would be void once the first is taken (review N6)
+                let busy = r.seats.iter().any(|w| {
+                    let Some(mine_b) = acc.get(w).map(|x| x.bond.clone()) else { return false };
+                    accepted.iter().any(|(other, m)| {
+                        other != case_id
+                            && cosigned.contains(other)
+                            && !done.contains(other)
+                            && m.values().any(|x| x.bond == mine_b)
+                    })
+                });
+                if busy {
+                    n.log(&format!("roster v{} for {} refused: a seat's bond already backs another open case", r.set_version, bitaid_node::pre(&case_id, 8)));
                     continue;
                 }
                 let pos = r.seats.len() + m.view.members.iter().position(|x| *x == me).unwrap();
@@ -5488,6 +5515,7 @@ fn caller(mut n: Node) -> i32 {
     let refund_height = n.rpc.height() + template.refund_delay;
     // the caller's pot key: fresh for this case, never the scoped key (review finding 16)
     let pot_k = random_scalar();
+    keep_case_key(&n, &c, "pot", &pot_k);
     let (set, roster) = loop {
         let mut r = Rostered {
             set_version: version,
@@ -5795,6 +5823,7 @@ fn responder(mut n: Node) -> i32 {
     n.subscribe_history("ledger", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
     std::thread::sleep(Duration::from_millis(300 + delay));
     let sk = random_scalar();
+    keep_case_key(&n, &c, "seat", &sk);
     let payout = n.rpc.new_spk().expect("payout address");
     let acc = Msg::Accept {
         case_id: c.clone(),
