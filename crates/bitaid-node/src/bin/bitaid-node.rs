@@ -496,12 +496,18 @@ fn pool_member(mut n: Node) -> i32 {
             .collect();
         for c in due {
             ready_at.remove(&c);
-            let (a, r) = (&alerts[&c], &rosters[&c]);
+            // only a case whose incident this member co-signed, with its nonces still reserved, is
+            // attested (review N1: a released case must never reach this point)
+            if !cosigned.contains(&c) || !assigned.contains_key(&c) {
+                n.log(&format!("case {}: no co-signed incident with reserved nonces; nothing to attest", bitaid_node::pre(&c, 8)));
+                continue;
+            }
+            let (Some(a), Some(r)) = (alerts.get(&c), rosters.get(&c)) else { continue };
             // an arbitrated case settles on its last tier's verdict; otherwise on the ballots
             let mut ruled = verdicts.contains_key(&c);
             let mut ballots: Vec<Ballot> = match verdicts.get(&c) {
                 Some(v) => vec![v.clone()],
-                None => reveals[&c].values().cloned().collect(),
+                None => reveals.get(&c).map(|m| m.values().cloned().collect()).unwrap_or_default(),
             };
             // an arbitrated case: the ruling attested is the one this member's replay of the whole
             // record (log and chain) finds, not only what it followed live — a member that missed or
@@ -636,8 +642,27 @@ fn pool_member(mut n: Node) -> i32 {
                 }
                 // nonces are reserved for a case someone accepted, not for any alert: alerts cost
                 // nothing, so reserving on an alert alone would let anyone drain the batch (finding 13)
-                if accepted.get(case_id).is_none_or(|m| m.is_empty()) {
+                // ... by a responder whose bond is live and covers the case (review N8), and for a
+                // funding output no other case holds reservations on
+                let floor = case::exposure_bond(a, bitaid_node::sats(BOND_FLOOR));
+                let bonded = accepted.get(case_id).is_some_and(|m| {
+                    m.values().any(|acc| {
+                        acc.bond
+                            .parse::<OutPoint>()
+                            .ok()
+                            .and_then(|op| n.rpc.utxo(&op))
+                            .is_some_and(|u| u.value.to_sat() >= floor)
+                    })
+                });
+                if !bonded {
                     later!();
+                }
+                let reused = assigned
+                    .keys()
+                    .any(|other| other != case_id && alerts.get(other).is_some_and(|o| o.funding == a.funding));
+                if reused {
+                    n.log(&format!("nonces for {} refused: its funding output already backs another case", bitaid_node::pre(&case_id, 8)));
+                    continue;
                 }
                 // the funding output must stay locked well past the case: a caller whose wallet-alone
                 // fallback is near could race the incident with it (review finding: fallback heights)
@@ -694,8 +719,8 @@ fn pool_member(mut n: Node) -> i32 {
                 bond_fallback,
                 payout_spk,
             } => {
-                accepted.entry(case_id.clone()).or_default().insert(
-                    s.clone(),
+                // a responder's first Accept stands, as the replay reads it (review N3)
+                accepted.entry(case_id.clone()).or_default().entry(s.clone()).or_insert(
                     case::AcceptInfo {
                         musig_key: musig_key.clone(),
                         payout_spk: payout_spk.clone(),
@@ -801,6 +826,10 @@ fn pool_member(mut n: Node) -> i32 {
                     && *input == 0
                     && t.compute_txid() == case::incident_tx(a, r).compute_txid()
                     && t.compute_txid() == r.incident_txid;
+                if is_incident && (released.contains(case_id) || !assigned.contains_key(case_id)) {
+                    n.log(&format!("incident of {} not co-signed: its nonces were released", bitaid_node::pre(&case_id, 8)));
+                    continue;
+                }
                 if is_incident && !cosigned.contains(case_id) {
                     // checked again now, not only when the roster came: a bond spent or a fallback
                     // come near since then would leave pots no bond answers for
@@ -1613,7 +1642,7 @@ fn archivist(mut n: Node) -> i32 {
                             n.add_case_key(case_id, k);
                         }
                     }
-                    if let Some(r) = Rostered::from_msg(&env.msg) {
+                    if let Some(r) = alerts.get(case_id).and_then(|a| arb::pinned_roster(&n.history, a, &n.rpc)) {
                         rosters.insert(case_id.clone(), r);
                     }
                 }
@@ -2258,10 +2287,11 @@ fn wait_forfeits(
     refund: &bitcoin::ScriptBuf,
     height: u32,
     case_value: u64,
+    opid: &str,
 ) -> HashMap<String, (arb::Bond, String)> {
     let mut out = HashMap::new();
     // each seat's momentum when seated decides how many steps it must have pre-signed (§10.4)
-    let logs = arb::ledger(&n.history, &n.rpc, &hex::encode(oxo.serialize()));
+    let logs = arb::ledger(&n.history, &n.rpc, opid);
     let Some(spk) = seizure else {
         return out;
     };
@@ -2383,16 +2413,7 @@ fn escalate_tier(
     }
     if review {
         // independent panels: no one who sat on the case or an earlier stage (§10.3)
-        let rk = n
-            .history
-            .iter()
-            .rev()
-            .find_map(|e| match &e.msg {
-                Msg::Roster { case_id, .. } if *case_id == c && e.sender == a.caller => {
-                    case::Rostered::from_msg(&e.msg)
-                }
-                _ => None,
-            })
+        let rk = arb::pinned_roster(&n.history, a, &n.rpc)
             .and_then(|r| arb::Replay::build_core(&n.history, a, &r, &n.rpc))
             .map(|rp| rp.review_excluded())
             .unwrap_or_default();
@@ -2449,10 +2470,7 @@ fn escalate_tier(
     n.check(&format!("tier {tier}: {size} of {} offering arbitrators drawn from block {h}, case disclosed only to them", ids.len()), true, &format!("{:.1} s after escalating", t0.elapsed().as_secs_f64()));
     // each seat pre-signs its bond's forfeitures before it is paid (§10.4, §12)
     let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
-    let r_last = n.history.iter().rev().find_map(|e| match &e.msg {
-        Msg::Roster { case_id, .. } if *case_id == c && e.sender == a.caller => Rostered::from_msg(&e.msg),
-        _ => None,
-    });
+    let r_last = arb::pinned_roster(&n.history, a, &n.rpc);
     let seizure = r_last.as_ref().and_then(|r| {
         arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r)).map(|t| t.0.script_pubkey())
     });
@@ -2487,6 +2505,7 @@ fn escalate_tier(
             &refund_spk,
             h,
             value,
+            &case::pool_id(&a.oracle_key, &a.attest_key)
         )
     };
     if !review {
@@ -2723,6 +2742,7 @@ fn escalate_tier(
                 &refund_spk,
                 h,
                 value,
+            &case::pool_id(&a.oracle_key, &a.attest_key)
             );
             stakes.extend(got);
             let spk = offers.iter().find(|o| o.0 == new).unwrap().1.clone();
@@ -3060,6 +3080,8 @@ struct SeatKeys {
     bf: u32,
     payout: bitcoin::ScriptBuf,
     okey: String,
+    /// the pool's id (both keys): the ledger counts only cases naming it
+    opid: String,
 }
 
 /// On taking a seat: commit the seat's case unit (twice the case value, or its largest penalty if more)
@@ -3097,7 +3119,7 @@ fn take_seat(
     // the seat's stake: its own output, so forfeitures pre-signed for seats held at once never spend
     // the same coin
     // its momentum when seated (§10.4) sets the largest step it could owe, and so its stake
-    let d = arb::momentum(&arb::ledger(&n.history, &n.rpc, &k.okey), &n.me(), height);
+    let d = arb::momentum(&arb::ledger(&n.history, &n.rpc, &k.opid), &n.me(), height);
     let max = arb::max_step(d);
     let case_value: u64 = a.template.pots.iter().sum();
     let value = arb::unit_value(case_value, max, fee);
@@ -4570,7 +4592,7 @@ fn arbitrator(mut n: Node) -> i32 {
             }
             Msg::Roster { ref case_id, .. } => {
                 if alerts.get(case_id).map(|a| a.caller == s).unwrap_or(false) {
-                    if let Some(r) = Rostered::from_msg(&env.msg) {
+                    if let Some(r) = alerts.get(case_id).and_then(|a| arb::pinned_roster(&n.history, a, &n.rpc)) {
                         rosters.insert(case_id.clone(), r);
                     }
                 }
@@ -4681,6 +4703,7 @@ fn arbitrator(mut n: Node) -> i32 {
                             bf,
                             payout: payout.clone(),
                             okey: okey.clone(),
+                            opid: opid.clone(),
                         };
                         let u = if arb::is_review(tier) {
                             None
@@ -4785,6 +4808,7 @@ fn arbitrator(mut n: Node) -> i32 {
                             bf,
                             payout: payout.clone(),
                             okey: okey.clone(),
+                            opid: opid.clone(),
                         };
                         if arb::is_review(tier) {
                         } else if let Some(u) = take_seat(
@@ -5425,7 +5449,8 @@ fn caller(mut n: Node) -> i32 {
             continue;
         }
         let Some(p) = point_from(&mk) else { continue };
-        if bitcoin::ScriptBuf::from_hex(&spk).is_err() {
+        // a responder's first valid Accept stands (review N3)
+        if bitcoin::ScriptBuf::from_hex(&spk).is_err() || accepts.iter().any(|x| x.0 == who) {
             continue;
         }
         first_accept.get_or_insert(alert_t.elapsed());
