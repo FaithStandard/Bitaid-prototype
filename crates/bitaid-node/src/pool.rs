@@ -152,6 +152,13 @@ pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView>
         if !q.iter().all(|d| by_dealer.contains_key(d)) {
             continue; // commitments still arriving
         }
+        // every qualified dealer's commitments of one shape, or the view would void or panic
+        let shape = |c: &Commitments| (c.c.len(), c.c.first().map_or(0, |v| v.len()), c.c.iter().all(|v| v.len() == c.c[0].len()));
+        let s0 = shape(&by_dealer[q.iter().next()?]);
+        if !s0.2 || s0.0 == 0 || q.iter().any(|d| shape(&by_dealer[d]) != s0) {
+            n.log("pool setup: dealers' nonce commitments differ in shape; not using this pool");
+            return None;
+        }
         let pk = |i: usize| {
             frost::keys::PublicKeyPackage::deserialize(&hex::decode(first.split('|').nth(i)?).ok()?).ok()
         };
@@ -327,7 +334,10 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         match &env.msg {
             Msg::PoolNonceCommit { commitments, .. } => {
                 let c: Commitments = serde_json::from_str(commitments).ok()?;
-                (c.dealer != me && ids.get(&c.dealer) == Some(&env.sender)).then_some((c.dealer, c))
+                // the shape this member's own batch has: as many nonces, each of degree t - 1; a dealer
+                // sending more or fewer would void or crash every attestation under the batch
+                let shape = c.c.len() == mine_c.c.len() && c.c.iter().all(|v| v.len() == mine_c.c[0].len());
+                (shape && c.dealer != me && ids.get(&c.dealer) == Some(&env.sender)).then_some((c.dealer, c))
             }
             _ => None,
         }
@@ -663,7 +673,13 @@ impl Member {
         // would reveal its key share (review finding 14)
         let path = spent_path(&self.key);
         let line = format!("{index} {}\n", hex::encode(msg));
-        if let Ok(old) = std::fs::read_to_string(&path) {
+        let old = match std::fs::read_to_string(&path) {
+            Ok(x) => Some(x),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            // unreadable: refuse rather than risk a second message under a used index
+            Err(_) => return Err("cannot read the spent-nonce record"),
+        };
+        if let Some(old) = old {
             for l in old.lines() {
                 let mut it = l.split(' ');
                 if it.next() == Some(&index.to_string()) && it.next() != Some(&hex::encode(msg)) {

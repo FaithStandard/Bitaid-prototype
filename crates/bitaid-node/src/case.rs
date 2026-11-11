@@ -89,11 +89,9 @@ impl Alerted {
             return Err("alert economics differ from the registered template".into());
         }
         rt.check()?;
-        // `oracle_expected` is the pool's id: both its keys, which must be distinct (or, for a replay
-        // of the log that relies on no attestation, the co-signing key alone)
-        let named = pool_id(&oracle_key, &attest_key) == oracle_expected
-            || (oracle_expected.len() == 64 && oracle_key == oracle_expected);
-        if !named || oracle_key == attest_key {
+        // `oracle_expected` is the pool's id: both its keys, which must be distinct (review N7: no
+        // co-signing-key-only allowance; every caller passes the full id)
+        if pool_id(&oracle_key, &attest_key) != oracle_expected || oracle_key == attest_key {
             return Err("registration names another oracle".into());
         }
         let d = registration_digest(&scoped_key, &rt, &funding);
@@ -253,6 +251,13 @@ pub fn check_roster(
         return Err(format!(
             "refund height {} is less than the refund delay ({}) away from block {tip}",
             r.refund_height, a.template.refund_delay
+        ));
+    }
+    // and not much further: a refund set far out lets a caller sit on a released case (review N1)
+    if r.refund_height > tip + a.template.refund_delay + 144 {
+        return Err(format!(
+            "refund height {} is more than a day beyond the refund delay from block {tip}",
+            r.refund_height
         ));
     }
     let secp = Secp256k1::verification_only();

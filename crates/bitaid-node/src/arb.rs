@@ -672,6 +672,8 @@ pub struct Replay {
     pub loser_pays: HashMap<String, (Bond, String)>,
     /// one tier-1 panel fee: what a losing attendee pays
     pub loser_fee: u64,
+    /// the number of attending seats
+    pub seats_n: usize,
     /// each attendee's revealed ballot, matching its first commitment
     pub ballots: HashMap<String, Ballot>,
     /// units already released under their bonds' scripts: (tier, arbitrator)
@@ -792,6 +794,7 @@ impl Replay {
             loser_pays: HashMap::new(),
             ballots: HashMap::new(),
             loser_fee: loser_fee(a),
+            seats_n: r.seats.len(),
         };
         let mine: Vec<&Envelope> = hist
             .iter()
@@ -1182,10 +1185,37 @@ impl Replay {
         }
         // the loser pays (§9): an attendee whose ballot the final ruling went against pays one tier-1
         // panel fee from its bond, pre-signed at acceptance; tier 0 in the list
+        // "against its ballot" is on a disputed point: an answer the attendees disagreed on, where
+        // this attendee's answer is not the ruling's; a seat that never revealed pays too, so silence
+        // is never the cheaper course (review N5)
         let lf = self.loser_fee;
+        let answers = |b: &Ballot| -> Vec<String> {
+            let mut v: Vec<String> = (0..self.seats_n)
+                .map(|i| {
+                    b.acts
+                        .iter()
+                        .find(|a| a.seat as usize == i)
+                        .map_or("None".into(), |a| format!("{:?}", a.class))
+                })
+                .collect();
+            v.push(b.outcome_achieved.to_string());
+            v.push(b.misuse.to_string());
+            v
+        };
+        let ruling = answers(&fv);
+        let all: Vec<Vec<String>> = self.ballots.values().map(|b| answers(b)).collect();
+        let disputed: Vec<usize> = (0..ruling.len())
+            .filter(|&i| all.iter().any(|x| x[i] != all[0][i]))
+            .collect();
         for (w, (b, pre)) in &self.loser_pays {
-            let Some(mine) = self.ballots.get(w) else { continue };
-            if verdict_key(mine) == fk || lf == 0 {
+            let lost = match self.ballots.get(w) {
+                None => true,
+                Some(mine) => {
+                    let m = answers(mine);
+                    verdict_key(mine) != fk && disputed.iter().any(|&i| m[i] != ruling[i])
+                }
+            };
+            if !lost || lf == 0 {
                 continue;
             }
             let (tx, digest) = loser_pays_tx(b, &self.oracle, lf, &spk);
@@ -1199,6 +1229,13 @@ impl Replay {
                 tx,
                 digest,
             });
+        }
+        // the amount is what the transaction pays the seizure output (a sub-dust remainder folded in
+        // makes it the whole bond), never the nominal one (review N9)
+        for p in &mut out {
+            if let Some(o) = p.tx.output.iter().find(|o| o.script_pubkey == spk) {
+                p.amount = o.value.to_sat();
+            }
         }
         // one order for everyone (reveals arrive in different orders at different nodes): the
         // distribution spends these outputs in this order, so its txid depends on it
@@ -1247,13 +1284,6 @@ impl Replay {
         let mut outs: Vec<(u64, ScriptBuf)> = vec![];
         let vind = self.vindicated();
         let mut left = total;
-        if !vind.is_empty() {
-            let each = total / 2 / vind.len() as u64;
-            for (_, p) in &vind {
-                outs.push((each, p.clone()));
-                left -= each;
-            }
-        }
         // a party's payout script, or that of a dissenter who bought a re-roll (from its offer below)
         let payout_of = |who: &str| {
             self.parties
@@ -1269,6 +1299,28 @@ impl Replay {
                     })
                 })
         };
+        // the loser pays (§9): what the losing attendees forfeited goes first to whoever paid the
+        // tier-1 panel, up to what that panel cost it, unless the payer is among the losers (review N4)
+        let losers: Vec<&str> = pens.iter().filter(|p| p.tier == 0).map(|p| p.arbitrator.as_str()).collect();
+        let lp: u64 = pens.iter().filter(|p| p.tier == 0).map(|p| p.amount).sum();
+        if lp > 0 {
+            if let Some(t1) = self.tiers.get(&1) {
+                if t1.fee_paid && !losers.contains(&t1.escalator.as_str()) {
+                    if let Some(p) = payout_of(&t1.escalator) {
+                        let x = lp.min(seat_fee(self.base_fee, 1) * t1.seats.len() as u64);
+                        outs.push((x, p));
+                        left -= x;
+                    }
+                }
+            }
+        }
+        if !vind.is_empty() {
+            let each = left / 2 / vind.len() as u64;
+            for (_, p) in &vind {
+                outs.push((each, p.clone()));
+                left -= each;
+            }
+        }
         let fk = verdict_key(&self.final_ruling()?.1);
         let (ft, fv) = self.final_ruling()?;
         // the verdict standing before tier k, and whether its panel was split
@@ -2252,6 +2304,27 @@ pub fn registry_at(hist: &[Envelope], height: u32) -> HashMap<String, Bond> {
 /// The entry bond's floor, 0.1 BTC provisional (§2.2, §10.2).
 pub const ENTRY_BOND: u64 = 10_000_000;
 
+/// The case's roster as the chain pins it: the caller's roster whose incident transaction confirmed
+/// (every version spends the same funding output, so at most one can). Before any confirms, the
+/// caller's latest. Every role reads the roster through this, so a roster the caller publishes after
+/// the co-signature changes nothing (review N2).
+pub fn pinned_roster(hist: &[Envelope], a: &Alerted, rpc: &Rpc) -> Option<Rostered> {
+    let mut latest = None;
+    for e in hist.iter().rev() {
+        if let Msg::Roster { case_id, .. } = &e.msg {
+            if *case_id != a.case_hex || e.sender != a.caller {
+                continue;
+            }
+            let Some(r) = Rostered::from_msg(&e.msg) else { continue };
+            if rpc.tx_height(&r.incident_txid.to_string()).is_some() {
+                return Some(r);
+            }
+            latest.get_or_insert(r);
+        }
+    }
+    latest
+}
+
 /// One tier-1 panel fee: what an attendee whose ballot a panel rules against pays (§9, loser pays).
 pub fn loser_fee(a: &Alerted) -> u64 {
     panel_size(1) as u64 * seat_fee(a.template.arb_fee, 1)
@@ -2349,12 +2422,7 @@ pub fn ledger(hist: &[Envelope], rpc: &Rpc, oracle_key: &str) -> Vec<TierLog> {
         let Ok(a) = Alerted::check(&e.sender, &e.msg, |op| rpc.output(op), oracle_key) else {
             continue;
         };
-        let Some(r) = hist.iter().rev().find_map(|x| match &x.msg {
-            Msg::Roster { case_id: c, .. } if *c == a.case_hex && x.sender == a.caller => {
-                Rostered::from_msg(&x.msg)
-            }
-            _ => None,
-        }) else {
+        let Some(r) = pinned_roster(hist, &a, rpc) else {
             continue;
         };
         let Some(rp) = Replay::build_core(hist, &a, &r, rpc) else {
