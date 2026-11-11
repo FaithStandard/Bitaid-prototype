@@ -147,7 +147,7 @@ start)
   rm -f "$L"/*.log "$L"/*.out
   # bonded links: the Core demands a proof of stake from every peer; a proof names the address the
   # peer dialled, so the Core accepts its own onion address besides the local port
-  BITAID_LINK_NAMES="$ONION.onion:7700" BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
+  BITAID_LINK_NAMES="${ONION%.onion}.onion:7700" BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
   sleep 1
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
