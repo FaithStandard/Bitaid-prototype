@@ -597,7 +597,13 @@ fn run_link(
         }
     } else {
         let _ = s.set_read_timeout(Some(Duration::from_secs(PROOF_SECS)));
-        if let Ok(Some(())) = read_line(&mut r, &mut buf) {
+        let got = read_line(&mut r, &mut buf);
+        match &got {
+            Ok(Some(())) => {}
+            Ok(None) => eprintln!("gossip: {label}: closed before sending a challenge"),
+            Err(e) => eprintln!("gossip: {label}: no challenge within {PROOF_SECS} s ({e})"),
+        }
+        if let Ok(Some(())) = got {
             let ch = serde_json::from_slice::<serde_json::Value>(&buf)
                 .ok()
                 .and_then(|v| v.get("challenge").and_then(|c| c.as_str()).map(String::from))
@@ -610,7 +616,7 @@ fn run_link(
                         return;
                     }
                 }
-                (Some(_), None) => {}
+                (Some(_), None) => eprintln!("gossip: {label}: the Core asks for a link stake and this node has none"),
                 // a Core that opens with a message, not a challenge: keep it
                 (None, _) => first = Some(buf.clone()),
             }

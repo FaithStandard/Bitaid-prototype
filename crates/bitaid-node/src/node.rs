@@ -261,16 +261,21 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
     let txid = match rpc.pay_many(&[(spk.clone(), link_stake())]) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("[{name}] gossip: cannot lock a link stake ({e}); dialling without one");
-            return None;
+            // a Core refuses a link without a stake, so dialling on would only loop link up / link
+            // down: stop here and say why
+            eprintln!("[{name}] LINK_STAKE_FAILED: cannot lock a link stake of {} sats ({e}); the wallet behind BITAID_RPC needs funds", link_stake());
+            std::process::exit(3);
         }
     };
     rpc.confirm(&[txid]);
-    let vout = (0..8u32).find(|v| {
+    let Some(vout) = (0..8u32).find(|v| {
         rpc.utxo(&bitcoin::OutPoint { txid, vout: *v })
             .map(|o| o.script_pubkey == spk)
             .unwrap_or(false)
-    })?;
+    }) else {
+        eprintln!("[{name}] LINK_STAKE_FAILED: the link stake {txid} was sent but its output cannot be found");
+        std::process::exit(3);
+    };
     let stake = format!("{txid}:{vout}");
     let _ = std::fs::write(
         &path,
