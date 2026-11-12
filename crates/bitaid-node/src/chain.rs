@@ -305,6 +305,23 @@ impl Rpc {
         })
     }
 
+    /// The output at `op` as the chain and mempool see it: Err if the backend could not be asked,
+    /// Ok(None) if it is spent (a spend waiting in the mempool counts) or never existed, else the
+    /// output and its confirmations (0 while unconfirmed).
+    pub fn utxo_state(&self, op: &OutPoint) -> Result<Option<(TxOut, u32)>, String> {
+        let v = self
+            .call("gettxout", json!([op.txid.to_string(), op.vout, true]))
+            .map_err(|e| e.to_string())?;
+        if v.is_null() {
+            return Ok(None);
+        }
+        let value = Amount::from_btc(v["value"].as_f64().ok_or("no value")?).map_err(|e| e.to_string())?;
+        let spk = ScriptBuf::from_hex(v["scriptPubKey"]["hex"].as_str().ok_or("no script")?)
+            .map_err(|e| e.to_string())?;
+        let c = v["confirmations"].as_u64().unwrap_or(0) as u32;
+        Ok(Some((TxOut { value, script_pubkey: spk }, c)))
+    }
+
     /// The output at `op` if it is unspent and in a block: (output, confirmations).
     pub fn confirmed_utxo(&self, op: &OutPoint) -> Option<(TxOut, u32)> {
         let v = self

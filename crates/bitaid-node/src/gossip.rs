@@ -62,8 +62,11 @@ pub const PROOF_SECS: u64 = 30;
 pub const PER_KEY: usize = 2;
 /// How long a key cut for abuse is refused.
 pub const BAN_SECS: u64 = 3_600;
-/// How often a proven link's stake is checked again: a stake spent after the proof ends the link.
+/// How often the proven links' stakes are checked again (one thread for all links): a stake spent
+/// after the proof ends its links. A chain backend that cannot be asked cuts no link.
 pub const RECHECK_SECS: u64 = 600;
+/// How a stake check that could not reach the chain backend begins its error.
+pub const UNAVAILABLE: &str = "UNAVAILABLE";
 
 /// What a dialling node proves with: its link key and the outpoint (`txid:vout`) of its stake.
 #[derive(Clone)]
@@ -314,6 +317,8 @@ struct Shared {
     /// link keys refused until the given time, and links held per key
     banned: HashMap<String, Instant>,
     per_key: HashMap<String, usize>,
+    /// the stake each proven link proved with, checked again by one thread
+    stakes: HashMap<u64, (XOnlyPublicKey, String)>,
 }
 
 /// Why a message was not admitted.
@@ -462,6 +467,34 @@ fn make_room(shared: &Arc<Mutex<Shared>>) -> bool {
             true
         }
         None => false,
+    }
+}
+
+/// Checks every proven link's stake once, outside the lock; closes the links whose stake no longer
+/// holds, and forgets the stakes of links that have ended.
+fn recheck(shared: &Arc<Mutex<Shared>>, verify: &Verify) {
+    let todo: Vec<(u64, XOnlyPublicKey, String)> = {
+        let mut g = shared.lock().unwrap();
+        let live: std::collections::HashSet<u64> = g.links.keys().copied().collect();
+        g.stakes.retain(|id, _| live.contains(id));
+        g.stakes.iter().map(|(id, (k, s))| (*id, *k, s.clone())).collect()
+    };
+    let mut verdict: HashMap<String, Result<(), String>> = HashMap::new();
+    for (id, xk, stake) in todo {
+        let r = verdict
+            .entry(format!("{xk}{stake}"))
+            .or_insert_with(|| verify(&xk, &stake))
+            .clone();
+        match r {
+            Err(e) if !e.starts_with(UNAVAILABLE) => {
+                eprintln!("gossip: link {id}: stake {stake} no longer holds ({e}); closing");
+                let g = shared.lock().unwrap();
+                if let Some(s) = g.links.get(&id).and_then(|l| l.stream.as_ref()) {
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -649,26 +682,8 @@ fn run_link(
             match check_proof(&shared, d, &challenge, &buf) {
                 Ok((k, xk, stake)) => {
                     key = Some(k);
-                    // the stake is checked again while the link lasts: spending it ends the link
-                    if let Ok(st) = s.try_clone() {
-                        let (sh, verify) = (shared.clone(), d.verify.clone());
-                        std::thread::spawn(move || loop {
-                            std::thread::sleep(Duration::from_secs(RECHECK_SECS));
-                            if !sh.lock().unwrap().links.contains_key(&id) {
-                                return;
-                            }
-                            // twice, a minute apart: a passing hiccup of the chain backend is not a spend
-                            let failed = verify(&xk, &stake).is_err() && {
-                                std::thread::sleep(Duration::from_secs(60));
-                                verify(&xk, &stake).is_err()
-                            };
-                            if let (true, Err(e)) = (failed, verify(&xk, &stake)) {
-                                eprintln!("gossip: link {id}: stake {stake} no longer holds ({e}); closing");
-                                let _ = st.shutdown(std::net::Shutdown::Both);
-                                return;
-                            }
-                        });
-                    }
+                    // the stake is checked again while the link lasts (see RECHECK_SECS)
+                    shared.lock().unwrap().stakes.insert(id, (xk, stake));
                     break String::new();
                 }
                 Err(e) => break format!(": no valid proof of stake ({e})"),
@@ -798,6 +813,13 @@ impl Gossip {
     ) -> std::io::Result<Gossip> {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (tx, rx) = channel();
+        if let Some(d) = demand.clone() {
+            let sh = shared.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(RECHECK_SECS));
+                recheck(&sh, &d.verify);
+            });
+        }
         if let Some(addr) = listen {
             let l = TcpListener::bind(addr)?;
             let (sh, t, demand) = (shared.clone(), tx.clone(), demand.clone());
@@ -1005,6 +1027,39 @@ mod tests {
         // a message held by one source alone does go when that source lets go
         let held: usize = s.src_count.values().sum();
         assert_eq!(held, s.by_src.values().map(|q| q.iter().filter(|id| s.items.contains_key(*id)).count()).sum::<usize>());
+    }
+
+    #[test]
+    fn a_spent_stake_ends_its_link_and_an_unreachable_backend_ends_none() {
+        use std::io::Read;
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let sh = Arc::new(Mutex::new(Shared::default()));
+        let mut far = vec![];
+        let k = bitcoin::secp256k1::Keypair::from_seckey_slice(&bitcoin::secp256k1::Secp256k1::new(), &[7u8; 32])
+            .unwrap()
+            .x_only_public_key()
+            .0;
+        for (id, stake) in [(1u64, "ok"), (2, "spent"), (3, "down")] {
+            let near = TcpStream::connect(addr).unwrap();
+            let (f, _) = l.accept().unwrap();
+            f.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+            far.push(f);
+            let (out, _rx) = std::sync::mpsc::sync_channel(1);
+            let mut g = sh.lock().unwrap();
+            g.links.insert(id, Link { out, incoming: true, since: Instant::now(), useful: 0, stream: Some(near), authed: true });
+            g.stakes.insert(id, (k, stake.into()));
+            std::mem::forget(_rx);
+        }
+        let v: Verify = Arc::new(|_, s: &str| match s {
+            "ok" => Ok(()),
+            "down" => Err(format!("{UNAVAILABLE}: connection refused")),
+            _ => Err("spent, or not an output".into()),
+        });
+        recheck(&sh, &v);
+        let mut b = [0u8; 1];
+        let closed: Vec<bool> = far.iter_mut().map(|f| matches!(f.read(&mut b), Ok(0))).collect();
+        assert_eq!(closed, vec![false, true, false]);
     }
 
     #[test]

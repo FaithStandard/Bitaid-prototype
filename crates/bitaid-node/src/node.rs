@@ -148,9 +148,16 @@ pub fn link_verifier() -> Verify {
     let rpc = Arc::new(Rpc::from_env());
     Arc::new(move |k: &XOnlyPublicKey, stake: &str| {
         let op: bitcoin::OutPoint = stake.parse().map_err(|_| "not an outpoint".to_string())?;
-        let (out, _) = rpc
-            .confirmed_utxo(&op)
-            .ok_or("not an unspent output in a block")?;
+        // a stake whose spend waits in the mempool no longer holds; a backend that cannot be asked
+        // says nothing either way (the error starts with `UNAVAILABLE`, and a link is not cut for it)
+        let (out, conf) = match rpc.utxo_state(&op) {
+            Err(e) => return Err(format!("{}: {e}", crate::gossip::UNAVAILABLE)),
+            Ok(None) => return Err("spent, or not an output".into()),
+            Ok(Some(x)) => x,
+        };
+        if conf == 0 {
+            return Err("not yet in a block".into());
+        }
         if out.script_pubkey != link_spk(k) {
             return Err("does not pay the key".into());
         }
