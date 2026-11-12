@@ -96,14 +96,15 @@ impl Rpc {
         self.post(true, method, params)
     }
 
-    /// A transaction (verbose), memoised once it is confirmed.
+    /// A transaction (verbose), memoised once it is buried REORG_DEPTH deep: a shallower one may
+    /// still leave the chain in a reorganisation, and a memo would keep it there for ever.
     fn tx_json(&self, txid: &str) -> Option<Value> {
         let k = format!("tx:{txid}");
         if let Some(v) = self.memo.lock().unwrap().get(&k) {
             return Some(v.clone());
         }
         let v = self.raw_tx(txid)?;
-        if v["confirmations"].as_u64().unwrap_or(0) > 0 {
+        if v["confirmations"].as_u64().unwrap_or(0) >= REORG_DEPTH as u64 {
             self.memo.lock().unwrap().insert(k, v.clone());
         }
         Some(v)
@@ -657,7 +658,7 @@ impl Rpc {
             .unwrap_or(0)
     }
 
-    /// The hash of the block at `height` (memoised: regtest and the tests do not reorganise).
+    /// The hash of the block at `height`, memoised once REORG_DEPTH blocks bury it.
     pub fn block_hash(&self, height: u32) -> Option<String> {
         let k = format!("bh:{height}");
         if let Some(v) = self.memo.lock().unwrap().get(&k) {
@@ -667,7 +668,12 @@ impl Rpc {
             .call("getblockhash", json!([height]))
             .ok()
             .and_then(|v| v.as_str().map(String::from))?;
-        self.memo.lock().unwrap().insert(k, json!(h));
+        if height + REORG_DEPTH <= self.height() {
+            self.memo.lock().unwrap().insert(k, json!(h));
+        }
         Some(h)
     }
 }
+
+/// Blocks above a record before it is taken as settled for good (and remembered without asking again).
+pub const REORG_DEPTH: u32 = 6;
