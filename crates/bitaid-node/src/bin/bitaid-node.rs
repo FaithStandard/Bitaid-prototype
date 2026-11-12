@@ -88,6 +88,13 @@ fn chain_view(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBu
     move |op| rpc.utxo(op).map(|o| (o.value.to_sat(), o.script_pubkey))
 }
 
+/// The chain as an observer (archivist, arbitrator) checks an alert: the funding output as its
+/// transaction created it, spent or not, since an observer busy elsewhere may read a case's alert
+/// only after the incident has already spent the funding.
+fn chain_seen(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBuf)> + '_ {
+    move |op| rpc.utxo(op).map(|o| (o.value.to_sat(), o.script_pubkey)).or_else(|| rpc.output(op))
+}
+
 /// Blocks until an output's fallback leaf lets its owner's key alone spend it: a year (52,560) on a
 /// real chain; a day (144) on a faucet-funded test chain (BITAID_SAT_SCALE above 1), so a test run's
 /// bonds, units and funding outputs can be taken back (`--role reclaim`); BITAID_FALLBACK_BLOCKS sets it.
@@ -1687,7 +1694,7 @@ fn archivist(mut n: Node) -> i32 {
             Msg::Alert { case_id, .. } => {
                 srv.policy.allow(case_id, &env.sender);
                 n.log(&format!("live case {}: caller may upload", bitaid_node::pre(&case_id, 8)));
-                if let Ok(a) = Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid) {
+                if let Ok(a) = Alerted::check(&env.sender, &env.msg, chain_seen(&n.rpc), &opid) {
                     n.keep(&a.case_hex);
                     alerts.insert(a.case_hex.clone(), a);
                 }
@@ -4693,7 +4700,7 @@ fn arbitrator(mut n: Node) -> i32 {
         let s = env.sender.clone();
         match env.msg {
             Msg::Alert { .. } => {
-                if let Ok(a) = Alerted::check(&s, &env.msg, chain_view(&n.rpc), &opid) {
+                if let Ok(a) = Alerted::check(&s, &env.msg, chain_seen(&n.rpc), &opid) {
                     n.keep(&a.case_hex);
                     alerts.insert(a.case_hex.clone(), a);
                 }
