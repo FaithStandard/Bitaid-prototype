@@ -60,6 +60,7 @@ pub mod blossom;
 pub mod case;
 pub mod chain;
 pub mod gossip;
+pub mod market;
 pub mod node;
 pub mod nostr;
 pub mod pool;
