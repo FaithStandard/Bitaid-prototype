@@ -2137,7 +2137,9 @@ fn read_tier(
                 from.clone()
             };
             // a seat that missed its deadline only; a reviewer that paid its way out leaves at once
-            let due = if from.is_empty() {
+            // (a review seat that never answers its assignment is replaced within the answer window,
+            // before any commit deadline: §10.3, so the deadline applies to arbitration tiers only)
+            let due = if from.is_empty() && !is_review {
                 t.seat_height.get(replaced).map_or(u32::MAX, |h| deadline(replaced, *h))
             } else {
                 0
