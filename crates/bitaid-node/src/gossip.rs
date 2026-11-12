@@ -416,7 +416,11 @@ fn admit(shared: &Arc<Mutex<Shared>>, e: &Event, src: &str) -> Admit {
     let t = now();
     // a message older than the replay window, or dated in the future, is a replay or a forgery
     // of time: refused before the signature is even checked
-    if e.created_at + KEEP_SECS < t || e.created_at > t + FUTURE_SECS || !e.verify() {
+    // just past the window is not junk: an honest peer's replay can cross the edge in transit
+    if e.created_at.saturating_add(KEEP_SECS) < t && e.created_at.saturating_add(KEEP_SECS + 600) >= t {
+        return Admit::Seen;
+    }
+    if e.created_at.saturating_add(KEEP_SECS) < t || e.created_at > t + FUTURE_SECS || !e.verify() {
         return Admit::Invalid;
     }
     g.seen.insert(e.id.clone());
@@ -616,9 +620,13 @@ fn run_link(
     let must_prove = incoming && demand.is_some();
     let (otx, orx) = sync_channel::<Arc<str>>(MAX_STORE + 10_000);
     let replay = |g: &Shared, tx: &SyncSender<Arc<str>>| {
-        // the recent log first, so a peer that connects late catches up
-        for (_, l) in g.store.iter() {
-            let _ = tx.try_send(l.clone());
+        // the recent log first, so a peer that connects late catches up; nothing within a minute
+        // of leaving the window is sent, so the peer never counts this node's replay as stale junk
+        let fresh = now().saturating_sub(KEEP_SECS) + 60;
+        for (e, l) in g.store.iter() {
+            if e.created_at >= fresh {
+                let _ = tx.try_send(l.clone());
+            }
         }
     };
     let id = {
@@ -733,7 +741,19 @@ fn run_link(
                 }
             };
             let line = match admit(&shared, &e, key.as_deref().unwrap_or(&label)) {
-                Admit::Seen => continue,
+                // a copy of what this node already has is cheap but not free: resending the log
+                // over and over drains the link's allowance too, at a fiftieth of a new message
+                Admit::Seen => {
+                    if incoming {
+                        tokens = (tokens + t0.elapsed().as_secs_f64() * RATE).min(BURST);
+                        t0 = Instant::now();
+                        tokens -= 0.02;
+                        if tokens < 0.0 {
+                            break ": flooding (copies above the rate limit)".into();
+                        }
+                    }
+                    continue;
+                }
                 Admit::Invalid => {
                     junk += 1;
                     if incoming && junk > MAX_JUNK {
