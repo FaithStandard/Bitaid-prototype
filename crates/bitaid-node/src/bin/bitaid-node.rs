@@ -466,6 +466,20 @@ fn pool_member(mut n: Node) -> i32 {
             .map(|(c, _)| c.clone())
             .collect();
         for c in stale {
+            // judged by the chain, not by this member's own co-signature: if the funding output is
+            // spent, the incident went through without this member (or the case was refunded), and
+            // its nonces stay used; only an unspent funding output frees them. A chain backend that
+            // cannot be asked decides nothing this round.
+            let Some(a) = alerts.get(&c) else { continue };
+            match n.rpc.utxo_state(&a.funding) {
+                Err(_) => continue,
+                Ok(None) => {
+                    reserved_at.remove(&c);
+                    n.log(&format!("case {}: incident not co-signed here, but its funding is spent; its nonces stay used", bitaid_node::pre(&c, 8)));
+                    continue;
+                }
+                Ok(Some(_)) => {}
+            }
             reserved_at.remove(&c);
             if let Some(ix) = assigned.remove(&c) {
                 for j in ix {
