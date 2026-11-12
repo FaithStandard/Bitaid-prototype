@@ -165,6 +165,9 @@ impl Market {
     }
 
     fn queues(&mut self, h: u32, out: &mut Vec<Event>) {
+        // a case past its last hearing no longer waits for a panel (it ended by refund, or was never
+        // seated): it leaves the backlog, so a lapsed posting does not keep the fee up
+        self.active.retain(|x| h < x.0.last_hearing);
         // price-out: below the fee for GRACE_BLOCKS moves a case to standby
         let fee = self.fee;
         let mut moved = vec![];

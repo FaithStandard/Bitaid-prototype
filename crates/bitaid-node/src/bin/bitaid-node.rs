@@ -1201,6 +1201,23 @@ fn pool_member(mut n: Node) -> i32 {
                 // (judged by this member's chain when it first sees it, never by the sender's stated
                 // time, which it could backdate; a pool member never replays escalations from before
                 // its own start, its keys living only as long as it runs)
+                // tier 1 is a posting on the fee market (§10.6): one below the market fee at its
+                // height is a standing bid, not an escalation, until the fee comes down to it
+                if *tier == 1 {
+                    // (or met the fee a step earlier: the escalator read the market a little before
+                    // the height its envelope states, and a step may fall in between)
+                    let m = market(&n, &opid, h0);
+                    let before = h0.saturating_sub(bitaid_node::market::STEP_BLOCKS);
+                    if !m.is_active(case_id) && market(&n, &opid, before).fee > a.template.arb_fee {
+                        n.log(&format!(
+                            "case {}: escalation to tier 1 refused: its seat fee {} sats is below the market's {} sats",
+                            bitaid_node::pre(&case_id, 8),
+                            a.template.arb_fee,
+                            m.fee
+                        ));
+                        continue;
+                    }
+                }
                 if h0 + bitaid_node::draw_blocks() <= n.rpc.height() {
                     n.log(&format!(
                         "case {}: escalation to tier {tier} refused: it states block {h0}, its draw block is already mined",
@@ -2426,6 +2443,51 @@ fn wait_forfeits(
     out
 }
 
+/// The fee market as this node's log stands at `height` (§10.6): only funded cases count, judged as
+/// an observer would (the funding as created, spent or not). BITAID_FEE0 sets the opening fee.
+fn market(n: &Node, opid: &str, height: u32) -> bitaid_node::market::Market {
+    let fee0 = std::env::var("BITAID_FEE0").ok().and_then(|v| v.parse().ok());
+    let rpc = &n.rpc;
+    let funded = |e: &wire::Envelope| Alerted::check(&e.sender, &e.msg, chain_seen(rpc), opid).is_ok();
+    arb::market_at(&n.history, height, fee0, &funded)
+}
+
+/// A case whose seat fee is below the market's waits as a standing bid (§10.7): the escalating
+/// party re-reads the market each block and opens tier 1 once the fee has come down to its bid.
+/// False if the case's last hearing height passes first (the case then ends by refund).
+fn wait_for_market(n: &mut Node, a: &Alerted, view: &PoolView) -> bool {
+    let bid = a.template.arb_fee;
+    // as the market counts it: the alert's height plus the refund delay
+    let last = n
+        .history
+        .iter()
+        .find(|e| matches!(&e.msg, Msg::Alert { case_id, .. } if *case_id == a.case_hex))
+        .map(|e| e.height + a.template.refund_delay)
+        .unwrap_or(0);
+    let mut said = false;
+    loop {
+        n.refresh_height();
+        let h = n.height();
+        let m = market(n, &view.pool_id(), h);
+        if bid >= m.fee {
+            if said {
+                n.log(&format!("STANDBY_PROMOTED: the market fee came down to {} sats; opening tier 1 at the posted {bid}", m.fee));
+            }
+            return true;
+        }
+        if !said {
+            n.log(&format!("STANDBY: seat fee {bid} sats is below the market's {} sats; waiting as a standing bid (until block {last})", m.fee));
+            said = true;
+        }
+        if last > 0 && h >= last {
+            n.log("STANDBY_EXPIRED: the market fee never came down to the bid before the last hearing; the case ends by refund");
+            return false;
+        }
+        n.rpc.mine(1).ok();
+        n.collect_until(h + 1, secs(bitaid_node::slow(900)), |_, _| None::<()>, |_| false);
+    }
+}
+
 /// The escalating party's side of one arbitration tier (§10.1–10.5): escalate, collect blind seat
 /// offers, draw the panel from a block mined after offers close, disclose the case to the seats,
 /// pay each its fee, then read the revealed verdicts and the tier commitment.
@@ -2442,6 +2504,10 @@ fn escalate_tier(
     // a stage of the staged review (§10.3): seats unpaid and unstaked, a two-thirds finding
     let review = arb::is_review(tier);
     let okey = view.key_hex();
+    // tier 1 is posted on the fee market: a seat fee below the market's waits as a standing bid
+    if tier == 1 && !wait_for_market(n, a, view) {
+        return None;
+    }
     // the escalation's height (its envelope states it): the panel is drawn from the block draw_blocks()
     // later, from every offer stated up to two blocks before it
     n.refresh_height();

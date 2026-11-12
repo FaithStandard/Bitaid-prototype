@@ -2787,3 +2787,74 @@ mod tests {
         );
     }
 }
+
+/// Cases a day each registered arbitrator is taken to hear, for the market's capacity.
+pub const HEARINGS_PER_DAY: u64 = 1;
+
+/// The fee market (§10.6) as the log stands at `height`: replayed from the start of the log, with
+/// `fee0` its opening fee (the first posting's, when none is given). A posting is a tier-1
+/// escalation of a case whose alert `funded` accepts (a funded case: an unfunded one would let
+/// anyone inflate the backlog for nothing), at the seat fee its template carries; it clears when
+/// its tier-1 panel is seated. Capacity is the registered arbitrators' hearings for a day, in panels.
+/// A posting below the fee is a standing bid, which the market seats when the fee comes down to it.
+pub fn market_at(
+    hist: &[Envelope],
+    height: u32,
+    fee0: Option<u64>,
+    funded: &dyn Fn(&Envelope) -> bool,
+) -> crate::market::Market {
+    use crate::market::{Bid, Market};
+    let mut alerts: HashMap<&str, &Envelope> = HashMap::new();
+    for e in hist {
+        if let Msg::Alert { case_id, .. } = &e.msg {
+            alerts.entry(case_id.as_str()).or_insert(e);
+        }
+    }
+    // the events in height order (a stable sort keeps the log's order within a block)
+    let mut ev: Vec<(u32, bool, &str, u64, u32)> = vec![];
+    let mut ok: HashMap<&str, bool> = HashMap::new();
+    for e in hist {
+        let (posting, case_id) = match &e.msg {
+            Msg::Escalate { case_id, tier: 1, .. } => (true, case_id),
+            Msg::Seated { case_id, tier: 1, .. } => (false, case_id),
+            _ => continue,
+        };
+        if e.height > height {
+            continue;
+        }
+        let Some(al) = alerts.get(case_id.as_str()) else { continue };
+        if !*ok.entry(case_id.as_str()).or_insert_with(|| funded(al)) {
+            continue;
+        }
+        let Msg::Alert { template, .. } = &al.msg else { continue };
+        let last = al.height + template.refund_delay;
+        ev.push((e.height, posting, case_id.as_str(), template.arb_fee, last));
+    }
+    ev.sort_by_key(|x| x.0);
+    // the market opens at the first funded alert in the log, so a case waiting as a standing bid
+    // (its escalation not yet sent) sees the same falling fee as the members who later check it
+    let start = alerts
+        .values()
+        .filter(|e| e.height <= height && *ok.entry(e.msg.case_id().unwrap_or_default()).or_insert_with(|| funded(e)))
+        .map(|e| e.height)
+        .min()
+        .unwrap_or(height)
+        .min(ev.first().map(|x| x.0).unwrap_or(height));
+    let open = fee0.or(ev.first().map(|x| x.3)).unwrap_or(1);
+    let mut m = Market::new(open, start);
+    let mut posted: std::collections::HashSet<&str> = Default::default();
+    for (h, posting, c, fee, last) in ev {
+        let cap = (registry_at(hist, h).len() as u64 / panel_size(1) as u64).max(1) * HEARINGS_PER_DAY;
+        m.advance(h, cap);
+        if posting {
+            if posted.insert(c) {
+                m.post(Bid { case: c.to_string(), fee, weight: 1, posted_at: h, last_hearing: last });
+            }
+        } else {
+            m.clear(c);
+        }
+    }
+    let cap = (registry_at(hist, height).len() as u64 / panel_size(1) as u64).max(1) * HEARINGS_PER_DAY;
+    m.advance(height, cap);
+    m
+}
