@@ -1,0 +1,53 @@
+# gossip-ownership branch, local regtest, 2026-11-12
+## m3_local (t4)
+[caller] 13 passed, 0 failed
+[r1] 9 passed, 0 failed
+[r2] 9 passed, 0 failed
+[r3] 2 passed, 0 failed
+## m3_arb_local CAPTURE CHALLENGE STALL (t4)
+[caller] 11 passed, 0 failed
+[r1-liar] 14 passed, 0 failed
+[r3] 8 passed, 0 failed
+[arb1] 17 passed, 0 failed
+## m3_multi CASES=10 REVIEW_PCT=100, after the late-alert fix (t6): every node
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r1-liar] 24 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r1-liar] 23 passed, 0 failed
+[r1-liar] 27 passed, 0 failed
+[r1-liar] 14 passed, 0 failed
+[r1-liar] 23 passed, 0 failed
+[r1-liar] 24 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 21 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+
+[archivist  125.84s] signed the seizure distribution of 417560b4 (2 inputs, 110000 sats from 2 forfeitures)
+[archivist  217.63s] signed the seizure distribution of 5f250bc8 (3 inputs, 185000 sats from 3 forfeitures)
+[archivist  331.41s] signed the seizure distribution of 1602ec24 (1 inputs, 60000 sats from 1 forfeitures)
+[archivist  455.76s] signed the seizure distribution of 46e9e833 (4 inputs, 590000 sats from 4 forfeitures)
+[archivist  544.95s] signed the seizure distribution of 1e95e9f4 (5 inputs, 350000 sats from 5 forfeitures)
+[archivist  633.88s] signed the seizure distribution of fd99f7dd (1 inputs, 60000 sats from 1 forfeitures)
+[archivist  723.62s] signed the seizure distribution of 3c6668c4 (2 inputs, 200000 sats from 2 forfeitures)
+[archivist  814.33s] signed the seizure distribution of 2adc1732 (3 inputs, 297500 sats from 3 forfeitures)
+[archivist  936.23s] signed the seizure distribution of fe0aa41d (3 inputs, 860000 sats from 3 forfeitures)
+[archivist 1070.00s] signed the seizure distribution of 36c02daa (2 inputs, 460000 sats from 2 forfeitures)
