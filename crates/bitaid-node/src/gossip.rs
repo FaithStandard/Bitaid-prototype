@@ -152,14 +152,19 @@ struct Link {
     authed: bool,
 }
 
-/// The log of recent messages, accounted per source.
+/// The log of recent messages, accounted per source. A message is held by every link that brought
+/// it, not only the first: a peer that races honest messages to this node and then floods cannot
+/// take them down with its own, since dropping its share leaves them held by the honest links that
+/// also delivered them. A message leaves the log when its last holder lets go (or it ages out).
 #[derive(Default)]
 pub struct Store {
-    items: HashMap<String, (Event, Arc<str>, String)>,
+    items: HashMap<String, (Event, Arc<str>, Vec<String>)>,
     /// ids in arrival order (entries already dropped are skipped and compacted away)
     order: VecDeque<String>,
     by_src: HashMap<String, VecDeque<String>>,
+    /// bytes and messages each source holds (each holder is charged a message in full)
     src_bytes: HashMap<String, usize>,
+    src_count: HashMap<String, usize>,
     bytes: usize,
     last_sweep: u64,
 }
@@ -175,45 +180,89 @@ impl Store {
     pub fn iter(&self) -> impl Iterator<Item = (&Event, &Arc<str>)> {
         self.order.iter().filter_map(|id| self.items.get(id).map(|x| (&x.0, &x.1)))
     }
+    /// Whether `src` holds message `id`.
+    pub fn holds(&self, id: &str, src: &str) -> bool {
+        self.items.get(id).is_some_and(|x| x.2.iter().any(|o| o == src))
+    }
+    fn uncharge(&mut self, src: &str, n: usize) {
+        if let Some(b) = self.src_bytes.get_mut(src) {
+            *b = b.saturating_sub(n);
+        }
+        let empty = match self.src_count.get_mut(src) {
+            Some(c) => {
+                *c = c.saturating_sub(1);
+                *c == 0
+            }
+            None => true,
+        };
+        if empty {
+            self.src_bytes.remove(src);
+            self.src_count.remove(src);
+            self.by_src.remove(src);
+        }
+    }
+    fn charge(&mut self, id: &str, src: &str, n: usize) {
+        self.by_src.entry(src.into()).or_default().push_back(id.into());
+        *self.src_bytes.entry(src.into()).or_default() += n;
+        *self.src_count.entry(src.into()).or_default() += 1;
+    }
+    /// Removes a message outright (aged out), releasing every holder's share.
     fn remove(&mut self, id: &str) {
-        if let Some((_, l, src)) = self.items.remove(id) {
+        if let Some((_, l, owners)) = self.items.remove(id) {
             self.bytes -= l.len();
-            if let Some(b) = self.src_bytes.get_mut(&src) {
-                *b -= l.len();
-                if *b == 0 {
-                    self.src_bytes.remove(&src);
-                    self.by_src.remove(&src);
-                }
+            for o in owners {
+                self.uncharge(&o, l.len());
             }
         }
     }
-    /// Drops the oldest message of `src`.
+    /// `src` lets go of its oldest message; the message itself goes only if no one else holds it.
     fn drop_oldest(&mut self, src: &str) {
         while let Some(id) = self.by_src.get_mut(src).and_then(|q| q.pop_front()) {
-            if self.items.contains_key(&id) {
-                self.remove(&id);
-                return;
+            let Some(x) = self.items.get_mut(&id) else { continue };
+            let Some(i) = x.2.iter().position(|o| o == src) else { continue };
+            x.2.swap_remove(i);
+            let (n, last) = (x.1.len(), x.2.is_empty());
+            if last {
+                self.items.remove(&id);
+                self.bytes -= n;
             }
+            self.uncharge(src, n);
+            return;
         }
         self.src_bytes.remove(src);
+        self.src_count.remove(src);
         self.by_src.remove(src);
+    }
+    /// Records that `src` also brought message `id`, already kept: it now shares holding it.
+    pub fn also_from(&mut self, id: &str, src: &str) {
+        let Some(x) = self.items.get_mut(id) else { return };
+        if x.2.iter().any(|o| o == src) {
+            return;
+        }
+        x.2.push(src.into());
+        let n = x.1.len();
+        self.charge(id, src, n);
+        while self.src_bytes.get(src).copied().unwrap_or(0) > MAX_SOURCE_BYTES {
+            self.drop_oldest(src);
+        }
     }
     pub fn insert(&mut self, e: Event, line: Arc<str>, src: &str, t: u64) {
         // an id already kept is not counted twice (its bytes would never be released)
         if self.items.contains_key(&e.id) {
+            self.also_from(&e.id, src);
             return;
         }
         let n = line.len();
-        self.order.push_back(e.id.clone());
-        self.by_src.entry(src.into()).or_default().push_back(e.id.clone());
-        *self.src_bytes.entry(src.into()).or_default() += n;
+        let id = e.id.clone();
+        self.order.push_back(id.clone());
         self.bytes += n;
-        self.items.insert(e.id.clone(), (e, line, src.into()));
+        self.items.insert(id.clone(), (e, line, vec![src.into()]));
+        self.charge(&id, src, n);
         while self.src_bytes.get(src).copied().unwrap_or(0) > MAX_SOURCE_BYTES {
             self.drop_oldest(src);
         }
-        // over the byte budget: the source holding the most bytes loses its oldest; over the count:
-        // the source holding the most messages (small messages cannot push out others by count)
+        // over the byte budget: the source holding the most bytes lets go of its oldest; over the
+        // count: the source holding the most messages (small messages cannot push out others by count)
         while self.bytes > MAX_STORE_BYTES {
             let Some(big) = self.src_bytes.iter().max_by_key(|x| *x.1).map(|x| x.0.clone()) else {
                 break;
@@ -221,12 +270,7 @@ impl Store {
             self.drop_oldest(&big);
         }
         while self.items.len() > MAX_STORE {
-            let Some(big) = self
-                .by_src
-                .iter()
-                .max_by_key(|x| x.1.iter().filter(|id| self.items.contains_key(*id)).count())
-                .map(|x| x.0.clone())
-            else {
+            let Some(big) = self.src_count.iter().max_by_key(|x| *x.1).map(|x| x.0.clone()) else {
                 break;
             };
             self.drop_oldest(&big);
@@ -245,11 +289,14 @@ impl Store {
                 self.remove(&id);
             }
         }
-        if self.order.len() > 2 * self.items.len() + 1_000 {
+        let held: usize = self.src_count.values().sum();
+        if self.order.len() > 2 * self.items.len() + 1_000
+            || self.by_src.values().map(|q| q.len()).sum::<usize>() > 2 * held + 1_000
+        {
             let items = &self.items;
             self.order.retain(|id| items.contains_key(id));
-            for q in self.by_src.values_mut() {
-                q.retain(|id| items.contains_key(id));
+            for (src, q) in self.by_src.iter_mut() {
+                q.retain(|id| items.get(id).is_some_and(|x| x.2.iter().any(|o| o == src)));
             }
         }
     }
@@ -357,6 +404,8 @@ pub fn dial(addr: &str, socks: Option<&str>) -> std::io::Result<TcpStream> {
 fn admit(shared: &Arc<Mutex<Shared>>, e: &Event, src: &str) -> Admit {
     let mut g = shared.lock().unwrap();
     if g.seen.contains(&e.id) {
+        // a later deliverer shares holding it, so the first one cannot take it down alone
+        g.store.also_from(&e.id, src);
         return Admit::Seen;
     }
     let t = now();
@@ -919,6 +968,43 @@ mod tests {
         }
         assert!(s.bytes <= MAX_STORE_BYTES);
         assert_eq!(s.by_src["honest"].len(), 100);
+    }
+
+    #[test]
+    fn racing_honest_messages_first_does_not_let_a_flooder_drop_them() {
+        let t = now();
+        let mut s = Store::default();
+        // the attacker delivers 100 honest cases first; the honest link brings the same ones after
+        for i in 0..100 {
+            let (e, l) = ev(i, t, 1_000);
+            s.insert(e.clone(), l.clone(), "racer", t);
+            s.insert(e, l, "honest", t);
+        }
+        assert_eq!(s.len(), 100);
+        // then floods far past every budget
+        for i in 100..(100 + (MAX_STORE_BYTES / (1 << 20)) * 3) {
+            let (e, l) = ev(i, t, 1 << 20);
+            s.insert(e, l, "racer", t);
+        }
+        assert!(s.bytes <= MAX_STORE_BYTES);
+        assert!(s.src_bytes["racer"] <= MAX_SOURCE_BYTES);
+        for i in 0..100 {
+            assert!(s.holds(&format!("{i:064x}"), "honest"), "honest case {i} kept");
+        }
+        // and the count limit: tiny messages from many fresh sources still leave the honest ones
+        for k in 0..60 {
+            for i in 0..1_000 {
+                let (e, l) = ev(1_000_000 + k * 1_000 + i, t, 1);
+                s.insert(e, l, &format!("tiny{k}"), t);
+            }
+        }
+        assert!(s.len() <= MAX_STORE);
+        for i in 0..100 {
+            assert!(s.holds(&format!("{i:064x}"), "honest"));
+        }
+        // a message held by one source alone does go when that source lets go
+        let held: usize = s.src_count.values().sum();
+        assert_eq!(held, s.by_src.values().map(|q| q.iter().filter(|id| s.items.contains_key(*id)).count()).sum::<usize>());
     }
 
     #[test]
