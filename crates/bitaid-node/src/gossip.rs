@@ -97,6 +97,12 @@ pub fn link_digest(challenge: &[u8; 32], to: &str) -> [u8; 32] {
 
 /// The proof line a dialler sends in answer to `challenge`.
 pub fn proof_line(c: &Credential, challenge: &[u8; 32], to: &str) -> String {
+    proof_line_since(c, challenge, to, 0)
+}
+
+/// The proof line, with the time of the newest message the dialler has had over a link: the Core
+/// replays only what came after (less SINCE_MARGIN). Not signed: a lie only costs the liar messages.
+pub fn proof_line_since(c: &Credential, challenge: &[u8; 32], to: &str, since: u64) -> String {
     let secp = Secp256k1::new();
     let msg = Message::from_digest(link_digest(challenge, to));
     let sig = secp.sign_schnorr(&msg, &c.keys);
@@ -105,7 +111,7 @@ pub fn proof_line(c: &Credential, challenge: &[u8; 32], to: &str) -> String {
         "stake": c.stake,
         "to": to,
         "sig": hex::encode(sig.as_ref()),
-    }})
+    }, "since": since})
     .to_string()
 }
 
@@ -319,7 +325,14 @@ struct Shared {
     per_key: HashMap<String, usize>,
     /// the stake each proven link proved with, checked again by one thread
     stakes: HashMap<u64, (XOnlyPublicKey, String)>,
+    /// the newest message (by its time) that reached this node over a link: what a peer it
+    /// reconnects to need not send again (a slow Tor link otherwise re-reads the whole log on every
+    /// reconnect and stalls again)
+    newest_in: u64,
 }
+
+/// How far before a peer's newest message a replay to it starts (clocks and gossip order differ).
+pub const SINCE_MARGIN: u64 = 600;
 
 /// Why a message was not admitted.
 enum Admit {
@@ -426,6 +439,9 @@ fn admit(shared: &Arc<Mutex<Shared>>, e: &Event, src: &str) -> Admit {
     g.seen.insert(e.id.clone());
     let line: Arc<str> = serde_json::to_string(e).unwrap().into();
     g.store.insert(e.clone(), line.clone(), src, t);
+    if src != "self" && e.created_at <= t + 60 {
+        g.newest_in = g.newest_in.max(e.created_at);
+    }
     Admit::New(line)
 }
 
@@ -575,13 +591,15 @@ fn run_link(
     demand: Option<Demand>,
     cred: Option<Credential>,
     to: String,
+    resume: u64,
 ) {
     let _ = s.set_nodelay(true);
     let mut w = match s.try_clone() {
         Ok(w) => w,
         Err(_) => return,
     };
-    let _ = w.set_write_timeout(Some(Duration::from_secs(60)));
+    // a Tor circuit to a phone can stall for a minute and recover: only a longer stall ends the link
+    let _ = w.set_write_timeout(Some(Duration::from_secs(180)));
     let mut r = BufReader::new(match s.try_clone() {
         Ok(x) => x,
         Err(_) => return,
@@ -590,6 +608,8 @@ fn run_link(
     // every incoming link opens with a fresh challenge; a dialler answers it with its proof
     let challenge: [u8; 32] = rand::random();
     let mut first: Option<Vec<u8>> = None;
+    // what the peer says it already has: replays to it start there (0: everything)
+    let mut since = 0u64;
     if incoming {
         let l = format!("{{\"challenge\":\"{}\"}}\n", hex::encode(challenge));
         if w.write_all(l.as_bytes()).is_err() {
@@ -604,14 +624,18 @@ fn run_link(
             Err(e) => eprintln!("gossip: {label}: no challenge within {PROOF_SECS} s ({e})"),
         }
         if let Ok(Some(())) = got {
-            let ch = serde_json::from_slice::<serde_json::Value>(&buf)
-                .ok()
+            let v = serde_json::from_slice::<serde_json::Value>(&buf).ok();
+            let ch = v
+                .as_ref()
                 .and_then(|v| v.get("challenge").and_then(|c| c.as_str()).map(String::from))
                 .and_then(|h| hex::decode(h).ok())
                 .and_then(|b| <[u8; 32]>::try_from(b).ok());
+            let _ = &v;
+            since = resume;
             match (ch, &cred) {
                 (Some(ch), Some(c)) => {
-                    let l = proof_line(c, &ch, &to) + "\n";
+                    let mine = shared.lock().unwrap().newest_in;
+                    let l = proof_line_since(c, &ch, &to, mine) + "\n";
                     if w.write_all(l.as_bytes()).is_err() {
                         return;
                     }
@@ -625,10 +649,11 @@ fn run_link(
     }
     let must_prove = incoming && demand.is_some();
     let (otx, orx) = sync_channel::<Arc<str>>(MAX_STORE + 10_000);
-    let replay = |g: &Shared, tx: &SyncSender<Arc<str>>| {
+    let replay = |g: &Shared, tx: &SyncSender<Arc<str>>, since: u64| {
         // the recent log first, so a peer that connects late catches up; nothing within a minute
-        // of leaving the window is sent, so the peer never counts this node's replay as stale junk
-        let fresh = now().saturating_sub(KEEP_SECS) + 60;
+        // of leaving the window is sent, so the peer never counts this node's replay as stale junk,
+        // and nothing the peer says it already had (its newest, less a margin)
+        let fresh = (now().saturating_sub(KEEP_SECS) + 60).max(since.saturating_sub(SINCE_MARGIN));
         for (e, l) in g.store.iter() {
             if e.created_at >= fresh {
                 let _ = tx.try_send(l.clone());
@@ -640,7 +665,7 @@ fn run_link(
         g.next += 1;
         let id = g.next;
         if !must_prove {
-            replay(&g, &otx);
+            replay(&g, &otx, since);
         }
         g.links.insert(
             id,
@@ -695,6 +720,10 @@ fn run_link(
             }
             match check_proof(&shared, d, &challenge, &buf) {
                 Ok((k, xk, stake)) => {
+                    since = serde_json::from_slice::<serde_json::Value>(&buf)
+                        .ok()
+                        .and_then(|v| v.get("since").and_then(|x| x.as_u64()))
+                        .unwrap_or(0);
                     key = Some(k);
                     // the stake is checked again while the link lasts (see RECHECK_SECS)
                     shared.lock().unwrap().stakes.insert(id, (xk, stake));
@@ -707,7 +736,7 @@ fn run_link(
             why = None;
             let _ = s.set_read_timeout(None);
             let mut g = shared.lock().unwrap();
-            replay(&g, &otx);
+            replay(&g, &otx, since);
             if let Some(l) = g.links.get_mut(&id) {
                 l.authed = true;
             }
@@ -861,7 +890,7 @@ impl Gossip {
                         .peer_addr()
                         .map(|a| format!("incoming {a}"))
                         .unwrap_or("incoming".into());
-                    std::thread::spawn(move || run_link(sh, t, s, label, true, d, None, String::new()));
+                    std::thread::spawn(move || run_link(sh, t, s, label, true, d, None, String::new(), 0));
                 }
             });
         }
@@ -876,10 +905,20 @@ impl Gossip {
             // keep the link up: redial with backoff whenever it drops
             std::thread::spawn(move || {
                 let mut wait = 1u64;
+                // when the last link to this peer that lasted came up: a redial replays only what
+                // this node has had since then (less a margin); what came before that link the peer
+                // had already, and what the link failed to carry is all newer
+                let mut down = 0u64;
                 loop {
                     let t0 = Instant::now();
+                    let up = now();
                     match dial(&p, sx.as_deref()) {
-                        Ok(s) => run_link(sh.clone(), t.clone(), s, format!("to {p}"), false, None, c.clone(), p.clone()),
+                        Ok(s) => {
+                            run_link(sh.clone(), t.clone(), s, format!("to {p}"), false, None, c.clone(), p.clone(), down);
+                            if t0.elapsed() > Duration::from_secs(PROOF_SECS) {
+                                down = up;
+                            }
+                        }
                         Err(e) => eprintln!("gossip: cannot reach {p}: {e}"),
                     }
                     if t0.elapsed() > Duration::from_secs(30) {
