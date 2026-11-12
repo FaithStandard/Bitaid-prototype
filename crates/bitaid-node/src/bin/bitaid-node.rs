@@ -1737,6 +1737,13 @@ fn archivist(mut n: Node) -> i32 {
                 let (Some(a), Some(r), Some(v)) =
                     (alerts.get(case_id), rosters.get(case_id), view.as_ref())
                 else {
+                    n.log(&format!(
+                        "distribution of {} not signed yet: alert {}, roster {}, pool view {}",
+                        bitaid_node::pre(case_id, 8),
+                        alerts.contains_key(case_id),
+                        rosters.contains_key(case_id),
+                        view.is_some()
+                    ));
                     continue;
                 };
                 let attested: std::collections::HashSet<&String> = n
@@ -1755,6 +1762,7 @@ fn archivist(mut n: Node) -> i32 {
                     continue;
                 };
                 let Some(rp) = arb::Replay::build(&n.history, a, r, &n.rpc) else {
+                    n.log("distribution not signed: the case's log does not replay here");
                     continue;
                 };
                 // a seized entry bond's move out of the holding output: signed by a committee
