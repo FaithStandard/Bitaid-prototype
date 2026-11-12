@@ -210,11 +210,25 @@ fn collect_pool<T>(
     let nm = name.to_string();
     let mut out = BTreeMap::new();
     let end = Instant::now() + wait;
+    let t0 = Instant::now();
+    let mut next_note = Instant::now() + Duration::from_secs(300);
     while out.len() < want {
         let left = end.saturating_duration_since(Instant::now());
         if left.is_zero() {
             break;
         }
+        // say who is still missing every five minutes, so a stalled setup shows where it stands
+        if Instant::now() >= next_note {
+            n.log(&format!(
+                "pool setup: after {} s, {} of {} expected messages, from members {:?}",
+                t0.elapsed().as_secs(),
+                out.len(),
+                want,
+                out.keys().collect::<Vec<_>>()
+            ));
+            next_note = Instant::now() + Duration::from_secs(300);
+        }
+        let left = left.min(next_note.saturating_duration_since(Instant::now()).max(Duration::from_secs(1)));
         let got = n.wait(left, |env, e| {
             if e.tag("pool") != Some(nm.as_str()) {
                 return None;
@@ -225,6 +239,7 @@ fn collect_pool<T>(
             Some((k, v)) => {
                 out.insert(k, v);
             }
+            None if Instant::now() < end => continue,
             None => break,
         }
     }
@@ -288,7 +303,10 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         ));
     }
     let members: Vec<u16> = hellos.keys().copied().collect();
-    n.log("all pool members present");
+    n.log(&format!(
+        "all pool members present: {}",
+        hellos.iter().map(|(m, w)| format!("{m}={}", crate::pre(w, 8))).collect::<Vec<_>>().join(" ")
+    ));
     // ---- two FROST key generations: one key only attests outcomes under the batch's committed
     // nonces, the other only co-signs transactions with fresh nonces. One key doing both would let
     // a party steering many cases combine attestations into a co-signature (ROS); forgeries under
