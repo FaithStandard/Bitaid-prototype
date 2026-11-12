@@ -374,6 +374,8 @@ fn pool_member(mut n: Node) -> i32 {
     // messages to look at again later: (when, message)
     let mut deferred: Vec<(Instant, wire::Envelope, bitaid_node::nostr::Event)> = vec![];
     const MAX_DEFERRED: usize = 5_000;
+    // what one case may hold of it: past this its oldest go, so one case cannot fill the list
+    const MAX_DEFERRED_CASE: usize = 500;
     // per final case, the forfeitures and distribution inputs its replay calls for (computed once)
     #[allow(clippy::type_complexity)]
     let mut due_arb: HashMap<String, Vec<(bitcoin::Txid, usize, [u8; 32], String)>> =
@@ -597,11 +599,32 @@ fn pool_member(mut n: Node) -> i32 {
         let now_i = Instant::now();
         let (back, keep): (Vec<_>, Vec<_>) = deferred.drain(..).partition(|x: &(Instant, wire::Envelope, bitaid_node::nostr::Event)| x.0 <= now_i);
         deferred = keep;
-        // bounded: a flood of messages that never become placeable (escalations for cases that do
-        // not exist) cannot grow it without end; the oldest are dropped first
-        if deferred.len() > MAX_DEFERRED {
-            let over = deferred.len() - MAX_DEFERRED;
-            deferred.drain(..over);
+        // bounded: only messages of a case with a checked alert are deferred at all (a funded case
+        // costs money, a fresh key does not), each case holds at most MAX_DEFERRED_CASE, and past
+        // MAX_DEFERRED the case holding the most loses its oldest first
+        deferred.retain(|x| x.1.msg.case_id().is_some_and(|c| alerts.contains_key(c)));
+        let mut per: HashMap<String, usize> = HashMap::new();
+        for x in deferred.iter() {
+            *per.entry(x.1.msg.case_id().unwrap_or_default().to_string()).or_default() += 1;
+        }
+        let mut cap = MAX_DEFERRED_CASE;
+        while per.values().map(|v| (*v).min(cap)).sum::<usize>() > MAX_DEFERRED && cap > 1 {
+            cap = cap * 9 / 10;
+        }
+        if per.values().any(|v| *v > cap) {
+            // newest kept: count each case's entries from the end
+            let mut seen: HashMap<String, usize> = HashMap::new();
+            let mut keepv = vec![true; deferred.len()];
+            for (i, x) in deferred.iter().enumerate().rev() {
+                let k = seen.entry(x.1.msg.case_id().unwrap_or_default().to_string()).or_default();
+                *k += 1;
+                keepv[i] = *k <= cap;
+            }
+            let mut i = 0;
+            deferred.retain(|_| {
+                i += 1;
+                keepv[i - 1]
+            });
         }
         for (_, env, e) in back {
             n.defer(env, e);
