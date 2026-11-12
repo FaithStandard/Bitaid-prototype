@@ -1,0 +1,25 @@
+# e10: rule C with and without a standby queue (10 seeds, 26 weeks; a third of parties bid below the fee)
+seat $ 30 steady e=0.3 C: ruled  61.3% of escalations | panel median $     19 p95 $     57 | wait med   0.9d p95   2.0d | daily fee move  9.9%
+seat $ 30 steady e=0.3 D: ruled  88.8% of escalations | panel median $     37 p95 $     68 | wait med   1.1d p95  24.2d | daily fee move  6.6%
+seat $ 30 steady e=0.7 C: ruled  59.2% of escalations | panel median $     48 p95 $     92 | wait med   0.9d p95   2.0d | daily fee move 10.4%
+seat $ 30 steady e=0.7 D: ruled  86.4% of escalations | panel median $     59 p95 $     94 | wait med   1.1d p95  15.4d | daily fee move  7.2%
+seat $ 30 spike  e=0.3 C: ruled  56.8% of escalations | panel median $     25 p95 $    184 | wait med   0.9d p95   2.4d | daily fee move 10.4%
+seat $ 30 spike  e=0.3 D: ruled  92.1% of escalations | panel median $     65 p95 $    287 | wait med   1.2d p95  36.0d | daily fee move  6.2%
+seat $ 30 spike  e=0.7 C: ruled  56.8% of escalations | panel median $     53 p95 $    279 | wait med   0.9d p95   2.1d | daily fee move 11.5%
+seat $ 30 spike  e=0.7 D: ruled  90.1% of escalations | panel median $     72 p95 $    286 | wait med   1.2d p95  30.0d | daily fee move  7.2%
+seat $ 30 shift  e=0.3 C: ruled  63.4% of escalations | panel median $    141 p95 $    388 | wait med   1.1d p95   6.6d | daily fee move  8.2%
+seat $ 30 shift  e=0.3 D: ruled  83.2% of escalations | panel median $    250 p95 $    504 | wait med   1.0d p95  13.4d | daily fee move  6.3%
+seat $ 30 shift  e=0.7 C: ruled  63.0% of escalations | panel median $    119 p95 $    252 | wait med   0.9d p95   1.9d | daily fee move  9.7%
+seat $ 30 shift  e=0.7 D: ruled  84.5% of escalations | panel median $    141 p95 $    235 | wait med   1.0d p95  14.4d | daily fee move  6.3%
+seat $100 steady e=0.3 C: ruled  61.3% of escalations | panel median $     62 p95 $    190 | wait med   0.9d p95   2.0d | daily fee move  9.9%
+seat $100 steady e=0.3 D: ruled  88.8% of escalations | panel median $    125 p95 $    227 | wait med   1.1d p95  24.2d | daily fee move  6.6%
+seat $100 steady e=0.7 C: ruled  59.2% of escalations | panel median $    161 p95 $    305 | wait med   0.9d p95   2.0d | daily fee move 10.4%
+seat $100 steady e=0.7 D: ruled  86.4% of escalations | panel median $    195 p95 $    313 | wait med   1.1d p95  15.4d | daily fee move  7.2%
+seat $100 spike  e=0.3 C: ruled  56.8% of escalations | panel median $     82 p95 $    613 | wait med   0.9d p95   2.4d | daily fee move 10.4%
+seat $100 spike  e=0.3 D: ruled  92.1% of escalations | panel median $    216 p95 $    955 | wait med   1.2d p95  36.0d | daily fee move  6.2%
+seat $100 spike  e=0.7 C: ruled  56.8% of escalations | panel median $    176 p95 $    931 | wait med   0.9d p95   2.1d | daily fee move 11.5%
+seat $100 spike  e=0.7 D: ruled  90.1% of escalations | panel median $    240 p95 $    953 | wait med   1.2d p95  30.0d | daily fee move  7.2%
+seat $100 shift  e=0.3 C: ruled  63.4% of escalations | panel median $    471 p95 $  1,295 | wait med   1.1d p95   6.6d | daily fee move  8.2%
+seat $100 shift  e=0.3 D: ruled  83.2% of escalations | panel median $    832 p95 $  1,680 | wait med   1.0d p95  13.4d | daily fee move  6.3%
+seat $100 shift  e=0.7 C: ruled  63.0% of escalations | panel median $    395 p95 $    841 | wait med   0.9d p95   1.9d | daily fee move  9.7%
+seat $100 shift  e=0.7 D: ruled  84.5% of escalations | panel median $    469 p95 $    783 | wait med   1.0d p95  14.4d | daily fee move  6.3%
