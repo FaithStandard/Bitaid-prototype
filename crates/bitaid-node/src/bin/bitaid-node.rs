@@ -2614,6 +2614,8 @@ fn escalate_tier(
     // §10.4: a seat that has not committed its vote by the deadline is forfeit — its pre-signed seat
     // forfeiture, co-signed by the pool, refunds its fee to the payer — and a replacement is drawn
     let mut committed_by: std::collections::HashSet<String> = Default::default();
+    // each seat's first commitment, to check its reveal against before listing it
+    let mut commit_of: HashMap<String, String> = HashMap::new();
     let mut forfeited: Vec<String> = vec![];
     let mut session = 400u32;
     let cb = a.template.commit_blocks;
@@ -2632,21 +2634,23 @@ fn escalate_tier(
             secs(86_400),
             |env, _| match &env.msg {
                 Msg::VerdictCommit {
-                    case_id, tier: t, ..
+                    case_id, tier: t, commitment, ..
                 } if *case_id == cc && *t == tier && ss.contains(&env.sender) => {
-                    Some(env.sender.clone())
+                    Some((env.sender.clone(), commitment.clone()))
                 }
                 _ => None,
             },
             |v| {
                 v.iter()
+                    .map(|x| &x.0)
                     .chain(have.iter())
                     .collect::<std::collections::HashSet<_>>()
                     .len()
                     >= ss.len()
             },
         ) {
-            committed_by.insert(who);
+            commit_of.entry(who.0.clone()).or_insert(who.1);
+            committed_by.insert(who.0);
         }
         let tip = n.tip();
         if seats.iter().all(|x| committed_by.contains(x)) {
@@ -2849,10 +2853,15 @@ fn escalate_tier(
                 case_id,
                 tier: t,
                 verdict,
-                ..
+                salt,
             } if *case_id == cc
                 && *t == tier
                 && ss.contains(&env.sender)
+                // only a reveal that opens the seat's own commitment is listed: one that does not
+                // would make every member refuse the tier commitment that lists it
+                && commit_of.get(&env.sender).is_some_and(|c| {
+                    *c == hex::encode(verdict.commitment(&h32(salt).unwrap_or_default(), &env.sender))
+                })
                 && seen.insert(env.sender.clone()) =>
             {
                 Some((env.sender.clone(), verdict.clone()))
