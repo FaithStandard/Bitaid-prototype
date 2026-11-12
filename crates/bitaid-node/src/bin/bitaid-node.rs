@@ -637,6 +637,7 @@ fn pool_member(mut n: Node) -> i32 {
                         bitaid_node::pre(&a.case_hex, 8),
                         a.cell
                     ));
+                    n.keep(&a.case_hex);
                     alerts.insert(a.case_hex.clone(), a);
                 }
                 Err(e) => n.log(&format!("alert ignored: {e}")),
@@ -1637,6 +1638,7 @@ fn archivist(mut n: Node) -> i32 {
                 srv.policy.allow(case_id, &env.sender);
                 n.log(&format!("live case {}: caller may upload", bitaid_node::pre(&case_id, 8)));
                 if let Ok(a) = Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid) {
+                    n.keep(&a.case_hex);
                     alerts.insert(a.case_hex.clone(), a);
                 }
             }
@@ -4625,6 +4627,7 @@ fn arbitrator(mut n: Node) -> i32 {
         match env.msg {
             Msg::Alert { .. } => {
                 if let Ok(a) = Alerted::check(&s, &env.msg, chain_view(&n.rpc), &opid) {
+                    n.keep(&a.case_hex);
                     alerts.insert(a.case_hex.clone(), a);
                 }
             }

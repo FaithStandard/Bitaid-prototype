@@ -46,19 +46,44 @@ impl Net {
 }
 
 /// Bounds on what a hostile peer can make a node hold (see `gossip` for the link-level limits).
+///
+/// Messages of a *kept* case (one whose funded alert this node has checked, or that it takes part
+/// in) are never pushed out by other traffic: author keys cost nothing, so no rule that ranks authors
+/// can tell a flood from a busy honest party. A kept case is bounded instead, per sender: a case's
+/// insiders (holders of its key) may each record `PER_SENDER_SEALED` messages in it, anyone else
+/// `PER_SENDER_OPEN` plain ones, from at most `OPEN_SENDERS` distinct keys. Past a bound the newest
+/// is not recorded, so what a case was built on (its alert, roster, incident) is never displaced.
+/// Everything else shares the remaining room, oldest out first.
 pub const MAX_BACKLOG: usize = 20_000;
 pub const MAX_LOCKED: usize = 5_000;
-
-/// The position of the oldest entry of the author holding the most entries.
-fn oldest_of_busiest<'a>(mut authors: impl Iterator<Item = &'a str> + Clone) -> usize {
-    let mut count: HashMap<&str, usize> = HashMap::new();
-    for a in authors.clone() {
-        *count.entry(a).or_default() += 1;
-    }
-    let busiest = count.into_iter().max_by_key(|x| x.1).map(|x| x.0).unwrap_or("");
-    authors.position(|a| a == busiest).unwrap_or(0)
-}
 pub const MAX_HISTORY: usize = 100_000;
+pub const PER_SENDER_SEALED: usize = 256;
+pub const PER_SENDER_OPEN: usize = 64;
+pub const OPEN_SENDERS: usize = 1_024;
+
+/// What a kept case has recorded, per sender, to bound it.
+#[derive(Default)]
+struct Kept {
+    sealed: HashMap<String, usize>,
+    open: HashMap<String, usize>,
+}
+
+/// Drops, in one pass, the oldest tenth of the entries `keep` does not protect (amortised: a flood
+/// past the bound costs one sweep per tenth of it, not a shift per message).
+fn trim<T>(v: &mut VecDeque<T>, cap: usize, kept: impl Fn(&T) -> bool) {
+    if v.len() <= cap {
+        return;
+    }
+    let mut drop = (v.len() - cap).max(cap / 10);
+    v.retain(|x| {
+        if drop > 0 && !kept(x) {
+            drop -= 1;
+            false
+        } else {
+            true
+        }
+    });
+}
 /// Blocks a sender's claimed height may run ahead of this node's chain.
 pub const MAX_AHEAD: u32 = 6;
 
@@ -79,7 +104,9 @@ pub struct Node {
     /// subscriptions whose messages only go to the history (read by replays), never to the mailbox
     history_only: std::collections::HashSet<String>,
     /// encrypted case messages whose key has not arrived yet
-    locked: Vec<Event>,
+    locked: VecDeque<Event>,
+    /// cases whose messages other traffic never pushes out, with their per-sender counts
+    kept: HashMap<String, Kept>,
     pub t0: Instant,
     last_sent: Instant,
     pace_ms: u64,
@@ -340,7 +367,8 @@ impl Node {
             history: vec![],
             observer: None,
             history_only: Default::default(),
-            locked: vec![],
+            locked: VecDeque::new(),
+            kept: HashMap::new(),
             t0: Instant::now(),
             last_sent: Instant::now() - Duration::from_secs(10),
             pace_ms: std::env::var("BITAID_PACE_MS")
@@ -434,7 +462,13 @@ impl Node {
         self.height_cache
     }
 
+    /// Marks a case as kept: its messages are no longer pushed out by other traffic (see MAX_HISTORY).
+    pub fn keep(&mut self, case: &str) {
+        self.kept.entry(case.into()).or_default();
+    }
+
     pub fn send_case(&mut self, case: &str, to: &[String], msg: Msg, encrypted: bool) -> String {
+        self.keep(case);
         let mut tags = vec![vec!["c".into(), case.into()]];
         for p in to {
             tags.push(vec!["p".into(), p.clone()]);
@@ -467,11 +501,9 @@ impl Node {
                 Some(k) => wire::decrypt(k, case.as_bytes(), &raw)?,
                 None => {
                     // a case this node holds no key for (yet): kept, within a bound, in case the key arrives
-                    self.locked.push(e.clone());
-                    if self.locked.len() > MAX_LOCKED {
-                        let i = oldest_of_busiest(self.locked.iter().map(|x| x.pubkey.as_str()));
-                        self.locked.remove(i);
-                    }
+                    self.locked.push_back(e.clone());
+                    let kept = &self.kept;
+                    trim(&mut self.locked, MAX_LOCKED, |x| x.tag("c").is_some_and(|c| kept.contains_key(c)));
                     return None;
                 }
             }
@@ -505,14 +537,49 @@ impl Node {
         if let Some(f) = self.observer.as_mut() {
             f(&env);
         }
-        if env.msg.case_id().is_some() {
-            self.history.push(env.clone());
-            if self.history.len() > MAX_HISTORY {
-                let over = self.history.len() - MAX_HISTORY;
-                self.history.drain(..over);
+        if let Some(case) = env.msg.case_id() {
+            let record = match self.kept.get_mut(case) {
+                // a kept case records each sender up to its bound; past it, the newest is not recorded
+                Some(k) => {
+                    let sealed = e.tag("enc") == Some("1");
+                    let (m, cap) = if sealed {
+                        (&mut k.sealed, PER_SENDER_SEALED)
+                    } else {
+                        (&mut k.open, PER_SENDER_OPEN)
+                    };
+                    let room = m.contains_key(&env.sender) || sealed || m.len() < OPEN_SENDERS;
+                    let c = m.entry(env.sender.clone()).or_default();
+                    if room && *c < cap {
+                        *c += 1;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                None => true,
+            };
+            if record {
+                self.history.push(env.clone());
+                if self.history.len() > MAX_HISTORY {
+                    self.trim_history();
+                }
             }
         }
         Some(env)
+    }
+
+    /// Drops the oldest tenth of the history that belongs to no kept case.
+    fn trim_history(&mut self) {
+        let mut drop = (self.history.len() - MAX_HISTORY).max(MAX_HISTORY / 10);
+        let kept = &self.kept;
+        self.history.retain(|x| {
+            if drop > 0 && !x.msg.case_id().is_some_and(|c| kept.contains_key(c)) {
+                drop -= 1;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn add_case_key(&mut self, case: &str, key: impl AsRef<[u8]>) {
@@ -549,15 +616,13 @@ impl Node {
         self.push_backlog(env, e);
     }
 
-    /// The mailbox is bounded: past MAX_BACKLOG the oldest unhandled message of the sender holding
-    /// the most is dropped, so a flood of well-formed messages nobody acts on cannot grow it without
-    /// end, nor push out what other senders sent.
+    /// The mailbox is bounded: past MAX_BACKLOG the oldest unhandled messages that belong to no kept
+    /// case are dropped, so a flood of well-formed messages nobody acts on cannot grow it without end,
+    /// nor push out the messages of the cases this node is working on.
     fn push_backlog(&mut self, env: Envelope, e: Event) {
         self.backlog.push_back((env, e));
-        while self.backlog.len() > MAX_BACKLOG {
-            let i = oldest_of_busiest(self.backlog.iter().map(|x| x.1.pubkey.as_str()));
-            self.backlog.remove(i);
-        }
+        let kept = &self.kept;
+        trim(&mut self.backlog, MAX_BACKLOG, |x| x.0.msg.case_id().is_some_and(|c| kept.contains_key(c)));
     }
 
     /// The first message, old or new, for which `f` returns Some; others stay in the mailbox.
@@ -704,4 +769,21 @@ pub fn point_from(s: &str) -> Option<Point> {
 }
 pub fn scalar_from(s: &str) -> Option<Scalar> {
     Scalar::from_slice(&hex::decode(s).ok()?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_flood_never_pushes_out_kept_entries() {
+        let mut v: VecDeque<(bool, usize)> = (0..100).map(|i| (true, i)).collect();
+        for i in 0..50_000 {
+            v.push_back((false, i));
+            trim(&mut v, 1_000, |x| x.0);
+            assert!(v.len() <= 1_000 + 1_000 / 10);
+        }
+        assert_eq!(v.iter().filter(|x| x.0).count(), 100, "every kept entry stays");
+        assert_eq!(v.iter().take(100).map(|x| x.1).collect::<Vec<_>>(), (0..100).collect::<Vec<_>>());
+    }
 }
