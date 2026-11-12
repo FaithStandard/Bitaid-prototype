@@ -383,7 +383,12 @@ fn pool_member(mut n: Node) -> i32 {
     // per case, when last replayed: the review's seizure due and the units releasable
     #[allow(clippy::type_complexity)]
     // transactions this member already checked and co-signed: (case, txid, input) → digest
-    let mut approved: HashMap<(String, bitcoin::Txid, u32), [u8; 32]> = HashMap::new();
+    // co-signatures already checked, with the block they were checked at: honoured again only for
+    // REUSE_BLOCKS (a requester retrying a session), after which the check is made afresh, since a
+    // review or a spent bond may have changed what the case calls for
+    let mut approved: HashMap<(String, bitcoin::Txid, u32), ([u8; 32], u32)> = HashMap::new();
+    let mut due_arb_at: HashMap<String, u32> = HashMap::new();
+    const REUSE_BLOCKS: u32 = 6;
     let mut later_due: HashMap<
         String,
         (
@@ -601,6 +606,7 @@ fn pool_member(mut n: Node) -> i32 {
                         let list = arb_due(&n, a, r);
                         n.log(&format!("case {}: the final ruling calls for {} co-signature(s) on forfeitures and the seizure distribution", bitaid_node::pre(&c, 8), list.len()));
                         due_arb.insert(c.clone(), list);
+                        due_arb_at.insert(c.clone(), n.tip());
                     }
                     done.insert(c);
                 }
@@ -973,7 +979,10 @@ fn pool_member(mut n: Node) -> i32 {
                         &[txbuild::txout(a.funding_value, tree.script_pubkey())],
                         &tree.scripts[funding_leaf::ACCEPT],
                     )
-                } else if let Some(d) = approved.get(&(case_id.clone(), t.compute_txid(), *input)) {
+                } else if let Some((d, _)) = approved
+                    .get(&(case_id.clone(), t.compute_txid(), *input))
+                    .filter(|x| n.tip() <= x.1 + REUSE_BLOCKS)
+                {
                     // asked again in a later session (the requester retries when too few members
                     // committed in time): already checked, so answered at once — a replay over a slow
                     // link takes longer than a session waits
@@ -989,9 +998,13 @@ fn pool_member(mut n: Node) -> i32 {
                 } else if done.contains(case_id) {
                     // after the case is final: a forfeiture or the seizure distribution, only if this
                     // member's own replay of the log calls for exactly that transaction
-                    if !due_arb.contains_key(case_id) {
+                    let tip = n.tip();
+                    if !due_arb.contains_key(case_id)
+                        || due_arb_at.get(case_id).is_none_or(|h| tip > h + REUSE_BLOCKS)
+                    {
                         let list = arb_due(&n, a, r);
                         due_arb.insert(case_id.clone(), list);
+                        due_arb_at.insert(case_id.clone(), tip);
                     }
                     let id = t.compute_txid();
                     match due_arb[case_id]
@@ -1062,7 +1075,7 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log("co-signature refused: not the template's incident transaction");
                     continue;
                 };
-                approved.insert((case_id.clone(), t.compute_txid(), *input), d);
+                approved.insert((case_id.clone(), t.compute_txid(), *input), (d, n.tip()));
                 digests.insert((case_id.clone(), *session), d);
                 let (nonces, commitment) = m.commit();
                 sessions.insert((case_id.clone(), *session), nonces);

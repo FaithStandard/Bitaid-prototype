@@ -102,7 +102,7 @@ The oracle pool of Specification §3.3 and Appendix B.3.
 | `nonces` | Batches of one-time nonces generated jointly in advance (Feldman-verified); a dealer whose share fails is disqualified |
 | `attest` | Public attestation shares `s_i = k_{j,i} + e·x_i`, verifiable by anyone against the member's public shares; any t combine to the scalar that completes one pre-signed payout; a nonce never attests two outcomes |
 | `cosign` | FROST co-signatures for the scoped-key leaves, with a ROAST-style coordinator that replaces members who stall |
-| `net` + binaries | `bitaid-hub` (relay, stand-in for Nostr in M3), `bitaid-oracle-node` (one member per process; `--stall`, `--liar` for tests), `bitaid-oracle-client` (coordinator and requester); shares to one member are encrypted to it (ECDH + ChaCha20-Poly1305) |
+| `net` + binaries | `bitaid-hub` (relay, stand-in for Nostr in M3), `bitaid-oracle-node` (the M2 demonstration: one member per process, one key for both attesting and co-signing; `--stall`, `--liar` for tests; a pool runs `bitaid-node --role pool`, which keeps the two keys apart), `bitaid-oracle-client` (coordinator and requester); shares to one member are encrypted to it (ECDH + ChaCha20-Poly1305) |
 
 Tests:
 

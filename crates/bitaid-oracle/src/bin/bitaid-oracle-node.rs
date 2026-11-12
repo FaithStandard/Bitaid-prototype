@@ -1,4 +1,7 @@
-//! One member of the oracle pool, as its own process.
+//! One member of the oracle pool, as its own process: the M2 demonstration, kept for its tests.
+//! It runs one key generation and uses that one key both to attest and to co-sign. The protocol
+//! keeps the two apart (an attestation key that also co-signs lets one signing session be turned
+//! into the other); `bitaid-node --role pool` runs the two key generations and is what a pool runs.
 //! Usage: bitaid-oracle-node --hub HOST:PORT --id I --n N --t T [--batch B] [--stall] [--liar]
 //! Joins the pool's key generation and nonce batch with the other members over the relay, then serves
 //! attestation and co-signing requests until stopped. `--stall` sends co-signing commitments but never
@@ -33,6 +36,7 @@ fn main() {
             .map(|s| s.parse().unwrap())
             .unwrap_or(900),
     );
+    eprintln!("bitaid-oracle-node: M2 demonstration, one key for attesting and co-signing; a pool runs `bitaid-node --role pool`");
     let secp = Secp256k1::new();
     let sk = SecretKey::new(&mut rand::thread_rng());
     let mut c = Conn::connect(&hub).expect("connect to hub");
