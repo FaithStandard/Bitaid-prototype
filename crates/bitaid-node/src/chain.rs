@@ -139,16 +139,26 @@ impl Rpc {
             .unwrap_or(0) as u32
     }
 
+    /// The chain's network. Asked of the node until it answers (over Tor the first calls can fail
+    /// while circuits are built): guessing regtest on an error made addresses for the wrong chain.
     pub fn network(&self) -> Network {
-        match self
-            .call("getblockchaininfo", json!([]))
-            .ok()
-            .and_then(|v| v["chain"].as_str().map(String::from))
-            .as_deref()
-        {
-            Some("main") => Network::Bitcoin,
-            Some("test") => Network::Testnet,
-            Some("signet") => Network::Signet,
+        let mut c = self.chain();
+        let mut wait = 2;
+        while c.is_empty() {
+            if wait > 300 {
+                eprintln!("CHAIN_UNREACHABLE: the chain node behind BITAID_RPC does not answer getblockchaininfo");
+                std::process::exit(3);
+            }
+            eprintln!("chain node not answering yet; asking again in {wait} s");
+            std::thread::sleep(std::time::Duration::from_secs(wait));
+            wait *= 2;
+            c = self.chain();
+        }
+        match c.as_str() {
+            "main" => Network::Bitcoin,
+            "test" => Network::Testnet,
+            "testnet4" => Network::Testnet4,
+            "signet" => Network::Signet,
             _ => Network::Regtest,
         }
     }
