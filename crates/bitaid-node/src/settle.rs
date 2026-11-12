@@ -5,7 +5,7 @@
 //! votes at the 0.1 floor weight (no labor history yet), so weights are equal; a seat's class needs
 //! 80% of the ballots; the outcome needs 80% of the ballots; any ballot claiming misuse sends the
 //! case to arbitration, since only a panel can seize a deposit (C1.1).
-use crate::wire::{Ballot, Class, Template};
+use crate::wire::{Ballot, Class, Fault, Template};
 use bitaid_core::endings::{endings, step_for, Ending, EndingKind, Pot};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,14 +51,47 @@ fn find(k: usize, pot: Pot, kind: &EndingKind) -> Ending {
         .expect("every bucket vector is in the set")
 }
 
+/// The responder two thirds of the seats find at fault in their ballots (§9: misconduct starts a
+/// ruling), with the gravest severity those two thirds share: the case goes to a tier-1 panel with no
+/// escalation filed, its fee advanced from the accused's bond. Attendees never decide it themselves.
+pub fn misconduct_trigger(k: usize, ballots: &[Ballot]) -> Option<Fault> {
+    let mut best: Option<Fault> = None;
+    for seat in 0..k as u8 {
+        let named: Vec<&Fault> = ballots
+            .iter()
+            .filter_map(|b| b.faults.iter().filter(|f| f.seat == seat).max_by_key(|f| f.severity))
+            .collect();
+        if 3 * named.len() < 2 * k {
+            continue;
+        }
+        // the gravest severity at least two thirds of the seats reach
+        let mut sev: Vec<_> = named.iter().map(|f| f.severity).collect();
+        sev.sort();
+        let reach = sev[sev.len() - (2 * k).div_ceil(3)];
+        let f = Fault { seat, severity: reach, harmed: named[0].harmed };
+        if best.as_ref().is_none_or(|b| f.severity > b.severity) {
+            best = Some(f);
+        }
+    }
+    best
+}
+
 /// `pots` are the pot values; `ballots` the revealed ballots of the seated responders.
 /// The 80% is of the seats, not of the ballots revealed: a missing ballot counts as no agreement, so
 /// one silent attendee cannot narrow the base (review finding D-8).
 pub fn decide(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot]) -> Decision {
-    decide_of(k, pots, t, ballots, k.max(ballots.len()))
+    if let Some(f) = misconduct_trigger(k, ballots) {
+        return Decision::Escalate(format!(
+            "misconduct: two thirds of the seats find seat {} at fault ({:?}); a panel decides (§9)",
+            f.seat, f.severity
+        ));
+    }
+    decide_of(k, pots, t, ballots, k.max(ballots.len()), &[])
 }
 
-fn decide_of(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot], of: usize) -> Decision {
+/// `zero`: seats whose bounty and reward share a panel's fault finding removes (§12, bounty split
+/// step 3), redistributed within the same pool.
+fn decide_of(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot], of: usize, zero: &[usize]) -> Decision {
     if ballots.is_empty() {
         return Decision::Escalate("no ballots".into());
     }
@@ -98,13 +131,17 @@ fn decide_of(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot], of: usi
     } else {
         return Decision::Escalate("no 80% agreement on the outcome".into());
     };
+    // a seat found at fault keeps its class but loses its share, which its pool's others take
+    let paid = |i: usize, c: &Class| !zero.contains(&i) && *c != Class::None;
     let interveners = classes
         .iter()
-        .filter(|c| **c == Class::Intervention)
+        .enumerate()
+        .filter(|(i, c)| **c == Class::Intervention && paid(*i, c))
         .count() as f64;
     let documenters = classes
         .iter()
-        .filter(|c| **c == Class::Documentation)
+        .enumerate()
+        .filter(|(i, c)| **c == Class::Documentation && paid(*i, c))
         .count() as f64;
     let ip = t.intervener_pct as f64;
     let (wi, wd) = match (interveners > 0.0, documenters > 0.0) {
@@ -115,7 +152,9 @@ fn decide_of(k: usize, pots: [u64; 3], t: &Template, ballots: &[Ballot], of: usi
     };
     let weights: Vec<f64> = classes
         .iter()
-        .map(|c| match c {
+        .enumerate()
+        .map(|(i, c)| if zero.contains(&i) { (i, &Class::None) } else { (i, c) })
+        .map(|(_, c)| match c {
             Class::Intervention => wi,
             Class::Documentation => wd,
             Class::None => 0.0,
@@ -152,7 +191,8 @@ pub fn decide_unpaid_dissent(k: usize, pots: [u64; 3], t: &Template, ballots: &[
     // a misuse flag is an answer like any other: unpaid, it is dropped with the rest of the dissent
     // (review: a free holdout otherwise); attendees alone never seize, so a winning group that
     // claims misuse still does not settle
-    if matches!(first, Decision::Settled(_)) {
+    // a misconduct finding by two thirds is never dropped as a dissent: it goes to a panel
+    if matches!(first, Decision::Settled(_)) || misconduct_trigger(k, ballots).is_some() {
         return first;
     }
     let key = |b: &Ballot| crate::arb::verdict_key(b);
@@ -166,7 +206,7 @@ pub fn decide_unpaid_dissent(k: usize, pots: [u64; 3], t: &Template, ballots: &[
     if 3 * best.len() < 2 * k {
         return first;
     }
-    decide_of(k, pots, t, &best, best.len())
+    decide_of(k, pots, t, &best, best.len(), &[])
 }
 
 /// A panel's ruling (§10.5, §12), as opposed to the attendees' ballots: one verdict decides. A ruling
@@ -174,13 +214,16 @@ pub fn decide_unpaid_dissent(k: usize, pots: [u64; 3], t: &Template, ballots: &[
 /// and the reward to the attendees too, by merit, equally if the ruling classes no one (review finding
 /// D-3: before, a misuse ruling could not settle and the case went to the refund, to the troll).
 pub fn decide_panel(k: usize, pots: [u64; 3], t: &Template, verdict: &Ballot) -> Decision {
+    // a panel's fault findings decide: the seat at fault loses its share (its bond is forfeited at
+    // the finding's severity apart from the pots, §11.8)
+    let zero: Vec<usize> = verdict.faults.iter().map(|f| f.seat as usize).collect();
     if !verdict.misuse {
-        return decide_of(k, pots, t, std::slice::from_ref(verdict), 1);
+        return decide_of(k, pots, t, std::slice::from_ref(verdict), 1, &zero);
     }
     let mut plain = verdict.clone();
     plain.misuse = false;
     plain.outcome_achieved = true;
-    let Decision::Settled(base) = decide_of(k, pots, t, std::slice::from_ref(&plain), 1) else {
+    let Decision::Settled(base) = decide_of(k, pots, t, std::slice::from_ref(&plain), 1, &zero) else {
         return Decision::Escalate("misuse ruling without a split".into());
     };
     // the split the bounty takes under the panel's classes, or equal shares among the seats
@@ -240,7 +283,7 @@ mod tests {
                 })
                 .collect(),
             outcome_achieved: ok,
-            misuse: false,
+            misuse: false, faults: vec![],
         }
     }
 
@@ -300,7 +343,7 @@ mod tests {
             review_delay: 2,
             review_pct: None,
         };
-        let v = Ballot { acts: vec![], outcome_achieved: false, misuse: true };
+        let v = Ballot { acts: vec![], outcome_achieved: false, misuse: true, faults: vec![] };
         let Decision::Settled(ends) = decide_panel(3, t.pots, &t, &v) else {
             panic!("a misuse ruling must settle");
         };
@@ -310,6 +353,36 @@ mod tests {
         assert!(matches!(ends[2].kind, EndingKind::Split(_)));
         // the attendees' own ballots still cannot seize: only a panel decides misuse
         assert!(matches!(decide(3, t.pots, &t, &[v]), Decision::Escalate(_)));
+    }
+
+    #[test]
+    fn two_thirds_finding_a_seat_at_fault_sends_the_case_to_a_panel_and_a_lone_accuser_does_not() {
+        use crate::wire::{Fault, Severity};
+        use Class::*;
+        let b = ballot(&[Intervention, Intervention, Documentation], true);
+        let mut acc = b.clone();
+        acc.faults = vec![Fault { seat: 0, severity: Severity::Misconduct, harmed: Option::None }];
+        let mut lapse = b.clone();
+        lapse.faults = vec![Fault { seat: 0, severity: Severity::Lapse, harmed: Option::None }];
+        // one of three: the attendees settle as if no one accused (the accuser escalates at its cost)
+        assert!(matches!(decide(3, [1, 1, 1], &t(), &[b.clone(), b.clone(), acc.clone()]), Decision::Settled(_)));
+        // two of three: a panel decides, at the gravest severity both reach
+        let f = misconduct_trigger(3, &[acc.clone(), lapse.clone(), b.clone()]).unwrap();
+        assert_eq!((f.seat, f.severity), (0, Severity::Lapse));
+        assert!(matches!(decide(3, [1, 1, 1], &t(), &[acc.clone(), lapse, b.clone()]), Decision::Escalate(m) if m.contains("misconduct")));
+        assert_eq!(misconduct_trigger(3, &[acc.clone(), acc.clone(), b]).unwrap().severity, Severity::Misconduct);
+    }
+
+    #[test]
+    fn a_panel_finding_removes_the_share_of_the_seat_at_fault() {
+        use crate::wire::{Fault, Severity};
+        use Class::*;
+        let mut v = ballot(&[Intervention, Intervention, Documentation], true);
+        v.faults = vec![Fault { seat: 0, severity: Severity::Misconduct, harmed: Option::None }];
+        let Decision::Settled(e) = decide_panel(3, [1000, 1000, 1000], &t(), &v) else { panic!() };
+        // seat 0's 35% goes to the other intervener: 70/0/30 of the bounty
+        assert_eq!(e[2].label, "split (0, 7, 3)");
+        assert_eq!(e[1].label, "paid (0, 7, 3)");
     }
 
     #[test]
@@ -335,7 +408,7 @@ mod tests {
         let honest = Ballot {
             acts: vec![act(0, Class::Intervention), act(1, Class::Documentation), act(2, Class::Documentation)],
             outcome_achieved: true,
-            misuse: false,
+            misuse: false, faults: vec![],
         };
         let mut dissent = honest.clone();
         dissent.acts[0].class = Class::None;

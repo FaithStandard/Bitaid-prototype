@@ -123,6 +123,27 @@ pub struct Act {
     pub footage: Option<(Hex32, u32)>,
 }
 
+/// How grave a responder's fault is, as the tables of §11.6–11.8 read it: what its bond forfeits.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Severity {
+    /// 25% of the bond (more if recurring, §11.8)
+    Lapse,
+    /// the whole bond and layer 0
+    Misconduct,
+    /// the whole bond and layer 0, and exclusion
+    Bannable,
+}
+
+/// A finding that the responder at `seat` was at fault (use of force §11.6, harm to fellow responders
+/// §11.7). `harmed`: the seat of a fellow responder it harmed, if any (repaid its loss first, §12).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Fault {
+    pub seat: u8,
+    pub severity: Severity,
+    #[serde(default)]
+    pub harmed: Option<u8>,
+}
+
 /// An itemised ballot (§9): every act its author saw, and whether the outcome was achieved.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Ballot {
@@ -130,6 +151,9 @@ pub struct Ballot {
     pub outcome_achieved: bool,
     /// the alert was a misuse (troll, fabricated): asks for the deposit to be seized
     pub misuse: bool,
+    /// responders this ballot finds at fault; an attendee's finding never seizes, it starts a ruling
+    #[serde(default)]
+    pub faults: Vec<Fault>,
 }
 
 impl Ballot {

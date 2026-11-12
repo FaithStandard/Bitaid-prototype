@@ -2201,7 +2201,7 @@ fn ballot_from_args(seats: usize, my_seat: usize) -> Ballot {
         return Ballot {
             acts,
             outcome_achieved: !flag("--not-achieved"),
-            misuse: flag("--misuse"),
+            misuse: flag("--misuse"), faults: vec![],
         };
     }
     // --ballot "I,I,D" gives every seat's class as this attendee saw it; default: everyone intervened
@@ -2229,7 +2229,7 @@ fn ballot_from_args(seats: usize, my_seat: usize) -> Ballot {
     Ballot {
         acts,
         outcome_achieved: !flag("--not-achieved"),
-        misuse: flag("--misuse"),
+        misuse: flag("--misuse"), faults: vec![],
     }
 }
 
@@ -5141,7 +5141,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 let verdict = Ballot {
                     acts,
                     outcome_achieved: true,
-                    misuse: false,
+                    misuse: false, faults: vec![],
                 };
                 n.log(&format!(
                     "reviewed {kib} KiB of footage from {} recorders; verdict {}",

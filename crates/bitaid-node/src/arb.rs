@@ -83,6 +83,8 @@ pub fn verdict_key(v: &Ballot) -> Vec<u8> {
         (x.seat, format!("{:?}", x.class)).cmp(&(y.seat, format!("{:?}", y.class)))
     });
     c.acts.dedup_by(|x, y| x.seat == y.seat && x.class == y.class);
+    c.faults.sort();
+    c.faults.dedup();
     let mut b = Vec::new();
     ciborium::into_writer(&c, &mut b).unwrap();
     b
@@ -2657,7 +2659,7 @@ mod tests {
                 })
                 .collect(),
             outcome_achieved: true,
-            misuse: false,
+            misuse: false, faults: vec![],
         }
     }
 
