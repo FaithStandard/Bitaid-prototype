@@ -1,0 +1,42 @@
+# draw depth 3 and commit timeliness from the tier commitment, local regtest, 2026-11-13
+## m3_local
+[caller] 13 passed, 0 failed
+[r1] 9 passed, 0 failed
+[r2] 9 passed, 0 failed
+[r3] 2 passed, 0 failed
+## m3_arb_local CAPTURE CHALLENGE STALL
+[caller] 11 passed, 0 failed
+[r1-liar] 14 passed, 0 failed
+[r3] 8 passed, 0 failed
+[arb1] 19 passed, 0 failed
+## m3_multi CASES=10 REVIEW_PCT=100, every node
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[r1-liar] 24 passed, 0 failed
+[r1-liar] 23 passed, 0 failed
+[r1-liar] 14 passed, 0 failed
+[r1-liar] 24 passed, 0 failed
+[r1-liar] 26 passed, 0 failed
+[r1-liar] 27 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r1-liar] 23 passed, 0 failed
+[r1-liar] 24 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 19 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
