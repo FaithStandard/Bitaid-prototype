@@ -20,6 +20,8 @@ pub struct Rpc {
     /// pruned node cannot keep one): next height to read, and txid → (outputs, height, block hash)
     index: Mutex<(u32, std::collections::HashMap<String, (Value, u32, String)>)>,
     tip: Mutex<(u32, Option<std::time::Instant>)>,
+    /// Bitaid's records as the blocks read so far give them (see `ledger`)
+    ledger: Mutex<crate::ledger::Ledger>,
     /// transactions this node has broadcast and not yet seen confirmed: `mine` waits for them
     sent: Mutex<Vec<Txid>>,
 }
@@ -41,6 +43,7 @@ impl Rpc {
             memo: Mutex::new(std::collections::HashMap::new()),
             index: Mutex::new((0, std::collections::HashMap::new())),
             tip: Mutex::new((0, None)),
+            ledger: Mutex::new(Default::default()),
             sent: Mutex::new(vec![]),
         }
     }
@@ -396,17 +399,53 @@ impl Rpc {
     /// Reads every block not yet read (from BITAID_INDEX_FROM, or BITAID_INDEX_BACK blocks — 36 by
     /// default — before the first lookup) and looks `txid` up among their transactions.
     fn indexed(&self, txid: &str) -> Option<Value> {
-        let tip = self.tip();
+        self.sync();
+        self.from_index(txid)
+    }
+
+    /// Reads the chain up to its tip into the transaction index and the ledger. A reorganisation
+    /// (the hash recorded for a block read no longer the chain's) cuts both back to the fork first.
+    /// Every node that must agree on the ledger starts from the same height: BITAID_INDEX_FROM.
+    pub fn sync(&self) {
+        let tip = self.height();
         let mut ix = self.index.lock().unwrap();
+        let mut ledger = self.ledger.lock().unwrap();
         if ix.0 == 0 {
             let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
             ix.0 = env("BITAID_INDEX_FROM")
                 .unwrap_or_else(|| tip.saturating_sub(env("BITAID_INDEX_BACK").unwrap_or(36)))
                 .max(1);
         }
+        // the last blocks read, newest first, against the chain as it stands (asked afresh: a hash
+        // is remembered only once buried)
+        let mut fork = None;
+        for (h, hash) in ledger.blocks_back().take(REORG_DEPTH as usize + 4) {
+            let now = self
+                .call("getblockhash", json!([h]))
+                .ok()
+                .and_then(|v| v.as_str().map(String::from));
+            match now {
+                Some(x) if x == *hash => break,
+                Some(_) => fork = Some(*h),
+                None => return,
+            }
+        }
+        if let Some(h) = fork {
+            eprintln!("chain reorganised from block {h}: reading it again");
+            ledger.truncate(h);
+            ix.1.retain(|_, v| v.1 < h);
+            ix.0 = h;
+            self.memo.lock().unwrap().retain(|k, _| !k.starts_with("bh:") && !k.starts_with("tx:"));
+        }
         while ix.0 <= tip {
             let h = ix.0;
-            let Some(bh) = self.block_hash(h) else { break };
+            let Some(bh) = self
+                .call("getblockhash", json!([h]))
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+            else {
+                break;
+            };
             let b = match self.call("getblock", json!([bh, 2])) {
                 Ok(b) => b,
                 // pruned away (or otherwise not kept): nothing of the run's can be in it
@@ -416,15 +455,50 @@ impl Rpc {
                 }
                 Err(_) => break,
             };
-            for t in b["tx"].as_array().cloned().unwrap_or_default() {
+            let txs = b["tx"].as_array().cloned().unwrap_or_default();
+            for t in &txs {
                 if let Some(id) = t["txid"].as_str() {
                     ix.1.insert(id.to_string(), (t["vout"].clone(), h, bh.clone()));
                 }
             }
+            ledger.absorb(h, &bh, &txs);
             ix.0 = h + 1;
         }
-        let (vout, h, bh) = ix.1.get(txid)?.clone();
-        Some(json!({"txid": txid, "vout": vout, "blockhash": bh, "confirmations": tip.saturating_sub(h) + 1}))
+    }
+
+    /// Reads the ledger as the chain now stands.
+    pub fn ledger<T>(&self, f: impl FnOnce(&crate::ledger::Ledger) -> T) -> T {
+        self.sync();
+        f(&self.ledger.lock().unwrap())
+    }
+
+    /// Funds `spk` with `sats` in a wallet transaction that also carries `record` in an OP_RETURN
+    /// output; the funded output comes first. Returns it.
+    pub fn fund_with_record(&self, spk: &ScriptBuf, sats: u64, record: &[u8]) -> Result<OutPoint, String> {
+        let addr = Address::from_script(spk, self.network()).map_err(|e| e.to_string())?;
+        let amount = format!("{:.8}", sats as f64 / 1e8);
+        let raw = self.call(
+            "createrawtransaction",
+            json!([[], [{addr.to_string(): amount}, {"data": hex::encode(record)}]]),
+        )?;
+        // the change goes last, so the funded output keeps its place
+        let mut opts = json!({"changePosition": 2});
+        if let Some(r) = self.wallet_fee_rate() {
+            opts["fee_rate"] = json!(r);
+        }
+        let funded = self.wcall("fundrawtransaction", json!([raw, opts]))?;
+        let signed = self.wcall("signrawtransactionwithwallet", json!([funded["hex"]]))?;
+        let txid = self.call("sendrawtransaction", json!([signed["hex"]]))?;
+        self.note_sent(txid.as_str());
+        let txid = Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())?;
+        let tx: Transaction =
+            deserialize_hex(signed["hex"].as_str().unwrap_or("")).map_err(|e| e.to_string())?;
+        let vout = tx
+            .output
+            .iter()
+            .position(|o| &o.script_pubkey == spk)
+            .ok_or("output not found")? as u32;
+        Ok(OutPoint { txid, vout })
     }
 
     /// Submits a zero-fee version-3 transaction with a wallet-funded child spending its anchor.
