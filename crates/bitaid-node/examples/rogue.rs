@@ -276,6 +276,7 @@ fn main() {
             case_id: case.clone(),
             tier: 1,
             reason: "rogue: a height from the future".into(),
+            post: String::new(),
         },
     );
     let e = Event::new(

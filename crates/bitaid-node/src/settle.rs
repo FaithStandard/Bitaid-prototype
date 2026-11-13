@@ -217,7 +217,7 @@ pub fn decide_unpaid_dissent(k: usize, pots: [u64; 3], t: &Template, ballots: &[
 pub fn decide_panel(k: usize, pots: [u64; 3], t: &Template, verdict: &Ballot) -> Decision {
     // a panel's fault findings decide: the seat at fault loses its share (its bond is forfeited at
     // the finding's severity apart from the pots, §11.8)
-    let zero: Vec<usize> = verdict.faults.iter().map(|f| f.seat as usize).collect();
+    let zero: Vec<usize> = crate::arb::canon_faults(verdict).iter().map(|f| f.seat as usize).collect();
     if !verdict.misuse {
         return decide_of(k, pots, t, std::slice::from_ref(verdict), 1, &zero);
     }

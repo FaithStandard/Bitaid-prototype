@@ -10,6 +10,8 @@ cd "$(dirname "$0")/.."
 BIN=target/release; CLI=${BITAID_CLI:?set BITAID_CLI}; L=multilogs; mkdir -p $L; rm -f $L/*
 N=${CASES:-20}
 H=$($CLI getblockcount); [ "$H" -lt 110 ] && $CLI -rpcwallet=w generatetoaddress 110 $($CLI -rpcwallet=w getnewaddress) >/dev/null
+# every node reads the chain's records (postings, registrations) from the same height
+export BITAID_INDEX_FROM=$($CLI getblockcount)
 for w in caller r1 r3; do
   $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1
   for i in 1 2 3 4 5 6; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done

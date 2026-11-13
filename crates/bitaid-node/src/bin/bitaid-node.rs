@@ -698,7 +698,7 @@ fn pool_member(mut n: Node) -> i32 {
                         bitaid_node::pre(&a.case_hex, 8),
                         a.cell
                     ));
-                    n.keep(&a.case_hex);
+                    n.keep_under(&a.case_hex, &a.oracle_key);
                     alerts.insert(a.case_hex.clone(), a);
                 }
                 Err(e) => n.log(&format!("alert ignored: {e}")),
@@ -1010,6 +1010,15 @@ fn pool_member(mut n: Node) -> i32 {
                     n.log(&format!("co-signing again for {} (checked before)", bitaid_node::pre(&case_id, 8)));
                     *d
                 } else if let Some((d, what)) = (!done.contains(case_id))
+                    .then(|| {
+                        let key = (case_id.clone(), 1u32);
+                        escrow_payout_due(&n, a, &t, *input, panels.get(&key), offers.get(&key))
+                    })
+                    .flatten()
+                {
+                    n.log(&format!("co-signing {what} for {}", bitaid_node::pre(&case_id, 8)));
+                    d
+                } else if let Some((d, what)) = (!done.contains(case_id))
                     .then(|| seat_forfeit_due(&n, a, r, &t, *input, &vcommits, &fee_at, n.rpc.height()))
                     .flatten()
                 {
@@ -1215,30 +1224,29 @@ fn pool_member(mut n: Node) -> i32 {
                 // (judged by this member's chain when it first sees it, never by the sender's stated
                 // time, which it could backdate; a pool member never replays escalations from before
                 // its own start, its keys living only as long as it runs)
-                // tier 1 is a posting on the fee market (§10.6): one below the market fee at its
-                // height is a standing bid, not an escalation, until the fee comes down to it
-                if *tier == 1 {
-                    // (or met the fee a step earlier: the escalator read the market a little before
-                    // the height its envelope states, and a step may fall in between)
-                    let m = market(&n, &opid, h0);
-                    let before = h0.saturating_sub(bitaid_node::market::STEP_BLOCKS);
-                    if !m.is_active(case_id) && market(&n, &opid, before).fee > a.template.arb_fee {
+                // tier 1 is opened on the chain (§10.6): by the party whose posting for the case came
+                // first, at the height the market took the case up. Until the chain shows that, the
+                // message is only a pointer, looked at again; what its sender states of its own
+                // height decides nothing
+                let h0 = if *tier == 1 {
+                    let oracle = wire::xonly(&a.oracle_key);
+                    let parties: Vec<&str> =
+                        std::iter::once(a.caller.as_str()).chain(r.seats.iter().map(|x| x.as_str())).collect();
+                    match oracle.and_then(|o| arb::tier1_opening(&n.rpc, &o, case_id, &parties)) {
+                        Some((who, h)) if who == s => h,
+                        Some(_) => continue,
+                        None => later!(),
+                    }
+                } else {
+                    if h0 + bitaid_node::draw_blocks() <= n.rpc.height() {
                         n.log(&format!(
-                            "case {}: escalation to tier 1 refused: its seat fee {} sats is below the market's {} sats",
-                            bitaid_node::pre(&case_id, 8),
-                            a.template.arb_fee,
-                            m.fee
+                            "case {}: escalation to tier {tier} refused: it states block {h0}, its draw block is already mined",
+                            bitaid_node::pre(&case_id, 8)
                         ));
                         continue;
                     }
-                }
-                if h0 + bitaid_node::draw_blocks() <= n.rpc.height() {
-                    n.log(&format!(
-                        "case {}: escalation to tier {tier} refused: it states block {h0}, its draw block is already mined",
-                        bitaid_node::pre(&case_id, 8)
-                    ));
-                    continue;
-                }
+                    h0
+                };
                 esc.insert(case_id.clone(), (*tier, s.clone(), h0));
                 ready_at.remove(case_id);
                 deadlock_at.remove(case_id);
@@ -1727,7 +1735,7 @@ fn archivist(mut n: Node) -> i32 {
                 srv.policy.allow(case_id, &env.sender);
                 n.log(&format!("live case {}: caller may upload", bitaid_node::pre(&case_id, 8)));
                 if let Ok(a) = Alerted::check(&env.sender, &env.msg, chain_seen(&n.rpc), &opid) {
-                    n.keep(&a.case_hex);
+                    n.keep_under(&a.case_hex, &a.oracle_key);
                     alerts.insert(a.case_hex.clone(), a);
                 }
             }
@@ -2478,49 +2486,88 @@ fn wait_forfeits(
     out
 }
 
-/// The fee market as this node's log stands at `height` (§10.6): only funded cases count, judged as
-/// an observer would (the funding as created, spent or not). BITAID_FEE0 sets the opening fee.
-fn market(n: &Node, opid: &str, height: u32) -> bitaid_node::market::Market {
-    let fee0 = std::env::var("BITAID_FEE0").ok().and_then(|v| v.parse().ok());
-    let rpc = &n.rpc;
-    let funded = |e: &wire::Envelope| Alerted::check(&e.sender, &e.msg, chain_seen(rpc), opid).is_ok();
-    arb::market_at(&n.history, height, fee0, &funded)
+/// The fee market at `height`, read from the chain (§10.6).
+fn market(n: &Node, oracle: &bitcoin::secp256k1::XOnlyPublicKey, height: u32) -> bitaid_node::market::Market {
+    n.rpc.ledger(|l| arb::market_at(l, oracle, height))
 }
 
-/// A case whose seat fee is below the market's waits as a standing bid (§10.7): the escalating
-/// party re-reads the market each block and opens tier 1 once the fee has come down to its bid.
-/// False if the case's last hearing height passes first (the case then ends by refund).
-fn wait_for_market(n: &mut Node, a: &Alerted, view: &PoolView) -> bool {
-    let bid = a.template.arb_fee;
-    // as the market counts it: the alert's height plus the refund delay
-    let last = n
-        .history
-        .iter()
-        .find(|e| matches!(&e.msg, Msg::Alert { case_id, .. } if *case_id == a.case_hex))
-        .map(|e| e.height + a.template.refund_delay)
-        .unwrap_or(0);
+/// Waits until the market has taken the case up, and gives the height at which it did: the block of
+/// its posting if its fee met the market's, else the step at which the fee came down to its bid
+/// (§10.7: a case posted below the fee waits as a standing bid). None if the posting's escrow
+/// unlocks first (the case then ends by refund).
+fn wait_for_market(
+    n: &mut Node,
+    oracle: &bitcoin::secp256k1::XOnlyPublicKey,
+    case: &str,
+    bid: u64,
+    lock: u32,
+) -> Option<u32> {
     let mut said = false;
     loop {
-        n.refresh_height();
-        let h = n.height();
-        let m = market(n, &view.pool_id(), h);
-        if bid >= m.fee {
+        let h = n.rpc.height();
+        let m = market(n, oracle, h);
+        if let Some(at) = m.activated(case) {
             if said {
-                n.log(&format!("STANDBY_PROMOTED: the market fee came down to {} sats; opening tier 1 at the posted {bid}", m.fee));
+                n.log(&format!("STANDBY_PROMOTED: the market fee came down to the bid of {bid} sats at block {at}; opening tier 1"));
             }
-            return true;
+            return Some(at);
         }
-        if !said {
-            n.log(&format!("STANDBY: seat fee {bid} sats is below the market's {} sats; waiting as a standing bid (until block {last})", m.fee));
+        if m.is_standby(case) && !said {
+            n.log(&format!("STANDBY: seat fee {bid} sats is below the market's {} sats; waiting as a standing bid (until block {lock})", m.fee));
             said = true;
         }
-        if last > 0 && h >= last {
-            n.log("STANDBY_EXPIRED: the market fee never came down to the bid before the last hearing; the case ends by refund");
-            return false;
+        if h + bitaid_node::draw_blocks() + bitaid_node::draw_depth() >= lock {
+            n.log("STANDBY_EXPIRED: the market fee never came down to the bid before the escrow unlocks; the case ends by refund");
+            return None;
         }
         n.rpc.mine(1).ok();
         n.collect_until(h + 1, secs(bitaid_node::slow(900)), |_, _| None::<()>, |_| false);
     }
+}
+
+/// Whether `t` is the payment of a case's tier-1 panel out of its posting's escrow, as this member
+/// checked the panel: it spends a valid, unspent posting of the case and pays every seat drawn its
+/// fee at the address it offered. The digest to co-sign if so.
+fn escrow_payout_due(
+    n: &Node,
+    a: &Alerted,
+    t: &Transaction,
+    input: u32,
+    seats: Option<&Vec<String>>,
+    seen: Option<&HashMap<String, (bool, String, u32, String)>>,
+) -> Option<([u8; 32], String)> {
+    if input != 0 || t.input.len() != 1 {
+        return None;
+    }
+    let oracle = wire::xonly(&a.oracle_key)?;
+    let p = n.rpc.ledger(|l| {
+        l.postings
+            .iter()
+            .find(|p| p.at.op == t.input[0].previous_output)
+            .filter(|p| p.case == a.case_hex && p.at.spent.is_none() && arb::posting_valid(p, &oracle))
+            .cloned()
+    })?;
+    let (seats, seen) = (seats?, seen?);
+    let fee = arb::seat_fee(a.template.arb_fee, 1);
+    if p.fee < fee || seats.len() != arb::panel_size(1) {
+        return None;
+    }
+    // each seat its own output (two seats may not share one)
+    let mut used = vec![false; t.output.len()];
+    for sid in seats {
+        let spk = bitcoin::ScriptBuf::from_hex(&seen.get(sid)?.1).ok()?;
+        let i = t
+            .output
+            .iter()
+            .enumerate()
+            .position(|(i, o)| !used[i] && o.script_pubkey == spk && o.value.to_sat() >= fee)?;
+        used[i] = true;
+    }
+    let e = arb::escrow(&p.poster, p.lock, p.at.op, p.at.value, bitcoin::ScriptBuf::new());
+    Some((
+        e.spend_digest(&oracle, t),
+        format!("the payment of the tier-1 panel ({} × {fee} sats) out of the posting's escrow", seats.len()),
+    ))
 }
 
 /// The escalating party's side of one arbitration tier (§10.1–10.5): escalate, collect blind seat
@@ -2539,15 +2586,43 @@ fn escalate_tier(
     // a stage of the staged review (§10.3): seats unpaid and unstaked, a two-thirds finding
     let review = arb::is_review(tier);
     let okey = view.key_hex();
-    // tier 1 is posted on the fee market: a seat fee below the market's waits as a standing bid
-    if tier == 1 && !wait_for_market(n, a, view) {
-        return None;
+    let oxo = wire::xonly(&okey).unwrap();
+    // tier 1 is opened on the chain (§10.6): a posting transaction records the case and its seat fee
+    // and locks the whole panel's fees in an escrow that only the pool's co-signature (to pay the
+    // seats drawn) or the lock height releases. The market takes the case up from that record, and
+    // the height at which it does, not anything this node states, fixes the draw.
+    let mut escrow: Option<arb::Bond> = None;
+    let mut post = String::new();
+    if tier == 1 {
+        let fee1 = arb::seat_fee(a.template.arb_fee, 1);
+        let me = n.keys.x_only_public_key().0;
+        let lock = n.rpc.height() + arb::post_lock() + 6;
+        let back = n.rpc.new_spk().unwrap_or_default();
+        let e0 = arb::escrow(&me, lock, bitcoin::OutPoint::null(), fee1 * size as u64, back);
+        let rec = bitaid_node::ledger::post_record(
+            &wire::h32(&c).unwrap_or_default(),
+            1,
+            fee1.min(u32::MAX as u64) as u32,
+            &me,
+            lock,
+        );
+        match n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &rec) {
+            Ok(op) if op.vout == 0 => {
+                post = op.txid.to_string();
+                escrow = Some(arb::Bond { op, ..e0 });
+            }
+            Ok(_) => {
+                n.check("tier 1: posting on the fee market", false, "the escrow is not the first output");
+                return None;
+            }
+            Err(e) => {
+                n.check("tier 1: posting on the fee market", false, &e);
+                return None;
+            }
+        }
     }
-    // the escalation's height (its envelope states it): the panel is drawn from the block draw_blocks()
-    // later, from every offer stated up to two blocks before it
+    // (for a higher tier, the escalation's height is still the one its envelope states)
     n.refresh_height();
-    let h_esc = n.height();
-    let draw_h = h_esc + bitaid_node::draw_blocks();
     n.send_case(
         &c,
         &[],
@@ -2555,14 +2630,32 @@ fn escalate_tier(
             case_id: c.clone(),
             tier,
             reason: reason.into(),
+            post: post.clone(),
         },
         false,
     );
+    let h_esc = match &escrow {
+        Some(e) => {
+            n.rpc.mine(1).ok();
+            n.rpc.confirm(&[e.op.txid]);
+            let fee1 = arb::seat_fee(a.template.arb_fee, 1);
+            let Some(h) = wait_for_market(n, &oxo, &c, fee1, e.fallback) else {
+                return None;
+            };
+            n.check(
+                &format!("tier 1: posted on the fee market at {fee1} sats a seat, the panel's fees locked in escrow; taken up at block {h}"),
+                true,
+                &post[..16],
+            );
+            h
+        }
+        None => n.height(),
+    };
+    let draw_h = h_esc + bitaid_node::draw_blocks();
     n.log(&format!("ESCALATE tier {tier} ({size} seats): {reason}; drawn from block {draw_h}"));
     let t0 = Instant::now();
     // blind taking: offers name only a bond and a payout address
     let mut offers: Vec<(String, bitcoin::ScriptBuf, arb::Bond)> = vec![];
-    let oxo = wire::xonly(&okey).unwrap();
     let cap = Instant::now() + secs(bitaid_node::slow(3600));
     while Instant::now() < cap {
         if n.tip() >= draw_h {
@@ -2724,7 +2817,41 @@ fn escalate_tier(
             .iter()
             .map(|sid| (offers.iter().find(|o| &o.0 == sid).unwrap().1.clone(), fee))
             .collect();
-        match n.rpc.pay_many(&pay) {
+        // tier 1 out of the posting's escrow, with the pool's co-signature (it checks the panel
+        // itself); a higher tier from this party's wallet
+        let paid = match &escrow {
+            Some(e) => {
+                let mut outs: Vec<(u64, bitcoin::ScriptBuf)> = pay.iter().map(|x| (x.1, x.0.clone())).collect();
+                let rest = e.value.saturating_sub(outs.iter().map(|o| o.0).sum());
+                if rest > bitaid_core::payouts::DUST {
+                    outs.push((rest, e.payout.clone()));
+                }
+                let (tx0, d) = e.spend_to(&oxo, &outs);
+                let pre = Secp256k1::new()
+                    .sign_schnorr(&bitcoin::secp256k1::Message::from_digest(d), &n.keys)
+                    .serialize();
+                let mut res = Err("not asked".to_string());
+                for i in 0..12u32 {
+                    let mut tx = tx0.clone();
+                    res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &d, 50_000 + 10 * i).and_then(
+                        |(osig, _, _)| {
+                            e.witness(&oxo, &mut tx, &pre, &osig);
+                            n.rpc.package(&tx)
+                        },
+                    );
+                    match &res {
+                        // the members check the panel from their own logs first: asked again
+                        Err(x) if x.contains("members committed") => {
+                            n.collect(Duration::from_secs(10), |_, _| None::<()>, |_| false);
+                        }
+                        _ => break,
+                    }
+                }
+                res
+            }
+            None => n.rpc.pay_many(&pay),
+        };
+        match paid {
             Ok(txid) => {
                 n.rpc.mine(1).ok();
                 n.rpc.confirm(&[txid]);
@@ -2897,9 +3024,22 @@ fn escalate_tier(
                     Err(e) => e.clone(),
                 },
             );
-            // a replacement drawn from the offers left, by a block mined after the forfeiture
+            // a replacement drawn from the offers left, by the block draw_blocks() after the one that
+            // confirmed the forfeiture: fixed by the chain, not picked by this party
+            let Ok(ftx) = &res else {
+                return None;
+            };
             n.rpc.mine(1).ok();
-            let h = n.rpc.height();
+            n.rpc.confirm(&[*ftx]);
+            let Some(hf) = n.rpc.tx_height(&ftx.to_string()) else {
+                n.check(&format!("tier {tier}: the seat forfeiture confirmed"), false, "not in a block");
+                return None;
+            };
+            let h = hf + bitaid_node::draw_blocks();
+            while n.rpc.height() < h {
+                n.rpc.mine(1).ok();
+                std::thread::sleep(Duration::from_secs(2));
+            }
             let bh = draw_hash(n, h);
             let left: Vec<String> = ids
                 .iter()
@@ -3716,6 +3856,7 @@ fn review_stage(
             case_id: c.clone(),
             tier: k,
             reason: format!("staged review, stage {st}"),
+            post: String::new(),
         },
         false,
     );
@@ -4522,8 +4663,15 @@ fn arbitrator(mut n: Node) -> i32 {
     let bt = outputs::bond(&secp, &xo(&bs), &xo(&bc), &wire::xonly(&okey).unwrap(), bf);
     keep_keys("bond", &name_of(&n), &bs, &bc, &okey, bf);
     let bond_value = amt("--bond", 10_000_000);
-    let bond = match n.rpc.fund(&bt.script_pubkey(), bond_value) {
-        Ok(op) => op,
+    // the entry bond is registered on the chain, where every node counts the pool's capacity
+    // from (§10.2, §10.6)
+    let reg_rec = bitaid_node::ledger::register_record(&xo(&bs), &xo(&bc), bf, 0);
+    let bond = match n.rpc.fund_with_record(&bt.script_pubkey(), bond_value, &reg_rec) {
+        Ok(op) if op.vout == 0 => op,
+        Ok(_) => {
+            n.log("bond not posted: not the first output");
+            return 1;
+        }
         Err(e) => {
             n.log(&format!("bond not posted: {e}"));
             return 1;
@@ -4828,7 +4976,7 @@ fn arbitrator(mut n: Node) -> i32 {
         match env.msg {
             Msg::Alert { .. } => {
                 if let Ok(a) = Alerted::check(&s, &env.msg, chain_seen(&n.rpc), &opid) {
-                    n.keep(&a.case_hex);
+                    n.keep_under(&a.case_hex, &a.oracle_key);
                     alerts.insert(a.case_hex.clone(), a);
                 }
             }
