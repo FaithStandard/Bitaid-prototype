@@ -111,8 +111,24 @@ pub fn proof_line_since(c: &Credential, challenge: &[u8; 32], to: &str, since: u
         "stake": c.stake,
         "to": to,
         "sig": hex::encode(sig.as_ref()),
-    }, "since": since})
+    }, "since": since, "boot": boot()})
     .to_string()
+}
+
+/// A number drawn once per process. Each side of a link states its own when the link opens, and
+/// the other keeps its replay mark under it: a peer that has restarted has an empty memory and a
+/// new number, so it is sent the whole log again. Stating a new one each time only costs the
+/// peer its own bandwidth and tokens.
+pub fn boot() -> u64 {
+    static B: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *B.get_or_init(rand::random)
+}
+
+fn boot_of(line: &[u8]) -> u64 {
+    serde_json::from_slice::<serde_json::Value>(line)
+        .ok()
+        .and_then(|v| v.get("boot").and_then(|b| b.as_u64()))
+        .unwrap_or(0)
 }
 
 /// A set that forgets its oldest members past `cap`.
@@ -622,8 +638,10 @@ fn run_link(
     // every incoming link opens with a fresh challenge; a dialler answers it with its proof
     let challenge: [u8; 32] = rand::random();
     let mut first: Option<Vec<u8>> = None;
+    // the peer's process number (see `boot`), part of the name its replay mark is kept under
+    let mut peer_boot = 0u64;
     if incoming {
-        let l = format!("{{\"challenge\":\"{}\"}}\n", hex::encode(challenge));
+        let l = format!("{{\"challenge\":\"{}\",\"boot\":{}}}\n", hex::encode(challenge), boot());
         if w.write_all(l.as_bytes()).is_err() {
             return;
         }
@@ -636,6 +654,7 @@ fn run_link(
             Err(e) => eprintln!("gossip: {label}: no challenge within {PROOF_SECS} s ({e})"),
         }
         if let Ok(Some(())) = got {
+            peer_boot = boot_of(&buf);
             let v = serde_json::from_slice::<serde_json::Value>(&buf).ok();
             let ch = v
                 .as_ref()
@@ -682,7 +701,7 @@ fn run_link(
         g.next += 1;
         let id = g.next;
         if !must_prove {
-            replay(&g, &otx, &to);
+            replay(&g, &otx, &format!("{to}#{peer_boot}"));
         }
         g.links.insert(
             id,
@@ -739,6 +758,7 @@ fn run_link(
             }
             match check_proof(&shared, d, &challenge, &buf) {
                 Ok((k, xk, stake)) => {
+                    peer_boot = boot_of(&buf);
                     key = Some(k);
                     // the stake is checked again while the link lasts (see RECHECK_SECS)
                     shared.lock().unwrap().stakes.insert(id, (xk, stake));
@@ -751,7 +771,7 @@ fn run_link(
             why = None;
             let _ = s.set_read_timeout(None);
             let mut g = shared.lock().unwrap();
-            replay(&g, &otx, key.as_deref().unwrap_or(""));
+            replay(&g, &otx, &format!("{}#{peer_boot}", key.as_deref().unwrap_or("")));
             if let Some(l) = g.links.get_mut(&id) {
                 l.authed = true;
             }
@@ -869,7 +889,11 @@ fn run_link(
         };
         if let (Some(m), false) = (mark, peer.is_empty()) {
             let mut g = shared.lock().unwrap();
-            let c = g.caught.entry(peer).or_insert(0);
+            // marks of processes long gone: the map is small, and is emptied rather than let grow
+            if g.caught.len() > 10_000 {
+                g.caught.clear();
+            }
+            let c = g.caught.entry(format!("{peer}#{peer_boot}")).or_insert(0);
             *c = (*c).max(m);
         }
     }
