@@ -1339,6 +1339,7 @@ impl Replay {
         // a responder the final ruling finds at fault forfeits its bond at the finding's severity
         // (§11.8), by the forfeiture it pre-signed at acceptance; it covers its loser-pays fee
         let mut faulted: Vec<&str> = vec![];
+        let mut owes_fee: Vec<&str> = vec![];
         let cf = canon_faults(&fv);
         for f in &cf {
             let Some(w) = self.parties.get(f.seat as usize + 1).map(|p| p.0.as_str()) else { continue };
@@ -1347,6 +1348,11 @@ impl Replay {
             let (tx, digest) = fault_tx(b, &self.oracle, f.severity, &spk);
             let Some(sig) = pre.get(i).filter(|sg| schnorr_ok(&b.scoped, &digest, sg)) else { continue };
             if faulted.contains(&w) {
+                continue;
+            }
+            // a finding that would take less than the loser-pays fee takes the fee instead (below)
+            if fault_amount(b.value, f.severity) < lf.min(b.value) {
+                owes_fee.push(w);
                 continue;
             }
             faulted.push(w);
@@ -1370,9 +1376,13 @@ impl Replay {
                 None => true,
                 Some(mine) => {
                     let m = answers(mine);
-                    verdict_key(mine) != fk && disputed.iter().any(|&i| m[i] != ruling[i])
+                    (verdict_key(mine) != fk && disputed.iter().any(|&i| m[i] != ruling[i]))
+                        // an accusation the final ruling does not bear out is a lost point like any
+                        // other: whoever named a seat at fault that the ruling clears pays the panel
+                        // (§9), so two seats cannot veto a settlement for nothing
+                        || canon_faults(mine).iter().any(|f| !cf.iter().any(|x| x.seat == f.seat))
                 }
-            };
+            } || owes_fee.contains(&w.as_str());
             // only a vote that did not settle on its own makes a loser: a majority escalating a vote
             // that already had 80% pays its own panel (review)
             if !lost || lf == 0 || self.attending_settled {

@@ -491,14 +491,36 @@ impl Rpc {
             "createrawtransaction",
             json!([[], [{addr.to_string(): amount}, {"data": hex::encode(record)}]]),
         )?;
-        // the change goes last, so the funded output keeps its place
-        let mut opts = json!({"changePosition": 2});
+        // the change goes last, so the funded output keeps its place; the coins chosen are locked in
+        // the wallet at once, so another node of the same wallet does not choose them too
+        let mut opts = json!({"changePosition": 2, "lockUnspents": true});
         if let Some(r) = self.wallet_fee_rate() {
             opts["fee_rate"] = json!(r);
         }
-        let funded = self.wcall("fundrawtransaction", json!([raw, opts]))?;
-        let signed = self.wcall("signrawtransactionwithwallet", json!([funded["hex"]]))?;
-        let txid = self.call("sendrawtransaction", json!([signed["hex"]]))?;
+        let mut tries = 0;
+        let (signed, txid) = loop {
+            tries += 1;
+            let step = (|| {
+                let funded = self.wcall("fundrawtransaction", json!([raw, opts]))?;
+                let signed = self.wcall("signrawtransactionwithwallet", json!([funded["hex"]]))?;
+                let txid = self.call("sendrawtransaction", json!([signed["hex"]]))?;
+                Ok::<_, String>((signed, txid))
+            })();
+            match step {
+                Ok(x) => break x,
+                // coins taken by another node of the same wallet at that moment, or not yet
+                // confirmed: asked again
+                Err(e)
+                    if tries < 12
+                        && ["missingorspent", "conflict", "replacement", "Insufficient funds", "exceeds your balance"]
+                            .iter()
+                            .any(|m| e.contains(m)) =>
+                {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                }
+                Err(e) => return Err(e),
+            }
+        };
         self.note_sent(txid.as_str());
         let txid = Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())?;
         let tx: Transaction =
