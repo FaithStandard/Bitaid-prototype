@@ -673,7 +673,11 @@ pub struct Replay {
     /// the bonded arbitrator that flagged the case, if the draw passed it over (§10.3)
     pub flagger: Option<String>,
     /// each attendee's bond and its pre-signed loser-pays forfeiture (§9), checked
-    pub loser_pays: HashMap<String, (Bond, String)>,
+    /// each attendee's bond and its pre-signed forfeitures: [loser-pays fee, lapse (25%), whole bond]
+    pub loser_pays: HashMap<String, (Bond, Vec<String>)>,
+    /// the case's pots and template, to price a harmed responder's loss (§12)
+    pub pots: [u64; 3],
+    pub template: wire::Template,
     /// one tier-1 panel fee: what a losing attendee pays
     pub loser_fee: u64,
     /// the number of attending seats
@@ -800,6 +804,8 @@ impl Replay {
             loser_pays: HashMap::new(),
             ballots: HashMap::new(),
             loser_fee: loser_fee(a),
+            pots: a.template.pots,
+            template: a.template.clone(),
             seats_n: r.seats.len(),
             attending_settled: false,
         };
@@ -839,8 +845,8 @@ impl Replay {
                     }
                     let Some(b) = accepted_bond(&mine, &e.sender, rpc) else { continue };
                     let (_, d) = loser_pays_tx(&b, &oracle, loser_fee(a), &spk);
-                    if sigs.len() == 1 && schnorr_ok(&b.scoped, &d, &sigs[0]) {
-                        rp.loser_pays.insert(e.sender.clone(), (b, sigs[0].clone()));
+                    if !sigs.is_empty() && schnorr_ok(&b.scoped, &d, &sigs[0]) {
+                        rp.loser_pays.insert(e.sender.clone(), (b, sigs.clone()));
                     }
                 }
             }
@@ -1255,7 +1261,35 @@ impl Replay {
         let disputed: Vec<usize> = (0..ruling.len())
             .filter(|&i| all.iter().any(|x| x[i] != all[0][i]))
             .collect();
+        // a responder the final ruling finds at fault forfeits its bond at the finding's severity
+        // (§11.8), by the forfeiture it pre-signed at acceptance; it covers its loser-pays fee
+        let mut faulted: Vec<&str> = vec![];
+        for f in &fv.faults {
+            let Some(w) = self.parties.get(f.seat as usize + 1).map(|p| p.0.as_str()) else { continue };
+            let Some((b, pre)) = self.loser_pays.get(w) else { continue };
+            let i = fault_sig_index(f.severity);
+            let (tx, digest) = fault_tx(b, &self.oracle, f.severity, &spk);
+            let Some(sig) = pre.get(i).filter(|sg| schnorr_ok(&b.scoped, &digest, sg)) else { continue };
+            if faulted.contains(&w) {
+                continue;
+            }
+            faulted.push(w);
+            out.push(Penalty {
+                arbitrator: w.to_string(),
+                tier: 0,
+                step: fault_amount(b.value, f.severity),
+                amount: fault_amount(b.value, f.severity),
+                bond: b.clone(),
+                pre: sig.clone(),
+                tx,
+                digest,
+            });
+        }
         for (w, (b, pre)) in &self.loser_pays {
+            let pre = &pre[0];
+            if faulted.contains(&w.as_str()) {
+                continue;
+            }
             let lost = match self.ballots.get(w) {
                 None => true,
                 Some(mine) => {
@@ -1291,6 +1325,26 @@ impl Replay {
         // distribution spends these outputs in this order, so its txid depends on it
         out.sort_by(|x, y| (x.tier, &x.arbitrator).cmp(&(y.tier, &y.arbitrator)));
         out
+    }
+
+    /// What seat `i` receives from the pots when the case settles by verdict `v` (§12: the measure of
+    /// a harmed responder's loss).
+    pub fn pot_share(&self, v: &Ballot, i: usize) -> u64 {
+        use bitaid_core::endings::EndingKind;
+        let crate::settle::Decision::Settled(e) =
+            crate::settle::decide_panel(self.seats_n, self.pots, &self.template, v)
+        else {
+            return 0;
+        };
+        let step = bitaid_core::endings::step_for(self.seats_n) as u64;
+        e.iter()
+            .map(|x| match &x.kind {
+                EndingKind::Split(w) | EndingKind::GoodFaith(w) => {
+                    self.pots[x.pot.index()] * w.get(i).copied().unwrap_or(0) as u64 * step / 100
+                }
+                _ => 0,
+            })
+            .sum()
     }
 
     /// Arbitrators of lower tiers who voted as the final ruling where their own panel did not.
@@ -1349,10 +1403,24 @@ impl Replay {
                     })
                 })
         };
+        // a fellow responder harmed by the one at fault is repaid its loss first (§12): its share of
+        // the pots as the final ruling settles them, never above what the accused forfeited
+        if let Some((_, fv)) = self.final_ruling() {
+            for f in &fv.faults {
+                let (Some(h), Some(acc)) = (f.harmed, self.parties.get(f.seat as usize + 1)) else { continue };
+                let Some(p) = self.parties.get(h as usize + 1).and_then(|p| p.1.clone()) else { continue };
+                let forfeited: u64 = pens.iter().filter(|x| x.tier == 0 && x.arbitrator == acc.0).map(|x| x.amount).sum();
+                let x = self.pot_share(&fv, h as usize).min(forfeited).min(left);
+                if x > 0 {
+                    outs.push((x, p));
+                    left -= x;
+                }
+            }
+        }
         // the loser pays (§9): what the losing attendees forfeited goes first to whoever paid the
         // tier-1 panel, up to what that panel cost it, unless the payer is among the losers (review N4)
         let losers: Vec<&str> = pens.iter().filter(|p| p.tier == 0).map(|p| p.arbitrator.as_str()).collect();
-        let lp: u64 = pens.iter().filter(|p| p.tier == 0).map(|p| p.amount).sum();
+        let lp: u64 = pens.iter().filter(|p| p.tier == 0).map(|p| p.amount).sum::<u64>().min(left);
         if lp > 0 {
             if let Some(t1) = self.tiers.get(&1) {
                 if t1.fee_paid && !losers.contains(&t1.escalator.as_str()) {
@@ -2404,6 +2472,36 @@ pub fn loser_fee(a: &Alerted) -> u64 {
 /// re-bonded (the same forfeiture leaf as an arbitrator's penalties).
 pub fn loser_pays_tx(bond: &Bond, oracle: &XOnlyPublicKey, fee: u64, seizure: &ScriptBuf) -> (Transaction, [u8; 32]) {
     bond.penalty_tx(oracle, fee, seizure)
+}
+
+/// What a responder's bond forfeits for a fault (§11.8): a lapse a quarter, misconduct the whole.
+pub fn fault_amount(value: u64, s: wire::Severity) -> u64 {
+    match s {
+        wire::Severity::Lapse => value / 4,
+        wire::Severity::Misconduct | wire::Severity::Bannable => value,
+    }
+}
+
+/// Which of an attendee's pre-signed forfeitures a fault takes: [fee, lapse, whole].
+pub fn fault_sig_index(s: wire::Severity) -> usize {
+    match s {
+        wire::Severity::Lapse => 1,
+        _ => 2,
+    }
+}
+
+/// The forfeiture of a responder's bond for a fault, into the case's seizure output.
+pub fn fault_tx(bond: &Bond, oracle: &XOnlyPublicKey, s: wire::Severity, seizure: &ScriptBuf) -> (Transaction, [u8; 32]) {
+    bond.penalty_tx(oracle, fault_amount(bond.value, s), seizure)
+}
+
+/// The digests an attendee pre-signs at acceptance, in order: the loser-pays fee, a lapse, the whole.
+pub fn attendee_forfeit_digests(bond: &Bond, oracle: &XOnlyPublicKey, fee: u64, seizure: &ScriptBuf) -> Vec<[u8; 32]> {
+    vec![
+        loser_pays_tx(bond, oracle, fee, seizure).1,
+        fault_tx(bond, oracle, wire::Severity::Lapse, seizure).1,
+        fault_tx(bond, oracle, wire::Severity::Misconduct, seizure).1,
+    ]
 }
 
 /// The bond an attendee accepted the case with, as its Accept states it and the chain shows it.

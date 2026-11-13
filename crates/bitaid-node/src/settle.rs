@@ -61,13 +61,14 @@ pub fn misconduct_trigger(k: usize, ballots: &[Ballot]) -> Option<Fault> {
             .iter()
             .filter_map(|b| b.faults.iter().filter(|f| f.seat == seat).max_by_key(|f| f.severity))
             .collect();
-        if 3 * named.len() < 2 * k {
+        // two thirds of the seats other than the accused (whose own ballot does not count)
+        if 3 * named.len() < 2 * (k - 1).max(1) {
             continue;
         }
         // the gravest severity at least two thirds of the seats reach
         let mut sev: Vec<_> = named.iter().map(|f| f.severity).collect();
         sev.sort();
-        let reach = sev[sev.len() - (2 * k).div_ceil(3)];
+        let reach = sev[sev.len() - (2 * (k - 1).max(1)).div_ceil(3)];
         let f = Fault { seat, severity: reach, harmed: named[0].harmed };
         if best.as_ref().is_none_or(|b| f.severity > b.severity) {
             best = Some(f);
@@ -371,6 +372,11 @@ mod tests {
         assert_eq!((f.seat, f.severity), (0, Severity::Lapse));
         assert!(matches!(decide(3, [1, 1, 1], &t(), &[acc.clone(), lapse, b.clone()]), Decision::Escalate(m) if m.contains("misconduct")));
         assert_eq!(misconduct_trigger(3, &[acc.clone(), acc.clone(), b]).unwrap().severity, Severity::Misconduct);
+        // two seats: the one other than the accused is the two thirds
+        let b2 = ballot(&[Intervention, Intervention], true);
+        let mut a2 = b2.clone();
+        a2.faults = vec![Fault { seat: 1, severity: Severity::Misconduct, harmed: Some(0) }];
+        assert!(matches!(decide(2, [1, 1, 1], &t(), &[a2, b2]), Decision::Escalate(m) if m.contains("misconduct")));
     }
 
     #[test]

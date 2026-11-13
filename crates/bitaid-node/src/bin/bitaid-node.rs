@@ -952,12 +952,15 @@ fn pool_member(mut n: Node) -> i32 {
                                     fallback: acc.bond_fallback,
                                     payout: bitcoin::ScriptBuf::from_hex(&acc.payout_spk).ok()?,
                                 };
-                                let (_, d) = arb::loser_pays_tx(&b, &wire::xonly(&a.oracle_key)?, fee, seizure.as_ref()?);
+                                let ds = arb::attendee_forfeit_digests(&b, &wire::xonly(&a.oracle_key)?, fee, seizure.as_ref()?);
                                 n.history.iter().rev().find_map(|e| match &e.msg {
                                     Msg::Forfeits { case_id: cc, tier: 0, sigs, .. }
-                                        if cc == case_id && e.sender == **w && sigs.len() == 1 =>
+                                        if cc == case_id && e.sender == **w && sigs.len() == ds.len() =>
                                     {
-                                        arb::schnorr_ok(&b.scoped, &d, &sigs[0]).then_some(())
+                                        ds.iter()
+                                            .zip(sigs)
+                                            .all(|(d, sg)| arb::schnorr_ok(&b.scoped, d, sg))
+                                            .then_some(())
                                     }
                                     _ => None,
                                 })
@@ -2201,7 +2204,7 @@ fn ballot_from_args(seats: usize, my_seat: usize) -> Ballot {
         return Ballot {
             acts,
             outcome_achieved: !flag("--not-achieved"),
-            misuse: flag("--misuse"), faults: vec![],
+            misuse: flag("--misuse"), faults: test_faults(),
         };
     }
     // --ballot "I,I,D" gives every seat's class as this attendee saw it; default: everyone intervened
@@ -2229,8 +2232,28 @@ fn ballot_from_args(seats: usize, my_seat: usize) -> Ballot {
     Ballot {
         acts,
         outcome_achieved: !flag("--not-achieved"),
-        misuse: flag("--misuse"), faults: vec![],
+        misuse: flag("--misuse"), faults: test_faults(),
     }
+}
+
+/// (tests) Fault findings for a ballot or verdict: `--fault` or BITAID_TEST_FAULT, as
+/// "seat:severity[:harmed seat]" with severity lapse, misconduct or bannable; several joined by ",".
+fn test_faults() -> Vec<wire::Fault> {
+    let spec = arg("--fault").or_else(|| std::env::var("BITAID_TEST_FAULT").ok()).unwrap_or_default();
+    spec.split(',')
+        .filter_map(|f| {
+            let mut it = f.trim().split(':');
+            let seat = it.next()?.parse().ok()?;
+            let severity = match it.next()? {
+                "lapse" => wire::Severity::Lapse,
+                "misconduct" => wire::Severity::Misconduct,
+                "bannable" => wire::Severity::Bannable,
+                _ => return None,
+            };
+            let harmed = it.next().and_then(|h| h.parse().ok());
+            Some(wire::Fault { seat, severity, harmed })
+        })
+        .collect()
 }
 
 fn upload_evidence(
@@ -5157,7 +5180,9 @@ fn arbitrator(mut n: Node) -> i32 {
                 let verdict = Ballot {
                     acts,
                     outcome_achieved: true,
-                    misuse: false, faults: vec![],
+                    misuse: false,
+                    // (tests) what the footage shows of a responder's conduct: BITAID_TEST_FAULT
+                    faults: test_faults(),
                 };
                 n.log(&format!(
                     "reviewed {kib} KiB of footage from {} recorders; verdict {}",
@@ -6077,8 +6102,10 @@ fn responder(mut n: Node) -> i32 {
             if let Some((st, _)) =
                 arb::seizure_tree(&r.archivists, &wire::xonly(&okey).unwrap(), &case::parties_key(&a, &r))
             {
+                // and, apart from it, the forfeitures a panel's fault finding takes (§11.8): a quarter
+                // of the bond for a lapse, the whole for misconduct
                 let fee = arb::loser_fee(&a);
-                let (_, d) = arb::loser_pays_tx(&my_bond, &wire::xonly(&okey).unwrap(), fee, &st.script_pubkey());
+                let ds = arb::attendee_forfeit_digests(&my_bond, &wire::xonly(&okey).unwrap(), fee, &st.script_pubkey());
                 n.send_case(
                     &c,
                     &[],
@@ -6087,12 +6114,17 @@ fn responder(mut n: Node) -> i32 {
                         tier: 0,
                         stake: bond.to_string(),
                         value: my_bond.value,
-                        sigs: vec![hex::encode(sign_bip340(&bond_scoped, &d))],
+                        sigs: ds.iter().map(|d| hex::encode(sign_bip340(&bond_scoped, d))).collect(),
                         holders: vec![],
                     },
                     false,
                 );
-                n.log(&format!("loser-pays forfeiture of {fee} sats pre-signed for roster v{}", r.set_version));
+                n.log(&format!(
+                    "loser-pays forfeiture of {fee} sats pre-signed for roster v{}, with the fault forfeitures ({} and {} sats)",
+                    r.set_version,
+                    my_bond.value / 4,
+                    my_bond.value
+                ));
             }
         }
         match sign_set(&mut n, &a, &r, seat + 1, &sk, corrupt) {
@@ -6244,16 +6276,26 @@ fn responder(mut n: Node) -> i32 {
     // the one): up to 5 minutes, stretched with the blocks
     let mut got = 0;
     let end = Instant::now() + secs(300);
-    while Instant::now() < end {
+    let none_due = !paid.iter().any(|(p, l)| *p != Pot::Deposit && !l.contains("returned") && !l.contains("withheld") && {
+        l.split('(').nth(1).and_then(|x| x.trim_end_matches(')').split(',').nth(my_seat).map(|v| v.trim().parse::<u32>().unwrap_or(1))).is_none_or(|v| v > 0)
+    });
+    while Instant::now() < end && !none_due {
         got = n.rpc.received(&payout);
         if got > 0 {
             break;
         }
         std::thread::sleep(secs(2));
     }
+    // my seat's part of a split (a seat found at fault has none, §12)
+    let mine_of = |l: &str| -> bool {
+        l.split('(')
+            .nth(1)
+            .and_then(|x| x.trim_end_matches(')').split(',').nth(my_seat).map(|v| v.trim().parse::<u32>().unwrap_or(1)))
+            .is_none_or(|v| v > 0)
+    };
     let expected_some = paid
         .iter()
-        .any(|(p, l)| *p != Pot::Deposit && !l.contains("returned") && !l.contains("withheld"));
+        .any(|(p, l)| *p != Pot::Deposit && !l.contains("returned") && !l.contains("withheld") && mine_of(l));
     n.check(
         "my shares arrived at my payout address",
         !expected_some || got > 0,
@@ -6327,7 +6369,13 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
         );
         session += 10;
         ok_all &= res.is_ok();
-        let what = if p.tier == 0 {
+        let what = if p.tier == 0 && p.step > 0 {
+            format!(
+                "attendee {}: found at fault by the final ruling, {} sats of its bond forfeited (§11.8)",
+                bitaid_node::pre(&p.arbitrator, 8),
+                p.amount
+            )
+        } else if p.tier == 0 {
             format!(
                 "attendee {}: the loser pays, one tier-1 panel fee ({} sats) forfeited from its bond",
                 bitaid_node::pre(&p.arbitrator, 8),
@@ -6468,8 +6516,14 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
         .iter()
         .filter(|o| o.value.to_sat() > 0)
         .map(|o| {
+            let harmed_spk: Vec<&bitcoin::ScriptBuf> = rp
+                .final_ruling()
+                .map(|(_, v)| v.faults.iter().filter_map(|f| f.harmed).filter_map(|h| r.payout_spks.get(h as usize)).collect())
+                .unwrap_or_default();
             let who = if vind.iter().any(|v| v.1 == o.script_pubkey) {
                 "to a vindicated dissenter"
+            } else if harmed_spk.contains(&&o.script_pubkey) {
+                "to the responder harmed (its loss, first)"
             } else if r.payout_spks.contains(&o.script_pubkey) {
                 "to the appellant (appeal subsidy and excess)"
             } else {

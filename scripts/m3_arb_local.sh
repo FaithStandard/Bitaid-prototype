@@ -27,6 +27,9 @@ for i in 1 2 3 4; do
   BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $P --exit-after 300 2>$L/pool$i.log & PIDS="$PIDS $!"
 done
 BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist $P --listen 127.0.0.1:7481 --exit-after 600 >$L/archivist.out 2>$L/archivist.log & PIDS="$PIDS $!"
+# MISCONDUCT=1: r3 (seat 0) finds r1-liar (seat 1) at fault, having harmed it; so does the panel's
+# footage. r1-liar's whole bond is forfeited and r3 repaid its pot share from it first (§11.8, §12)
+[ -n "$MISCONDUCT" ] && export BITAID_TEST_FAULT="1:misconduct:0"
 # ARBS=16: enough arbitrators beyond the case's panels for review panels of 5 (REVIEW_PCT=100)
 for i in $(seq 1 ${ARBS:-10}); do
   extra=""; [ $i = 4 ] && extra="--corrupt"; [ $i = 8 ] && extra="--corrupt"
@@ -57,6 +60,7 @@ done
 sleep 2
 COMMON="$P --mine --settle-wait 600"
 R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
+[ -n "$MISCONDUCT" ] && R3APPEAL="--fault 1:misconduct:0"
 # NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
 [ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
@@ -65,8 +69,8 @@ R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
 for c in $(seq 1 ${CASES:-1}); do
 [ $c -gt 1 ] && for f in caller r1 r3; do mv $L/$f.out $L/$f.$((c-1)).out; done
 [ $c -gt 1 ] && { for w in caller r1 r3; do for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done; done; mine1; }
-BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
-BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
+BITAID_TEST_FAULT= BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
+BITAID_TEST_FAULT= BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
 BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-blocks ${DISPUTE_BLOCKS:-6} --alert-delay 4 --commit-blocks ${COMMIT_BLOCKS:-30} --reveal-blocks ${REVEAL_BLOCKS:-6} ${REVIEW_PCT:+--review-pct $REVIEW_PCT} ${ARB_FEE:+--arb-fee $ARB_FEE} > $L/caller.out 2>$L/caller.log
 for p in $RP; do wait $p; done
