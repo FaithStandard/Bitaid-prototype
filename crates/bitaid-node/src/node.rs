@@ -60,12 +60,15 @@ pub const MAX_HISTORY: usize = 100_000;
 pub const PER_SENDER_SEALED: usize = 256;
 pub const PER_SENDER_OPEN: usize = 64;
 pub const OPEN_SENDERS: usize = 1_024;
+pub const SEALED_SENDERS: usize = 256;
 
 /// What a kept case has recorded, per sender, to bound it.
 #[derive(Default)]
 struct Kept {
     sealed: HashMap<String, usize>,
     open: HashMap<String, usize>,
+    /// the case's oracle key, when known: what a bond offered for the case must be under
+    oracle: Option<bitcoin::secp256k1::XOnlyPublicKey>,
 }
 
 /// Drops, in one pass, the oldest tenth of the entries `keep` does not protect (amortised: a flood
@@ -83,6 +86,11 @@ fn trim<T>(v: &mut VecDeque<T>, cap: usize, kept: impl Fn(&T) -> bool) {
             true
         }
     });
+    // everything left is kept and still over the bound: the oldest go all the same (a bound that
+    // nothing can enforce is no bound, and every push would sweep the whole list for nothing)
+    while v.len() > cap + cap / 10 {
+        v.pop_front();
+    }
 }
 /// Blocks a sender's claimed height may run ahead of this node's chain.
 pub const MAX_AHEAD: u32 = 6;
@@ -478,6 +486,15 @@ impl Node {
     pub fn keep(&mut self, case: &str) {
         self.kept.entry(case.into()).or_default();
     }
+    /// Keeps a case and records its oracle key (from its checked alert).
+    pub fn keep_under(&mut self, case: &str, oracle_key: &str) {
+        self.kept.entry(case.into()).or_default().oracle = wire::xonly(oracle_key);
+    }
+    /// A case that is over (settled, refunded, its seizure distributed) is kept no longer: its
+    /// messages age out of the history like any others.
+    pub fn unkeep(&mut self, case: &str) {
+        self.kept.remove(case);
+    }
 
     pub fn send_case(&mut self, case: &str, to: &[String], msg: Msg, encrypted: bool) -> String {
         self.keep(case);
@@ -553,16 +570,24 @@ impl Node {
             let record = match self.kept.get_mut(case) {
                 // a kept case records each sender up to its bound; past it, the newest is not recorded
                 Some(k) => {
+                    let oracle = k.oracle;
                     let sealed = e.tag("enc") == Some("1");
                     let (m, cap) = if sealed {
                         (&mut k.sealed, PER_SENDER_SEALED)
                     } else {
                         (&mut k.open, PER_SENDER_OPEN)
                     };
-                    let room = m.contains_key(&env.sender) || sealed || m.len() < OPEN_SENDERS;
-                    let c = m.entry(env.sender.clone()).or_default();
-                    if room && *c < cap {
-                        *c += 1;
+                    // a new sender has room while the case's senders are under their bound; past
+                    // it, only one whose message is backed on chain (an arbitrator's offer naming a
+                    // live bond of its own) still gets in, so throwaway keys cannot fill a case and
+                    // shut its arbitrators out. A sender refused is not remembered.
+                    let bound = if sealed { SEALED_SENDERS } else { OPEN_SENDERS };
+                    let room = m.contains_key(&env.sender)
+                        || m.len() < bound
+                        || (m.len() < 4 * bound
+                            && oracle.is_some_and(|o| crate::arb::offer_backed(&self.rpc, &o, &env.msg)));
+                    if room && m.get(&env.sender).copied().unwrap_or(0) < cap {
+                        *m.entry(env.sender.clone()).or_default() += 1;
                         true
                     } else {
                         false
@@ -580,18 +605,35 @@ impl Node {
         Some(env)
     }
 
-    /// Drops the oldest tenth of the history that belongs to no kept case.
+    /// Drops the oldest tenth of the history that belongs to no kept case. If kept cases alone
+    /// overfill it, the case kept longest is kept no more (it ages out like the rest) and the sweep
+    /// runs again.
     fn trim_history(&mut self) {
-        let mut drop = (self.history.len() - MAX_HISTORY).max(MAX_HISTORY / 10);
-        let kept = &self.kept;
-        self.history.retain(|x| {
-            if drop > 0 && !x.msg.case_id().is_some_and(|c| kept.contains_key(c)) {
-                drop -= 1;
-                false
-            } else {
-                true
+        loop {
+            let mut drop = (self.history.len() - MAX_HISTORY).max(MAX_HISTORY / 10);
+            let kept = &self.kept;
+            self.history.retain(|x| {
+                if drop > 0 && !x.msg.case_id().is_some_and(|c| kept.contains_key(c)) {
+                    drop -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
+            if self.history.len() <= MAX_HISTORY {
+                return;
             }
-        });
+            let oldest = self
+                .history
+                .iter()
+                .find_map(|x| x.msg.case_id().filter(|c| self.kept.contains_key(*c)).map(String::from));
+            match oldest {
+                Some(c) => {
+                    self.kept.remove(&c);
+                }
+                None => return,
+            }
+        }
     }
 
     pub fn add_case_key(&mut self, case: &str, key: impl AsRef<[u8]>) {

@@ -74,6 +74,23 @@ pub fn draw(block_hash: &str, case: &str, tier: u32, offers: &[String], n: usize
 /// A verdict's identity for counting: two arbitrators agree when they give the same answers — each
 /// seat's class, the outcome and misuse — whatever order they list the acts in and whichever second of
 /// the footage they cite (review finding D-7).
+/// Whether a seat offer names a live output under the bond script its own keys and the case's oracle
+/// key give: a standing test, by the chain, for a message from a key not yet seen in a case.
+pub fn offer_backed(rpc: &Rpc, oracle: &XOnlyPublicKey, m: &Msg) -> bool {
+    let Some(b) = Bond::from_offer(m) else { return false };
+    rpc.utxo(&b.op).is_some_and(|o| o.script_pubkey == b.tree(oracle).script_pubkey())
+}
+
+/// A ballot's fault findings in one form, whatever order or repetition they were written in: one per
+/// seat, the gravest, and of those the lowest harmed seat. Everything that reads findings reads these.
+pub fn canon_faults(v: &Ballot) -> Vec<wire::Fault> {
+    let mut f = v.faults.clone();
+    // by seat, then gravest first, then harmed (None before Some, low before high)
+    f.sort_by(|x, y| (x.seat, std::cmp::Reverse(x.severity), x.harmed).cmp(&(y.seat, std::cmp::Reverse(y.severity), y.harmed)));
+    f.dedup_by(|x, y| x.seat == y.seat);
+    f
+}
+
 pub fn verdict_key(v: &Ballot) -> Vec<u8> {
     let mut c = v.clone();
     for a in &mut c.acts {
@@ -83,8 +100,7 @@ pub fn verdict_key(v: &Ballot) -> Vec<u8> {
         (x.seat, format!("{:?}", x.class)).cmp(&(y.seat, format!("{:?}", y.class)))
     });
     c.acts.dedup_by(|x, y| x.seat == y.seat && x.class == y.class);
-    c.faults.sort();
-    c.faults.dedup();
+    c.faults = canon_faults(v);
     let mut b = Vec::new();
     ciborium::into_writer(&c, &mut b).unwrap();
     b
@@ -864,8 +880,11 @@ impl Replay {
                         continue;
                     }
                     let Some(b) = accepted_bond(&mine, &e.sender, rpc) else { continue };
-                    let (_, d) = loser_pays_tx(&b, &oracle, loser_fee(a), &spk);
-                    if !sigs.is_empty() && schnorr_ok(&b.scoped, &d, &sigs[0]) {
+                    // only a complete set counts, every signature valid: the digests are fixed by the
+                    // bond and the case, so any complete set is as good as any other, and neither a
+                    // partial one sent first nor the order of arrival changes what the bond owes
+                    let ds = attendee_forfeit_digests(&b, &oracle, loser_fee(a), &spk);
+                    if sigs.len() == ds.len() && ds.iter().zip(sigs).all(|(d, sg)| schnorr_ok(&b.scoped, d, sg)) {
                         rp.loser_pays.insert(e.sender.clone(), (b, sigs.clone()));
                     }
                 }
@@ -1310,7 +1329,8 @@ impl Replay {
         // a responder the final ruling finds at fault forfeits its bond at the finding's severity
         // (§11.8), by the forfeiture it pre-signed at acceptance; it covers its loser-pays fee
         let mut faulted: Vec<&str> = vec![];
-        for f in &fv.faults {
+        let cf = canon_faults(&fv);
+        for f in &cf {
             let Some(w) = self.parties.get(f.seat as usize + 1).map(|p| p.0.as_str()) else { continue };
             let Some((b, pre)) = self.loser_pays.get(w) else { continue };
             let i = fault_sig_index(f.severity);
@@ -1451,22 +1471,29 @@ impl Replay {
         };
         // a fellow responder harmed by the one at fault is repaid its loss first (§12): its share of
         // the pots as the final ruling settles them, never above what the accused forfeited
+        // (one finding per accused, the gravest; an accused never pays a harmed seat more than it
+        // forfeited, and what the harmed seat took is no longer there for anyone else)
+        let mut at_fault: Vec<String> = vec![];
+        let mut repaid: u64 = 0;
         if let Some((_, fv)) = self.final_ruling() {
-            for f in &fv.faults {
-                let (Some(h), Some(acc)) = (f.harmed, self.parties.get(f.seat as usize + 1)) else { continue };
+            for f in canon_faults(&fv) {
+                let Some(acc) = self.parties.get(f.seat as usize + 1) else { continue };
+                at_fault.push(acc.0.clone());
+                let Some(h) = f.harmed.filter(|h| *h != f.seat) else { continue };
                 let Some(p) = self.parties.get(h as usize + 1).and_then(|p| p.1.clone()) else { continue };
                 let forfeited: u64 = pens.iter().filter(|x| x.tier == 0 && x.arbitrator == acc.0).map(|x| x.amount).sum();
                 let x = self.pot_share(&fv, h as usize).min(forfeited).min(left);
                 if x > 0 {
                     outs.push((x, p));
                     left -= x;
+                    repaid += x;
                 }
             }
         }
         // the loser pays (§9): what the losing attendees forfeited goes first to whoever paid the
         // tier-1 panel, up to what that panel cost it, unless the payer is among the losers (review N4)
         let losers: Vec<&str> = pens.iter().filter(|p| p.tier == 0).map(|p| p.arbitrator.as_str()).collect();
-        let lp: u64 = pens.iter().filter(|p| p.tier == 0).map(|p| p.amount).sum::<u64>().min(left);
+        let lp: u64 = pens.iter().filter(|p| p.tier == 0).map(|p| p.amount).sum::<u64>().saturating_sub(repaid).min(left);
         if lp > 0 {
             if let Some(t1) = self.tiers.get(&1) {
                 if t1.fee_paid && !losers.contains(&t1.escalator.as_str()) {
@@ -1506,6 +1533,10 @@ impl Replay {
             if t.challenger && !vind.iter().any(|v| v.0 == t.escalator) {
                 continue;
             }
+            // a seat the final ruling finds at fault is refunded nothing out of what it forfeited
+            if at_fault.contains(&t.escalator) {
+                continue;
+            }
             let Some(p) = payout_of(&t.escalator) else {
                 continue;
             };
@@ -1540,6 +1571,8 @@ impl Replay {
                     .filter_map(|a| {
                         self.parties
                             .get(a.seat as usize + 1)
+                            // never a seat the ruling itself finds at fault
+                            .filter(|p| !at_fault.contains(&p.0))
                             .and_then(|p| p.1.clone())
                     })
                     .collect(),
