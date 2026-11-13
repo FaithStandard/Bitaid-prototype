@@ -382,6 +382,10 @@ pub enum Msg {
         case_id: Hex32,
         tier: u32,
         reason: String,
+        /// tier 1: the transaction that posts the case on the fee market (§10.6). A pointer only:
+        /// the posting, its fee and its height are read from the chain.
+        #[serde(default)]
+        post: String,
     },
     /// An eligible arbitrator offers to take a seat, knowing only the fee, tier and case value (§10.2).
     SeatOffer {

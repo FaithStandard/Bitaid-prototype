@@ -22,6 +22,7 @@ pub struct Rpc {
     tip: Mutex<(u32, Option<std::time::Instant>)>,
     /// Bitaid's records as the blocks read so far give them (see `ledger`)
     ledger: Mutex<crate::ledger::Ledger>,
+    synced: Mutex<Option<std::time::Instant>>,
     /// transactions this node has broadcast and not yet seen confirmed: `mine` waits for them
     sent: Mutex<Vec<Txid>>,
 }
@@ -44,6 +45,7 @@ impl Rpc {
             index: Mutex::new((0, std::collections::HashMap::new())),
             tip: Mutex::new((0, None)),
             ledger: Mutex::new(Default::default()),
+            synced: Mutex::new(None),
             sent: Mutex::new(vec![]),
         }
     }
@@ -407,8 +409,16 @@ impl Rpc {
     /// (the hash recorded for a block read no longer the chain's) cuts both back to the fork first.
     /// Every node that must agree on the ledger starts from the same height: BITAID_INDEX_FROM.
     pub fn sync(&self) {
-        let tip = self.height();
         let mut ix = self.index.lock().unwrap();
+        // at most every two seconds: a replay asks many times in a row, and over Tor each look costs
+        {
+            let mut at = self.synced.lock().unwrap();
+            if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+                return;
+            }
+            *at = Some(std::time::Instant::now());
+        }
+        let tip = self.height();
         let mut ledger = self.ledger.lock().unwrap();
         if ix.0 == 0 {
             let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());

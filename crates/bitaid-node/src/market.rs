@@ -62,6 +62,8 @@ pub struct Market {
     /// (bid, priced below the fee since)
     active: Vec<(Bid, Option<u32>)>,
     standby: Vec<Bid>,
+    /// the height at which each case last entered the active queue (what its draw is counted from)
+    since: std::collections::HashMap<String, u32>,
 }
 
 impl Market {
@@ -73,6 +75,7 @@ impl Market {
             next_step: height + STEP_BLOCKS,
             active: vec![],
             standby: vec![],
+            since: Default::default(),
         }
     }
 
@@ -99,6 +102,7 @@ impl Market {
         self.active.retain(|x| x.0.case != bid.case);
         self.standby.retain(|x| x.case != bid.case);
         if bid.fee >= self.fee {
+            self.since.entry(bid.case.clone()).or_insert(bid.posted_at);
             self.active.push((bid, None));
             Placement::Active
         } else {
@@ -120,6 +124,27 @@ impl Market {
         let mut b = self.standby.remove(i);
         b.fee = b.fee.max(fee);
         Some(self.post(b))
+    }
+
+    /// The height at which a case first entered the active queue (its draw is counted from it),
+    /// whether it has since been heard or not.
+    pub fn activated(&self, case: &str) -> Option<u32> {
+        self.since.get(case).copied()
+    }
+    /// The seat fee a case posted, wherever it waits.
+    pub fn bid(&self, case: &str) -> Option<u64> {
+        self.active
+            .iter()
+            .map(|x| &x.0)
+            .chain(self.standby.iter())
+            .find(|b| b.case == case)
+            .map(|b| b.fee)
+    }
+    /// A posting withdrawn by its poster (its escrow taken back after the lock): it leaves both
+    /// queues and adds nothing to the reference.
+    pub fn withdraw(&mut self, case: &str) {
+        self.active.retain(|x| x.0.case != case);
+        self.standby.retain(|x| x.case != case);
     }
 
     /// A case left the active queue by being heard: its fee joins the reference.
@@ -157,7 +182,13 @@ impl Market {
             step >>= halvings;
         }
         let f = self.fee as i128;
-        let mut new = (f + f * step as i128 / PPM as i128).max(1) as u64;
+        // at least one sat whenever the backlog calls for a move (a small fee would otherwise never
+        // move), and never past what a u64 holds
+        let mut delta = f * step as i128 / PPM as i128;
+        if delta == 0 && step != 0 {
+            delta = step.signum() as i128;
+        }
+        let mut new = (f + delta).clamp(1, u64::MAX as i128 / 4) as u64;
         if step < 0 && !self.active.is_empty() {
             new = new.max(self.fee.min(self.reference()));
         }
@@ -209,9 +240,9 @@ impl Market {
                 .then(a.case.cmp(&b.case))
         });
         while self.standby.first().is_some_and(|b| b.fee >= self.fee) {
-            let mut b = self.standby.remove(0);
+            let b = self.standby.remove(0);
             out.push(Event::Promoted { case: b.case.clone(), fee: self.fee });
-            b.fee = self.fee;
+            self.since.entry(b.case.clone()).or_insert(h);
             self.active.push((b, None));
         }
     }

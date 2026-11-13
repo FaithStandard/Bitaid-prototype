@@ -467,6 +467,25 @@ impl Bond {
         );
         (tx, d)
     }
+    /// A spend of this output by its FORFEIT leaf (the scoped key and the oracle pool) to `outs`,
+    /// and the digest both sign.
+    pub fn spend_to(&self, oracle: &XOnlyPublicKey, outs: &[(u64, ScriptBuf)]) -> (Transaction, [u8; 32]) {
+        let t = self.tree(oracle);
+        let tx = txbuild::payout(self.op, outs);
+        let d = self.spend_digest(oracle, &tx);
+        let _ = &t;
+        (tx, d)
+    }
+    /// The digest the scoped key and the oracle sign for `tx` spending this output by its FORFEIT leaf.
+    pub fn spend_digest(&self, oracle: &XOnlyPublicKey, tx: &Transaction) -> [u8; 32] {
+        let t = self.tree(oracle);
+        txbuild::scriptspend_digest(
+            tx,
+            0,
+            &[txbuild::txout(self.value, t.script_pubkey())],
+            &t.scripts[bond_leaf::FORFEIT],
+        )
+    }
     /// The same keys holding another output (a seat's stake).
     pub fn stake(&self, op: OutPoint, value: u64) -> Bond {
         Bond {
@@ -930,10 +949,23 @@ impl Replay {
                     break;
                 }
             }
+            // tier 1 is opened on the chain, not in the log: by the party whose posting for the case
+            // came first in the chain's order, at the height the market took the case up (§10.6)
+            let mut anchor = None;
+            if k == 1 {
+                let parties: Vec<&str> = rp.parties.iter().map(|p| p.0.as_str()).collect();
+                match tier1_opening(rpc, &oracle, &case, &parties) {
+                    Some((who, h)) => {
+                        opener = Some((who, false));
+                        anchor = Some(h);
+                    }
+                    None => opener = None,
+                }
+            }
             let Some((escalator, challenger)) = opener else {
                 break;
             };
-            let mut t = read_tier(
+            let t = read_tier(
                 &mine,
                 &case,
                 k,
@@ -944,32 +976,9 @@ impl Replay {
                 None,
                 None,
                 a.template.commit_blocks,
-                None,
+                &oracle,
+                anchor,
             );
-            // a commitment on chain that lists the on-time commitments: read the tier again by it
-            for e in &mine {
-                if let Msg::TierCommitted { tier, committed, .. } = &e.msg {
-                    if *tier != k || committed.is_empty() || t.committed {
-                        continue;
-                    }
-                    let again = read_tier(
-                        &mine,
-                        &case,
-                        k,
-                        &escalator,
-                        challenger,
-                        rp.base_fee,
-                        rpc,
-                        None,
-                        None,
-                        a.template.commit_blocks,
-                        Some(committed.as_slice()),
-                    );
-                    if again.committed {
-                        t = again;
-                    }
-                }
-            }
             rp.tiers.insert(k, t);
         }
         // the staged review (§10.3): convened only on a case the draw selected, each stage only after
@@ -1017,6 +1026,7 @@ impl Replay {
                 Some(&reg),
                 payer.as_deref(),
                 a.template.commit_blocks,
+                &oracle,
                 None,
             );
             t.review = true;
@@ -2121,7 +2131,10 @@ fn read_tier(
     registry: Option<&HashMap<String, Bond>>,
     payer: Option<&str>,
     commit_blocks: u32,
-    on_time: Option<&[String]>,
+    oracle: &XOnlyPublicKey,
+    // tier 1: the height the chain gives its opening (the market took the case up), in place of the
+    // height its escalator stated
+    anchor: Option<u32>,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -2173,11 +2186,15 @@ fn read_tier(
             }
             // a tier's draw block is draw_blocks() after its escalation, as live members check it (D-1);
             // a review stage's is checked by the caller of this function (stage_draw_height)
-            let h_esc = mine.iter().find_map(|x| match &x.msg {
-                Msg::Escalate { tier: et, .. } if *et == k && x.sender == escalator => Some(x.height),
-                _ => None,
+            let h_esc = anchor.or_else(|| {
+                mine.iter().find_map(|x| match &x.msg {
+                    Msg::Escalate { tier: et, .. } if *et == k && x.sender == escalator => Some(x.height),
+                    _ => None,
+                })
             });
-            let block_ok = registry.is_some() || h_esc.is_some_and(|h| *height == h + crate::draw_blocks());
+            // and nobody draws from a block until it is buried (a reorganisation would change it)
+            let block_ok = (registry.is_some() || h_esc.is_some_and(|h| *height == h + crate::draw_blocks()))
+                && rpc.height() >= *height + crate::draw_depth();
             // and every listed offer was stated at least two blocks before the draw
             let window_ok = offers.iter().all(|o| t.offer_height.get(o).is_none_or(|oh| oh + 2 <= *height));
             if block_ok
@@ -2229,8 +2246,11 @@ fn read_tier(
     };
     // a commitment stated at or after its seat's deadline does not count, live or in the replay
     // (review finding D-5)
+    // (review stages only: an arbitration seat is out when, and only when, its seat forfeiture is on
+    // the chain, which takes the pool's co-signature; see the replacements below)
     let late: Vec<String> = vcommits
         .keys()
+        .filter(|_| is_review)
         .filter(|w| match (t.seat_height.get(*w), commit_h.get(*w)) {
             // the fee confirms at or after the draw, so a commit before draw + commit_blocks is in
             // time without looking the fee up (the lookup is costly in a replay)
@@ -2242,11 +2262,22 @@ fn read_tier(
     for w in late {
         vcommits.remove(&w);
     }
-    // once the tier's commitment on chain says which commitments were on time, that decides, not the
-    // heights their senders stated (a late seat cannot backdate its way in)
-    if let Some(ok) = on_time {
-        vcommits.retain(|w, _| ok.contains(w));
-    }
+    // an arbitration seat's forfeiture, if the chain has it: the transaction its stake pre-signed,
+    // which only the pool's co-signature completes, and the block that confirmed it. That, and
+    // nothing a sender states, is what says a seat missed its deadline.
+    let seat_fee_k = seat_fee(base_fee, k);
+    let forfeited_at = |t: &Tier, w: &str| -> Option<u32> {
+        let refund = t.refund.as_ref()?;
+        let off = t.offers.get(w)?;
+        mine.iter().find_map(|e| match &e.msg {
+            Msg::Forfeits { tier, stake, value, .. } if *tier == k && e.sender == w => {
+                let st = off.stake(OutPoint::from_str(stake).ok()?, *value);
+                let (tx, _) = st.penalty_tx(oracle, seat_fee_k, refund);
+                rpc.tx_height(&tx.compute_txid().to_string())
+            }
+            _ => None,
+        })
+    };
     // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4); never
     // before the deadline has passed
     for e in mine {
@@ -2294,16 +2325,20 @@ fn read_tier(
             // a seat that missed its deadline only; a reviewer that paid its way out leaves at once
             // (a review seat that never answers its assignment is replaced within the answer window,
             // before any commit deadline: §10.3, so the deadline applies to arbitration tiers only)
-            let due = if from.is_empty() && !is_review {
-                t.seat_height.get(replaced).map_or(u32::MAX, |h| deadline(replaced, *h))
+            // an arbitration seat is replaced only once its forfeiture is on the chain, and its
+            // replacement is drawn from the block draw_blocks() after the one that confirmed it: the
+            // escalator chooses neither whether nor from which block
+            let ok = if from.is_empty() && !is_review {
+                forfeited_at(&t, replaced).is_some_and(|hf| *height == hf + crate::draw_blocks())
             } else {
-                0
+                !vcommits.contains_key(replaced)
             };
-            if !vcommits.contains_key(replaced)
-                && *height >= due
+            if ok
+                && rpc.height() >= *height + crate::draw_depth()
                 && draw(block_hash, case, k, &left, 1) == vec![seat.clone()]
                 && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
             {
+                vcommits.remove(replaced);
                 t.forfeited.push(replaced.clone());
                 t.seats[pos] = seat.clone();
                 t.seat_height.insert(seat.clone(), *height);
@@ -2356,10 +2391,6 @@ fn read_tier(
     for e in mine {
         if let Msg::TierCommitted { tier, txid, revealed, committed, .. } = &e.msg {
             if *tier != k || !t.fee_paid || t.committed {
-                continue;
-            }
-            // a commitment listing the on-time commitments counts only in the pass that used its list
-            if !committed.is_empty() && on_time != Some(committed.as_slice()) {
                 continue;
             }
             // the reveals the commitment counts: those it lists (each a valid reveal of a seat), or,
@@ -2980,70 +3011,142 @@ mod tests {
 /// Cases a day each registered arbitrator is taken to hear, for the market's capacity.
 pub const HEARINGS_PER_DAY: u64 = 1;
 
-/// The fee market (§10.6) as the log stands at `height`: replayed from the start of the log, with
-/// `fee0` its opening fee (the first posting's, when none is given). A posting is a tier-1
-/// escalation of a case whose alert `funded` accepts (a funded case: an unfunded one would let
-/// anyone inflate the backlog for nothing), at the seat fee its template carries; it clears when
-/// its tier-1 panel is seated. Capacity is the registered arbitrators' hearings for a day, in panels.
-/// A posting below the fee is a standing bid, which the market seats when the fee comes down to it.
-pub fn market_at(
-    hist: &[Envelope],
-    height: u32,
-    fee0: Option<u64>,
-    funded: &dyn Fn(&Envelope) -> bool,
-) -> crate::market::Market {
+/// Blocks a posting's escrow stays locked at the least (`BITAID_POST_LOCK`, a week by default): what
+/// a posting costs whoever makes it, real case or not.
+pub fn post_lock() -> u32 {
+    std::env::var("BITAID_POST_LOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(1_008)
+}
+
+/// The market's opening fee, in sats per seat (`BITAID_FEE0`): a constant of the network, like the
+/// height its ledger is read from.
+pub fn fee0() -> u64 {
+    std::env::var("BITAID_FEE0").ok().and_then(|v| v.parse().ok()).unwrap_or(crate::sats(1_000).max(1))
+}
+
+/// The escrow a posting holds its fees in: the bond script of the poster's key (spent with the
+/// pool's co-signature to pay the seats drawn, or by the poster alone from the lock height).
+pub fn escrow(poster: &XOnlyPublicKey, lock: u32, op: OutPoint, value: u64, payout: ScriptBuf) -> Bond {
+    Bond { op, value, scoped: *poster, cold: *poster, fallback: lock, payout }
+}
+
+/// Whether a posting on the ledger is one this pool's market counts: tier 1, its escrow under the
+/// poster's bond script for this pool's oracle key, holding the whole panel's fees at its bid, locked
+/// for at least `post_lock()` blocks from its confirmation.
+pub fn posting_valid(p: &crate::ledger::Posting, oracle: &XOnlyPublicKey) -> bool {
+    let e = escrow(&p.poster, p.lock, p.at.op, p.at.value, ScriptBuf::new());
+    p.tier == 1
+        && p.fee > 0
+        && p.at.spk == e.tree(oracle).script_pubkey()
+        && p.at.value >= p.fee.saturating_mul(panel_size(1) as u64)
+        && p.lock >= p.at.height.saturating_add(post_lock())
+}
+
+/// The arbitrators registered on the ledger and still bonded at `height`: an entry bond under the
+/// bond script of the keys the record names, for this pool's oracle key, unspent.
+pub fn registered_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32) -> usize {
+    l.registrations
+        .iter()
+        .filter(|r| {
+            r.at.height <= height
+                && r.at.spent.is_none_or(|s| s > height)
+                && r.at.value >= crate::sats(ENTRY_BOND)
+                && r.at.spk
+                    == Bond {
+                        op: r.at.op,
+                        value: r.at.value,
+                        scoped: r.scoped,
+                        cold: r.cold,
+                        fallback: r.fallback,
+                        payout: ScriptBuf::new(),
+                    }
+                    .tree(oracle)
+                    .script_pubkey()
+        })
+        .count()
+}
+
+/// The fee market (§10.6) at `height`, replayed from the ledger alone: every node with the chain
+/// computes the same one. A posting is a confirmed transaction whose escrow holds the panel's fees
+/// (see `posting_valid`); it counts from the block that confirmed it, at the highest fee the case has
+/// posted. It clears when its escrow is spent before the lock height, which only the pool's
+/// co-signature allows, and the pool gives it only to pay the seats drawn; spent from the lock
+/// height on, it was withdrawn. Capacity is the arbitrators registered on the ledger, in panels.
+pub fn market_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32) -> crate::market::Market {
     use crate::market::{Bid, Market};
-    let mut alerts: HashMap<&str, &Envelope> = HashMap::new();
-    for e in hist {
-        if let Msg::Alert { case_id, .. } = &e.msg {
-            alerts.entry(case_id.as_str()).or_insert(e);
-        }
-    }
-    // the events in height order (a stable sort keeps the log's order within a block)
-    let mut ev: Vec<(u32, bool, &str, u64, u32)> = vec![];
-    let mut ok: HashMap<&str, bool> = HashMap::new();
-    for e in hist {
-        let (posting, case_id) = match &e.msg {
-            Msg::Escalate { case_id, tier: 1, .. } => (true, case_id),
-            Msg::Seated { case_id, tier: 1, .. } => (false, case_id),
-            _ => continue,
-        };
-        if e.height > height {
+    // (height, place in the block, posting index, is a spend)
+    let mut ev: Vec<(u32, usize, usize, bool)> = vec![];
+    for (i, p) in l.postings.iter().enumerate() {
+        if !posting_valid(p, oracle) || p.at.height > height {
             continue;
         }
-        let Some(al) = alerts.get(case_id.as_str()) else { continue };
-        if !*ok.entry(case_id.as_str()).or_insert_with(|| funded(al)) {
-            continue;
+        ev.push((p.at.height, p.at.pos, i, false));
+        if let Some(s) = p.at.spent.filter(|s| *s <= height) {
+            ev.push((s, usize::MAX, i, true));
         }
-        let Msg::Alert { template, .. } = &al.msg else { continue };
-        let last = al.height + template.refund_delay;
-        ev.push((e.height, posting, case_id.as_str(), template.arb_fee, last));
     }
-    ev.sort_by_key(|x| x.0);
-    // the market opens at the first funded alert in the log, so a case waiting as a standing bid
-    // (its escalation not yet sent) sees the same falling fee as the members who later check it
-    let start = alerts
-        .values()
-        .filter(|e| e.height <= height && *ok.entry(e.msg.case_id().unwrap_or_default()).or_insert_with(|| funded(e)))
-        .map(|e| e.height)
-        .min()
+    ev.sort();
+    let start = std::env::var("BITAID_INDEX_FROM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .or(ev.first().map(|x| x.0))
         .unwrap_or(height)
-        .min(ev.first().map(|x| x.0).unwrap_or(height));
-    let open = fee0.or(ev.first().map(|x| x.3)).unwrap_or(1);
-    let mut m = Market::new(open, start);
-    let mut posted: std::collections::HashSet<&str> = Default::default();
-    for (h, posting, c, fee, last) in ev {
-        let cap = (registry_at(hist, h).len() as u64 / panel_size(1) as u64).max(1) * HEARINGS_PER_DAY;
-        m.advance(h, cap);
-        if posting {
-            if posted.insert(c) {
-                m.post(Bid { case: c.to_string(), fee, weight: 1, posted_at: h, last_hearing: last });
+        .min(height);
+    let cap = |h: u32| (registered_at(l, oracle, h) as u64 / panel_size(1) as u64).max(1) * HEARINGS_PER_DAY;
+    let mut m = Market::new(fee0(), start);
+    // each case's postings still standing, to know which one a spend takes away
+    let mut held: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (h, _, i, spend) in ev {
+        m.advance(h, cap(h));
+        let p = &l.postings[i];
+        let c = p.case.as_str();
+        if !spend {
+            let best = held.get(c).into_iter().flatten().map(|j| l.postings[*j].fee).max();
+            held.entry(c).or_default().push(i);
+            if best.is_none_or(|b| p.fee > b) {
+                // a hearing must still fit before the escrow unlocks
+                let last = p.lock.saturating_sub(crate::draw_blocks() + crate::draw_depth());
+                match best {
+                    None => {
+                        m.post(Bid { case: c.into(), fee: p.fee, weight: 1, posted_at: h, last_hearing: last });
+                    }
+                    Some(_) => {
+                        m.top_up(c, p.fee);
+                    }
+                }
             }
         } else {
-            m.clear(c);
+            let v = held.entry(c).or_default();
+            v.retain(|j| *j != i);
+            if h < p.lock {
+                // paid out to the seats: heard
+                m.clear(c);
+                m.withdraw(c);
+                v.clear();
+            } else if v.is_empty() {
+                m.withdraw(c);
+            }
         }
     }
-    let cap = (registry_at(hist, height).len() as u64 / panel_size(1) as u64).max(1) * HEARINGS_PER_DAY;
-    m.advance(height, cap);
+    m.advance(height, cap(height));
     m
+}
+
+/// Who opened tier 1 of a case, and at what height, as the chain says: the party whose valid posting
+/// for the case comes first in the chain's order, and the height at which the market took the case
+/// up (the posting's own block if its fee met the market's, else the step that brought the fee down
+/// to it). None while the case has no posting by a party, or still waits as a standing bid.
+pub fn tier1_opening(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[&str]) -> Option<(String, u32)> {
+    let tip = rpc.height();
+    rpc.ledger(|l| {
+        let mut ps: Vec<&crate::ledger::Posting> = l
+            .postings
+            .iter()
+            .filter(|p| p.case == case && posting_valid(p, oracle))
+            .filter(|p| parties.contains(&hex::encode(p.poster.serialize()).as_str()))
+            .collect();
+        ps.sort_by_key(|p| (p.at.height, p.at.pos));
+        let who = hex::encode(ps.first()?.poster.serialize());
+        let h = market_at(l, oracle, tip).activated(case)?;
+        Some((who, h))
+    })
 }

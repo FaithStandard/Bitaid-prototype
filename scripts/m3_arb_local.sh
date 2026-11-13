@@ -9,6 +9,8 @@ BIN=target/release; CLI=${BITAID_CLI:?set BITAID_CLI}; L=arblogs; mkdir -p $L; r
 # CHAIN=signet: a chain where nobody mines on demand (a block producer runs beside it); wait for blocks
 mine1() { if [ "$CHAIN" = signet ]; then h=$($CLI getblockcount); while [ $($CLI getblockcount) -le $h ]; do sleep 1; done; else $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null; fi; }
 H=$($CLI getblockcount); [ "$H" -lt 110 ] && $CLI -rpcwallet=w generatetoaddress 110 $($CLI -rpcwallet=w getnewaddress) >/dev/null
+# every node reads the chain's records (postings, registrations) from the same height
+export BITAID_INDEX_FROM=$($CLI getblockcount)
 for w in caller r1 r3; do
   $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1
   for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done
