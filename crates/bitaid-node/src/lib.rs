@@ -28,6 +28,15 @@ pub fn draw_blocks() -> u32 {
         .unwrap_or(3)
 }
 
+/// Blocks above a draw block before anyone draws from it (`BITAID_DRAW_DEPTH`, default 3): a short
+/// reorganisation that replaced the block would otherwise leave nodes with different panels.
+pub fn draw_depth() -> u32 {
+    std::env::var("BITAID_DRAW_DEPTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3)
+}
+
 /// Long waits (a minute or more) stretched for slow chains: `BITAID_TIME_SCALE` (default 1) multiplies
 /// every wait that may span blocks — a node's idle exit, settlement, a panel's seating, the chain's
 /// own confirmations — while message-level timeouts under a minute stay as they are. On a chain with

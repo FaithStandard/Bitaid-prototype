@@ -508,6 +508,11 @@ pub enum Msg {
         /// so a seat cannot un-commit a tier by revealing late (review finding)
         #[serde(default)]
         revealed: Vec<Hex32>,
+        /// the seats whose commitments the poster counted as made by the deadline, as it saw them
+        /// arrive; on chain with the rest, so whether a commitment was on time is read from the chain,
+        /// never from the height its sender stated (empty: judged by the stated heights, as before)
+        #[serde(default)]
+        committed: Vec<Hex32>,
     },
     /// Pool member: the case's last tier hung with no verdict below it and no party re-rolled it within
     /// the window, so the deadlock stands and the incident output closes by its refund locktime (§10.5).

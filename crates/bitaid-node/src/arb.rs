@@ -126,6 +126,17 @@ pub fn tier_commitment(
     seats: &[String],
     reveals: &[(String, Ballot)],
 ) -> [u8; 32] {
+    tier_commitment_with(case, tier, seats, reveals, &[])
+}
+
+/// The tier commitment with the seats counted as committed on time (none: the earlier form).
+pub fn tier_commitment_with(
+    case: &str,
+    tier: u32,
+    seats: &[String],
+    reveals: &[(String, Ballot)],
+    committed: &[String],
+) -> [u8; 32] {
     let mut b = case.as_bytes().to_vec();
     b.extend_from_slice(&tier.to_le_bytes());
     let mut s = seats.to_vec();
@@ -141,6 +152,15 @@ pub fn tier_commitment(
     for (k, v) in r {
         b.extend_from_slice(k.as_bytes());
         b.extend_from_slice(&v);
+    }
+    if !committed.is_empty() {
+        let mut c = committed.to_vec();
+        c.sort();
+        c.dedup();
+        b.extend_from_slice(b"committed");
+        for x in c {
+            b.extend_from_slice(x.as_bytes());
+        }
     }
     tagged("Bitaid/tier-commitment", &b)
 }
@@ -894,7 +914,7 @@ impl Replay {
             let Some((escalator, challenger)) = opener else {
                 break;
             };
-            let t = read_tier(
+            let mut t = read_tier(
                 &mine,
                 &case,
                 k,
@@ -905,7 +925,32 @@ impl Replay {
                 None,
                 None,
                 a.template.commit_blocks,
+                None,
             );
+            // a commitment on chain that lists the on-time commitments: read the tier again by it
+            for e in &mine {
+                if let Msg::TierCommitted { tier, committed, .. } = &e.msg {
+                    if *tier != k || committed.is_empty() || t.committed {
+                        continue;
+                    }
+                    let again = read_tier(
+                        &mine,
+                        &case,
+                        k,
+                        &escalator,
+                        challenger,
+                        rp.base_fee,
+                        rpc,
+                        None,
+                        None,
+                        a.template.commit_blocks,
+                        Some(committed.as_slice()),
+                    );
+                    if again.committed {
+                        t = again;
+                    }
+                }
+            }
             rp.tiers.insert(k, t);
         }
         // the staged review (§10.3): convened only on a case the draw selected, each stage only after
@@ -953,6 +998,7 @@ impl Replay {
                 Some(&reg),
                 payer.as_deref(),
                 a.template.commit_blocks,
+                None,
             );
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
@@ -1055,7 +1101,7 @@ impl Replay {
             .filter_map(|t| t.commit_txid.as_ref().and_then(|x| rpc.tx_height(x)))
             .max()?;
         let height = close + a.template.review_delay.max(1);
-        if rpc.height() < height {
+        if rpc.height() < height + crate::draw_depth() {
             return None;
         }
         let hash = rpc.block_hash(height)?;
@@ -2042,6 +2088,7 @@ fn read_tier(
     registry: Option<&HashMap<String, Bond>>,
     payer: Option<&str>,
     commit_blocks: u32,
+    on_time: Option<&[String]>,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -2162,6 +2209,11 @@ fn read_tier(
     for w in late {
         vcommits.remove(&w);
     }
+    // once the tier's commitment on chain says which commitments were on time, that decides, not the
+    // heights their senders stated (a late seat cannot backdate its way in)
+    if let Some(ok) = on_time {
+        vcommits.retain(|w, _| ok.contains(w));
+    }
     // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4); never
     // before the deadline has passed
     for e in mine {
@@ -2269,8 +2321,12 @@ fn read_tier(
         }
     }
     for e in mine {
-        if let Msg::TierCommitted { tier, txid, revealed, .. } = &e.msg {
+        if let Msg::TierCommitted { tier, txid, revealed, committed, .. } = &e.msg {
             if *tier != k || !t.fee_paid || t.committed {
+                continue;
+            }
+            // a commitment listing the on-time commitments counts only in the pass that used its list
+            if !committed.is_empty() && on_time != Some(committed.as_slice()) {
                 continue;
             }
             // the reveals the commitment counts: those it lists (each a valid reveal of a seat), or,
@@ -2283,7 +2339,7 @@ fn read_tier(
             if !revealed.is_empty() && counted.len() != revealed.len() {
                 continue;
             }
-            if rpc.has_op_return(txid, &tier_commitment(case, k, &t.seats, &counted)) {
+            if rpc.has_op_return(txid, &tier_commitment_with(case, k, &t.seats, &counted, committed)) {
                 t.committed = true;
                 t.commit_txid = Some(txid.clone());
                 // a reveal published after the commitment is not counted: that seat is charged as a

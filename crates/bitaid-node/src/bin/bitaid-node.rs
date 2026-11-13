@@ -64,6 +64,17 @@ fn amt(name: &str, d: u64) -> u64 {
         bitaid_node::sats(v).max(bitaid_core::payouts::DUST)
     }
 }
+/// Waits until block `h` is buried draw_depth() deep (mining on a local chain), then gives its hash:
+/// a panel is drawn only from a block a short reorganisation will not replace.
+fn draw_hash(n: &Node, h: u32) -> String {
+    let want = h + bitaid_node::draw_depth();
+    while n.rpc.height() < want {
+        n.rpc.mine(1).ok();
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    n.rpc.block_hash(h).unwrap_or_default()
+}
+
 fn secs(n: u64) -> Duration {
     Duration::from_secs(bitaid_node::slow(n))
 }
@@ -1474,6 +1485,7 @@ fn pool_member(mut n: Node) -> i32 {
                 tier,
                 txid,
                 revealed,
+                committed,
             } => {
                 let key = (case_id.clone(), *tier);
                 let (Some(seats), Some(rv)) =
@@ -1510,7 +1522,7 @@ fn pool_member(mut n: Node) -> i32 {
                     }
                     later!();
                 }
-                let cm = bitaid_node::arb::tier_commitment(case_id, *tier, &seats, &rv);
+                let cm = bitaid_node::arb::tier_commitment_with(case_id, *tier, &seats, &rv, committed);
                 if !n.rpc.has_op_return(txid, &cm) {
                     if retried.insert((case_id.clone(), tier + 20_000)) {
                         n.log(&format!("tier {tier} commitment not on chain yet; looking again"));
@@ -2626,7 +2638,7 @@ fn escalate_tier(
         std::thread::sleep(Duration::from_secs(2));
     }
     let h = draw_h;
-    let bh = n.rpc.block_hash(h).unwrap_or_default();
+    let bh = draw_hash(n, h);
     let ids: Vec<String> = offers.iter().map(|o| o.0.clone()).collect();
     let seats = bitaid_node::arb::draw(&bh, &c, tier, &ids, size);
     let key = n.case_keys[&c];
@@ -2800,7 +2812,7 @@ fn escalate_tier(
             if review {
                 n.rpc.mine(1).ok();
                 let h = n.rpc.height();
-                let bh = n.rpc.block_hash(h).unwrap_or_default();
+                let bh = draw_hash(n, h);
                 let left: Vec<String> = ids
                     .iter()
                     .filter(|o| !seats.contains(o) && !forfeited.contains(o))
@@ -2888,7 +2900,7 @@ fn escalate_tier(
             // a replacement drawn from the offers left, by a block mined after the forfeiture
             n.rpc.mine(1).ok();
             let h = n.rpc.height();
-            let bh = n.rpc.block_hash(h).unwrap_or_default();
+            let bh = draw_hash(n, h);
             let left: Vec<String> = ids
                 .iter()
                 .filter(|o| !seats.contains(o) && !forfeited.contains(o))
@@ -3013,6 +3025,14 @@ fn escalate_tier(
         _ => None,
     });
     let commitment = bitaid_node::arb::tier_commitment(&c, tier, &seats, &reveals);
+    // the seats whose commitments arrived here by their deadline: the commitment this node posts
+    // lists them, so whether a commitment was on time is read from the chain (§10.4)
+    let on_time: Vec<String> = {
+        let mut v: Vec<String> = seats.iter().filter(|x| committed_by.contains(*x)).cloned().collect();
+        v.sort();
+        v
+    };
+    let commitment_listed = bitaid_node::arb::tier_commitment_with(&c, tier, &seats, &reveals, &on_time);
     if committed.is_none() && reveals.len() < size {
         // a seat never revealed: the first seat does not post the commitment, so the escalator does,
         // with the reveals it has; the missing one is charged as an incoherent vote (§10.4)
@@ -3021,7 +3041,7 @@ fn escalate_tier(
             true,
             "",
         );
-        if let Ok(txid) = n.rpc.op_return(&commitment) {
+        if let Ok(txid) = n.rpc.op_return(&commitment_listed) {
             // announced once it is confirmed: the next block can come from a template made before it
             n.rpc.confirm(&[txid]);
             n.send_case(
@@ -3032,6 +3052,7 @@ fn escalate_tier(
                     tier,
                     txid: txid.to_string(),
                     revealed: reveals.iter().map(|x| x.0.clone()).collect(),
+                    committed: on_time.clone(),
                 },
                 false,
             );
@@ -3044,7 +3065,7 @@ fn escalate_tier(
     }
     let on_chain = committed
         .as_ref()
-        .map(|t| n.rpc.has_op_return(t, &commitment))
+        .map(|t| n.rpc.has_op_return(t, &commitment) || n.rpc.has_op_return(t, &commitment_listed))
         .unwrap_or(false);
     n.check(&format!("tier {tier}: {} of {size} verdicts revealed; roster and answers committed on chain (OP_RETURN)", reveals.len()), on_chain, &committed.unwrap_or_default());
     let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
@@ -3737,7 +3758,7 @@ fn review_stage(
         return None;
     }
     let h = draw_h;
-    let bh = n.rpc.block_hash(h).unwrap_or_default();
+    let bh = draw_hash(n, h);
     let mut seats = arb::draw(&bh, &c, k, &eligible, size);
     n.send_case(
         &c,
@@ -3906,7 +3927,7 @@ fn review_stage(
         for m in silent {
             n.rpc.mine(1).ok();
             let h = n.rpc.height();
-            let bh = n.rpc.block_hash(h).unwrap_or_default();
+            let bh = draw_hash(n, h);
             let left: Vec<String> = eligible
                 .iter()
                 .filter(|o| !seats.contains(o) && !gone.contains(o))
@@ -3968,7 +3989,7 @@ fn review_stage(
             }
             n.rpc.mine(1).ok();
             let h = n.rpc.height();
-            let bh = n.rpc.block_hash(h).unwrap_or_default();
+            let bh = draw_hash(n, h);
             let new = arb::draw(&bh, &c, k, &from, 1).pop().unwrap();
             let pos = seats.iter().position(|x| *x == m).unwrap();
             seats[pos] = new.clone();
@@ -4106,6 +4127,7 @@ fn review_stage(
                     tier: k,
                     txid: txid.to_string(),
                     revealed: reveals.iter().map(|x| x.0.clone()).collect(),
+                    committed: vec![],
                 },
                 false,
             );
@@ -5307,6 +5329,7 @@ fn arbitrator(mut n: Node) -> i32 {
                                     tier,
                                     txid: txid.to_string(),
                                     revealed: list.iter().map(|x| x.0.clone()).collect(),
+                                    committed: vec![],
                                 },
                                 false,
                             );
