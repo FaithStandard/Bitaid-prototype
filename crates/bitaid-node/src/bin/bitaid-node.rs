@@ -4207,19 +4207,35 @@ fn collect_review_seizure(n: &mut Node, view: &PoolView, a: &Alerted, r: &Roster
     );
     let mut session = 300_000u32;
     for p in &pens {
-        let mut tx = p.tx.clone();
-        let res = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &p.digest, session).and_then(
-            |(osig, _, signers)| {
-                p.bond.witness(
-                    &oxo,
-                    &mut tx,
-                    &hex::decode(&p.pre).unwrap_or_default(),
-                    &osig,
-                );
-                n.rpc.package(&tx).map(|t| (t, signers))
-            },
-        );
-        session += 10;
+        // a forfeiture stays due until it is co-signed: too few pool members answering (asleep,
+        // offline) is waited out, asking again every ten minutes (stretched) for up to a day
+        let mut tries = 0u32;
+        let res = loop {
+            let mut tx = p.tx.clone();
+            let r = pool::cosign(n, view, &c, &serialize_hex(&tx), 0, &p.digest, session).and_then(
+                |(osig, _, signers)| {
+                    p.bond.witness(
+                        &oxo,
+                        &mut tx,
+                        &hex::decode(&p.pre).unwrap_or_default(),
+                        &osig,
+                    );
+                    n.rpc.package(&tx).map(|t| (t, signers))
+                },
+            );
+            session += 10;
+            tries += 1;
+            match &r {
+                Err(e) if e.contains("members committed") && tries < 144 => {
+                    n.log(&format!(
+                        "forfeiture of {}'s unit: {e}; asking the pool again in a while (try {tries})",
+                        bitaid_node::pre(&p.arbitrator, 8)
+                    ));
+                    n.collect(Duration::from_secs(bitaid_node::slow(600).min(3_600)), |_, _| None::<()>, |_| false);
+                }
+                _ => break r,
+            }
+        };
         n.check(
             &format!(
                 "tier {} arbitrator {}: its whole unit ({} sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature",
