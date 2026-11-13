@@ -1,0 +1,102 @@
+# Public signet review run (PC_9), 2026-11-12/13: 26 arbitrators on the PC, caller on the phone, responder on the tablet, all over Tor
+# TIME_SCALE=30 SAT_SCALE=100, captured tier-1 panel (2 of 3 corrupt), staged review at 100%
+
+## caller (phone): 14 passed, 0 failed
+[caller  214.71s] PASS oracle pool found and checked: 4 members, threshold 3, 60 nonces — 4469af4fd5d48422
+[caller 1248.30s] PASS 26 arbitrators registered before the alert — 26 registered
+[caller 2475.86s] PASS registration: funding output (no key path) and template committed — 53f71ae51d8684a5911320c5f265b193f0c9ac35160f0429a4385100de30cdc0:1
+[caller 2506.16s] PASS 3 responder(s) accepted within the joining window, bonds checked on chain — first after 8.26 s
+[caller 2557.68s] PASS signer 2 caught sending an invalid partial signature; its seat is given up and the set re-signed — signer 2: invalid partial signature on message 0
+[caller 2573.48s] PASS pre-signed set v1 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
+[caller 2639.93s] PASS pool co-signed the incident (FROST, 3 of 4 members) — 2 session(s), signers [1, 4, 3], 66.45 s
+[caller 2648.58s] PASS incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
+[caller 4183.54s] PASS evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 12.33 s
+[caller 9618.43s] PASS 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[caller 9832.67s] PASS deposit: "returned" completed by the attestation and broadcast
+[caller 9849.48s] PASS reward: "paid (3, 7)" completed by the attestation and broadcast
+[caller 9892.69s] PASS bounty: "split (3, 7)" completed by the attestation and broadcast
+[caller 10397.24s] PASS all 3 pots settled on chain by the attested outcome (3 payouts confirmed) — deposit: returned; reward: paid (3, 7); bounty: split (3, 7)
+
+## responder r1 (tablet): 19 passed, 0 failed
+[r1 2535.37s] PASS alert f76b9f6e in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r1 2625.41s] PASS pre-signed set v1 verified (seat 1) — 39 payouts
+[r1 4227.87s] PASS incident transaction on chain: every pot output exists — 7d9e3434ed7076573e071b1f8a3c650b8b514ccdc6967cd7f68ea4bf1da08ac7
+[r1 4237.56s] PASS evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 9.67 s
+[r1 4243.19s] PASS attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
+[r1 5852.20s] PASS tier 1: 3 of 3 offering arbitrators drawn from block 330574, case disclosed only to them — 1430.3 s after escalating
+[r1 7274.49s] PASS tier 1: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[r1 7694.87s] PASS tier 1: 3 × 330 sats paid to the seats — 2c0d36e0773bd5f5
+[r1 7938.05s] PASS tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — b55d2c1787580ff43230ae88c15deaf223269ed75959390159f07516fd677288
+[r1 7938.05s] PASS tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 3516.2 s from escalation
+[r1 10403.01s] PASS 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[r1 10483.53s] PASS deposit: "returned" completed by the attestation and broadcast — already broadcast by another party
+[r1 10485.12s] PASS reward: "paid (3, 7)" completed by the attestation and broadcast — already broadcast by another party
+[r1 10485.12s] PASS bounty: "split (3, 7)" completed by the attestation and broadcast — already broadcast by another party
+[r1 10626.33s] PASS my shares arrived at my payout address — 6300 sats
+[r1 10797.19s] PASS attendee 3f23369a: the loser pays, one tier-1 panel fee (990 sats) forfeited from its bond into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 3725b599949dcc54 (pool members [2, 1, 3])
+[r1 10815.75s] PASS tier 1 arbitrator e2224d77: 2.0× the 330-sat fee (660 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 587ff577210fdc7b (pool members [2, 1, 3])
+[r1 11634.06s] PASS seizure distribution signed by 1 of 1 archivist(s) after their own replay
+[r1 11720.03s] PASS seizure output distributed (§12) by the pool and the archivists: 990 sats to the appellant (appeal subsidy and excess), 660 sats to the archivists — 3c369419375cc0cf
+
+## PC nodes
+[archivist-pc 13162.09s] PASS case f76b9f6e: drawn for review at block 330579 (100% for a split final panel); convening the staged review
+[archivist-pc 13162.49s] PASS review stage 1: 5 of the 23 eligible arbitrators in the pool drawn from block 330582; each must accept or pay its replacement
+[archivist-pc 13358.97s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 196.9 s from convening
+[archivist-pc 18485.35s] PASS review stage 2: 5 of the 18 eligible arbitrators in the pool drawn from block 330591; each must accept or pay its replacement
+[archivist-pc 18486.96s] PASS review stage 2: 2edc929e would rather not serve and posted a replacement fee from 330 sats
+[archivist-pc 18587.68s] PASS review stage 2: 2edc929e replaced at 330 sats by 87aeeca3, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[archivist-pc 19347.59s] PASS review stage 2: the leaver paid its replacement 87aeeca3 the 330 sats on chain; the case disclosed to the replacement — c2c73da4bd395bd5
+[archivist-pc 19397.58s] PASS review stage 2: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 6037.6 s from convening
+[archivist-pc 24006.28s] PASS review stage 3: 5 of the 12 eligible arbitrators in the pool drawn from block 330600; each must accept or pay its replacement
+[archivist-pc 24897.68s] PASS review stage 3: b793ff05 silent past the window — one declined assignment toward the inactivity rule, no momentum; 9ed62921 drawn in its place
+[archivist-pc 24897.69s] PASS review stage 3: 9ed62921 would rather not serve and posted a replacement fee from 330 sats
+[archivist-pc 25095.94s] PASS review stage 3: 9ed62921 replaced at 330 sats by 952c8392, drawn blind from the 1 arbitrator(s) who offered at that fee — not chosen by the leaver
+[archivist-pc 25500.58s] PASS review stage 3: the leaver paid its replacement 952c8392 the 330 sats on chain; the case disclosed to the replacement — 1dd66475db3b170b
+[archivist-pc 31588.02s] PASS review stage 3: b83b3a61 accepted and never revealed its finding — charged as a missed reveal in its momentum
+[archivist-pc 31588.02s] PASS review stage 3: 4 of 5 findings revealed and committed on chain; two thirds found I,D — 12189.4 s from convening
+[archivist-pc 31589.04s] PASS case f76b9f6e: three review panels in turn found I,D by two thirds: the verdict is overturned
+[archivist-pc 31589.06s] PASS case f76b9f6e: 2 arbitrator(s) voted for the overturned verdict; 2 unit(s) still held, 0 already released
+[archivist-pc 32069.10s] FAIL tier 1 arbitrator 7ab33866: its whole unit (20000 sats) forfeited into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — only 2 members committed
+[arb1-pc 11108.07s] PASS case f76b9f6e: review draw at block 330579 (100% for a split final panel): drawn for review; units held
+[arb1-pc 31591.94s] PASS case f76b9f6e: the staged review confirmed a different verdict; units of those who did not vote for the overturned one released
+[arb4-pc 11108.08s] PASS case f76b9f6e: review draw at block 330579 (100% for a split final panel): drawn for review; units held
+[arb4-pc 31591.93s] PASS case f76b9f6e: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+[arb8-pc 11108.06s] PASS case f76b9f6e: review draw at block 330579 (100% for a split final panel): drawn for review; units held
+[arb8-pc 31591.90s] PASS case f76b9f6e: the staged review confirmed a different verdict; this arbitrator voted for the overturned one: its unit is held for seizure
+[arb22-pc 25499.91s] PASS review stage 3: replaced by 952c8392, drawn blind from 1 offer(s); paid it 6292 sats — 1dd66475db3b170b
+[arb23-pc 19346.94s] PASS review stage 2: replaced by 87aeeca3, drawn blind from 1 offer(s); paid it 1474 sats — c2c73da4bd395bd5
+[r3-pc 3982.36s] PASS alert f76b9f6e in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r3-pc 4079.18s] PASS pre-signed set v1 verified (seat 0) — 39 payouts
+[r3-pc 5675.79s] PASS incident transaction on chain: every pot output exists — 7d9e3434ed7076573e071b1f8a3c650b8b514ccdc6967cd7f68ea4bf1da08ac7
+[r3-pc 5675.79s] PASS evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[r3-pc 11120.17s] PASS 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[r3-pc 11120.17s] PASS deposit: "returned" completes with the attestation
+[r3-pc 11120.17s] PASS reward: "paid (3, 7)" completes with the attestation
+[r3-pc 11120.17s] PASS bounty: "split (3, 7)" completes with the attestation
+[r3-pc 11902.11s] PASS my shares arrived at my payout address — 2700 sats
+[r4-pc-cheat 3982.36s] PASS alert f76b9f6e in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r4-pc-cheat 4062.00s] PASS dropped from the set after sending a bad partial signature (expected for this test)
+
+## rogue (attacks on the PC Core, two hours in)
+[PASS] rogue a stranger with no stake: its message dropped, the link closed after the proof window
+[PASS] rogue a proof signed over another challenge: refused, link closed
+[PASS] rogue another key's stake claimed: refused, link closed
+[PASS] rogue a proof signed for another Core's address: refused, link closed
+[PASS] rogue control: a staked peer's fresh, validly signed message is forwarded
+[PASS] rogue a message dated two days ago and one dated tomorrow: neither forwarded
+[PASS] rogue replay of a message already seen (f181e173…): not forwarded again
+[PASS] rogue an escalation claiming block 10,000,000 relayed for the nodes to judge (they should log 'refused Escalate')
+[PASS] rogue a 2176 KiB message with no end: link closed
+[PASS] rogue the same key back after its abuse: banned, its link refused at the proof
+[PASS] rogue 1050 lines of garbage: link closed, key banned
+[PASS] rogue flood of validly signed messages: link closed after 23635 sent in 33.0 s (limit: a burst of 20000, then 100/s), key banned
+[PASS] rogue one staked key opening 8 links: 2 kept (at most 2 per key)
+[PASS] rogue 80 connections without a proof (the Core keeps at most 64 incoming): a staked newcomer still accepted and its message forwarded
+[rogue] 14 passed, 0 failed
+
+## Reading
+- The staged review ran its three stages and overturned the captured panel's verdict (I,D found by
+  two thirds in each stage), with leavers paying their replacements on chain and silent seats charged.
+- The one FAIL: the seizure of the overturned arbitrators' units, 8.8 h into the run, found only
+  2 of the 4 pool members (threshold 3) answering: the two on the PC. The devices' pool members
+  were no longer reachable by then.
