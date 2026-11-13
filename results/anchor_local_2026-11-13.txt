@@ -1,0 +1,47 @@
+Anchored branch, local regtest, 2026-11-13
+What decides money is read from the chain: tier-1 postings (record + escrow in one transaction), the market
+(replayed from postings and escrow spends), the tier-1 opener and opening height, arbitrator registrations,
+and seat replacement (only on a confirmed seat forfeiture).
+
+== standby (BITAID_FEE0=21000, market falls to the 20000 bid)
+[caller] 11 passed, 0 failed
+[r1-liar] 27 passed, 0 failed
+[r3] 8 passed, 0 failed
+== misconduct (MISCONDUCT=1)
+[caller] 11 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r3] 8 passed, 0 failed
+== arbitration (CAPTURE CHALLENGE STALL)
+[caller] 11 passed, 0 failed
+[r1-liar] 15 passed, 0 failed
+[r3] 8 passed, 0 failed
+[arb1] 19 passed, 0 failed
+== basic (m3_local, after the link fix)
+[caller] 13 passed, 0 failed
+[r1] 9 passed, 0 failed
+[r2] 9 passed, 0 failed
+[r3] 2 passed, 0 failed
+== ten cases with review (CASES=10 REVIEW_PCT=100, after the link fix): 30 node runs, 448 passed, 0 failed
+== case units (§10.2-10.3)
+review draws seen by seated arbitrators: 86; of which drawn: 86
+cases drawn: 10 of 10
+units released by the pool's co-signature: 85; failed: 0
+staged reviews: 10 convened, 10 cleared, 0 overturned; reviewers who paid their way out or stalled: 3
+arb1 (capital for 3 units): seat offers declined for capital 0, units taken 4
+== momentum when seated, by arbitrator (case order)
+arb1: 0.00 0.00 0.00 0.00 
+arb2: 0.00 1.00 0.69 0.42 
+arb3: 0.00 0.00 0.00 
+arb4: 0.00 0.68 0.35 
+arb5: 0.00 
+arb6: 0.00 0.00 
+arb7: 0.00 0.00 0.00 0.00 0.00 
+arb8: 0.00 0.00 0.00 
+arb9: 0.00 0.30 0.67 
+arb10: 0.00 0.00 0.00 0.35 0.03 0.00 0.00 0.00 
+arb11: 0.00 0.71 1.38 1.12 
+arb12: 0.00 0.00 0.29 0.64 
+arb13: 0.00 0.70 2.79 
+
+Found by this run and fixed: a relay kept its replay mark per peer key, so a restarted node with the same key
+was not sent the pool's setup again (case 8 of the first ten-case run). The mark is now kept per peer process.

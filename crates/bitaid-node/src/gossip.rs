@@ -111,7 +111,7 @@ pub fn proof_line_since(c: &Credential, challenge: &[u8; 32], to: &str, since: u
         "stake": c.stake,
         "to": to,
         "sig": hex::encode(sig.as_ref()),
-    }, "since": since, "boot": boot()})
+    }, "run": boot(), "since": since})
     .to_string()
 }
 
@@ -127,8 +127,18 @@ pub fn boot() -> u64 {
 fn boot_of(line: &[u8]) -> u64 {
     serde_json::from_slice::<serde_json::Value>(line)
         .ok()
-        .and_then(|v| v.get("boot").and_then(|b| b.as_u64()))
+        .and_then(|v| v.get("run").and_then(|b| b.as_u64()))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+#[test]
+fn proof_line_opens_with_the_proof() {
+    // the listener tells a proof from other lines by how the line opens
+    let c = Credential { keys: Keypair::new(&Secp256k1::new(), &mut rand::thread_rng()), stake: String::new() };
+    let l = proof_line(&c, &[7; 32], "x");
+    assert!(l.starts_with("{\"proof\""));
+    assert_eq!(boot_of(l.as_bytes()), boot());
 }
 
 /// A set that forgets its oldest members past `cap`.
@@ -641,7 +651,7 @@ fn run_link(
     // the peer's process number (see `boot`), part of the name its replay mark is kept under
     let mut peer_boot = 0u64;
     if incoming {
-        let l = format!("{{\"challenge\":\"{}\",\"boot\":{}}}\n", hex::encode(challenge), boot());
+        let l = format!("{{\"challenge\":\"{}\",\"run\":{}}}\n", hex::encode(challenge), boot());
         if w.write_all(l.as_bytes()).is_err() {
             return;
         }
