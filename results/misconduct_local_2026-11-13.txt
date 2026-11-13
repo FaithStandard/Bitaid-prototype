@@ -1,0 +1,68 @@
+# misconduct and decision 2, local regtest, 2026-11-13
+## MISCONDUCT=1: r3 finds r1-liar at fault, having harmed it; the panel's footage agrees
+[PASS] r1-liar alert ecea254e in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r1-liar pre-signed set v0 verified (seat 1) — 39 payouts
+[PASS] r1-liar incident transaction on chain: every pot output exists — d1811e1c1629e7f54ce0d10520fc713101126c13ebbbdc3cca0d4c72b2587937
+[PASS] r1-liar evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[PASS] r1-liar attending vote did not settle (misconduct: two thirds of the seats find seat 1 at fault (Misconduct); a panel decides (§9)); escalating to arbitration
+[PASS] r1-liar tier 1: 3 of 9 offering arbitrators drawn from block 8604, case disclosed only to them — 20.0 s after escalating
+[PASS] r1-liar tier 1: every seat committed a case unit of at least twice the case value (2000000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[PASS] r1-liar tier 1: 3 × 20000 sats paid to the seats — 54f92e458fef9385
+[PASS] r1-liar tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 67cf84ca6e9d483d5946d685478129567113f68a5397f3570447f76d5756884f
+[PASS] r1-liar tier 1: two-thirds verdict (3 of 3), unanimous — 24.3 s from escalation
+[PASS] r1-liar appealing the verdict against my claim to tier 2
+[PASS] r1-liar tier 2: 7 of 10 offering arbitrators drawn from block 8623, case disclosed only to them — 18.4 s after escalating
+[PASS] r1-liar tier 2: every seat committed a case unit of at least twice the case value (2000000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 7 of 7
+[PASS] r1-liar tier 2: 7 × 25000 sats paid to the seats — f3d7ded845cba9d4
+[PASS] r1-liar tier 2: 7 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 70e37c6e07f5c951f3f0600ae17bbaf17cd8aaaf983517092fae9006f0524e0d
+[PASS] r1-liar tier 2: two-thirds verdict (6 of 7); 1 dissenter(s) owe 4.0× the fee each, settled against the final ruling — 23.0 s from escalation
+[PASS] r1-liar deposit: "returned" completes with the attestation
+[PASS] r1-liar reward: "paid (10, 0)" completes with the attestation
+[PASS] r1-liar bounty: "split (10, 0)" completes with the attestation
+[PASS] r1-liar my shares arrived at my payout address — 0 sats
+[PASS] r1-liar attendee 9613999f: found at fault by the final ruling, 2000000 sats of its bond forfeited (§11.8) into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 48f4e05c0dd37c42 (pool members [4, 1, 3])
+[PASS] r1-liar tier 2 arbitrator f03f9f87: 4.0× the 25000-sat fee (100000 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 2e9b072fffd1a290 (pool members [2, 1, 4])
+[PASS] r1-liar seizure distribution signed by 1 of 1 archivist(s) after their own replay
+[PASS] r1-liar seizure output distributed (§12) by the pool and the archivists: 900000 sats to the responder harmed (its loss, first), 1200000 sats to the archivists — 7d92c9b96080ff66
+[r1-liar] 24 passed, 0 failed
+## m3_local
+[caller] 13 passed, 0 failed
+[r1] 9 passed, 0 failed
+[r2] 9 passed, 0 failed
+[r3] 2 passed, 0 failed
+## m3_arb_local CAPTURE CHALLENGE STALL
+[caller] 11 passed, 0 failed
+[r1-liar] 14 passed, 0 failed
+[r3] 8 passed, 0 failed
+[arb1] 19 passed, 0 failed
+## m3_multi CASES=10 REVIEW_PCT=100, every node
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[caller] 11 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r1-liar] 27 passed, 0 failed
+[r1-liar] 28 passed, 0 failed
+[r1-liar] 23 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r1-liar] 26 passed, 0 failed
+[r1-liar] 24 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r1-liar] 24 passed, 0 failed
+[r1-liar] 24 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
+[r3] 8 passed, 0 failed
