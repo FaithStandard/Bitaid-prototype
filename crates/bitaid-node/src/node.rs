@@ -125,6 +125,28 @@ pub struct Node {
     anchoring: HashMap<String, u32>,
     /// a pool member anchors checkpoints of what it holds: (its turn, of how many)
     pub anchorer: Option<(u32, u32)>,
+    /// an archivist keeps each case's open messages here, one signed event per line in
+    /// `log-<case>`, each timed one after the checkpoint that anchors it: what `/log/<case>` serves
+    pub log_dir: Option<std::path::PathBuf>,
+    /// checkpoint events by root (kept by an archivist, to go into the logs)
+    cp_events: HashMap<String, Event>,
+    /// the id of every event read
+    ids: std::collections::HashSet<String>,
+    /// those read from an archivist's log and not yet seen on a link
+    arch_ids: std::collections::HashSet<String>,
+    /// transactions this node holds a tier commitment message for
+    committed: std::collections::HashSet<String>,
+    /// archivists known (announced, or BITAID_ARCHIVES): where a case's log is fetched from
+    pub archives: Vec<String>,
+    /// whether this node reads past tiers it holds no messages for from the archivists (those whose
+    /// work depends on every arbitrator's record: pool members, arbitrators, archivists, a party
+    /// drawing a panel)
+    pub follow_tiers: bool,
+    /// cases whose log was asked for: (when, how many times)
+    asked: HashMap<String, (Instant, u32)>,
+    synced_tip: u32,
+    /// cases and events taken from archivists so far
+    pub from_archive: (u32, u32),
     anchored_last: u32,
     ticked: Instant,
     /// cases whose messages other traffic never pushes out, with their per-sender counts
@@ -414,6 +436,18 @@ impl Node {
             own_timed: HashMap::new(),
             anchoring: HashMap::new(),
             anchorer: None,
+            log_dir: None,
+            cp_events: HashMap::new(),
+            ids: Default::default(),
+            arch_ids: Default::default(),
+            committed: Default::default(),
+            archives: std::env::var("BITAID_ARCHIVES")
+                .map(|v| v.split(',').filter(|x| !x.is_empty()).map(String::from).collect())
+                .unwrap_or_default(),
+            follow_tiers: false,
+            asked: HashMap::new(),
+            synced_tip: 0,
+            from_archive: (0, 0),
             anchored_last: 0,
             ticked: Instant::now(),
             kept: HashMap::new(),
@@ -471,6 +505,9 @@ impl Node {
     ) -> String {
         let name = msg.name();
         let timed = msg.timed();
+        if let Msg::TierCommitted { txid, .. } = &msg {
+            self.committed.insert(txid.clone());
+        }
         let h = self.height();
         let bytes = wire::sign(&self.keys, h, msg);
         let content = match enc {
@@ -532,6 +569,10 @@ impl Node {
             return;
         }
         self.ticked = Instant::now();
+        if self.follow_tiers && !self.archives.is_empty() {
+            self.rpc.sync();
+            self.sync_cases();
+        }
         if self.parked.is_empty() && self.own_timed.is_empty() {
             return;
         }
@@ -679,7 +720,9 @@ impl Node {
                 Some(k) => wire::decrypt(k, case.as_bytes(), &raw)?,
                 None => {
                     // a case this node holds no key for (yet): kept, within a bound, in case the key arrives
-                    self.locked.push_back(e.clone());
+                    if !self.locked.iter().any(|x| x.id == e.id) {
+                        self.locked.push_back(e.clone());
+                    }
                     let kept = &self.kept;
                     trim(&mut self.locked, MAX_LOCKED, |x| x.tag("c").is_some_and(|c| kept.contains_key(c)));
                     return None;
@@ -715,12 +758,38 @@ impl Node {
         let mut env = env;
         if let Msg::Checkpoint { leaves } = &env.msg {
             self.note_checkpoint(leaves);
+            if self.log_dir.is_some() {
+                if let Some(root) = crate::ledger::checkpoint_root(leaves) {
+                    if self.cp_events.len() > 100_000 {
+                        self.cp_events.clear();
+                    }
+                    self.cp_events.insert(root, e.clone());
+                }
+            }
             return None;
+        }
+        match &env.msg {
+            Msg::Announce { role, url, .. } if role == "archivist" && url.starts_with("http") => {
+                if !self.archives.contains(url) && self.archives.len() < 64 {
+                    self.archives.push(url.clone());
+                }
+            }
+            Msg::TierCommitted { txid, .. } => {
+                self.committed.insert(txid.clone());
+            }
+            _ => {}
         }
         // a timed message counts from the block that anchors it, and not before
         if env.msg.timed() {
             env.height = self.anchor_height(&e.id)?;
         }
+        if !self.ids.insert(e.id.clone()) {
+            // read before. A message first read from an archivist's log went into the record only;
+            // when a link then brings it, it is still handed on, once, so whoever is working the
+            // case acts on it. Anything else read twice is dropped
+            return self.arch_ids.remove(&e.id).then_some(env);
+        }
+        self.keep_log(e, &env);
         if let Some(f) = self.observer.as_mut() {
             f(&env);
         }
@@ -761,6 +830,111 @@ impl Node {
             }
         }
         Some(env)
+    }
+
+    /// An archivist's record of a case: its open messages as signed, appended as they are read.
+    fn keep_log(&mut self, e: &Event, env: &Envelope) {
+        let (Some(dir), Some(case)) = (&self.log_dir, env.msg.case_id()) else { return };
+        if e.tag("enc") == Some("1") || case.len() != 64 || !case.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return;
+        }
+        use std::io::Write;
+        let mut lines = String::new();
+        if env.msg.timed() {
+            // with the checkpoint that anchors it, unless it is anchored under its own id
+            let roots = self.listed.get(&e.id).cloned().unwrap_or_default();
+            let first = self.rpc.ledger(|l| {
+                roots.iter().filter_map(|r| l.anchored(r).map(|h| (h, r.clone()))).min()
+            });
+            if let Some(cp) = first.and_then(|(_, r)| self.cp_events.get(&r)) {
+                lines.push_str(&serde_json::to_string(cp).unwrap_or_default());
+                lines.push('\n');
+            }
+        }
+        lines.push_str(&serde_json::to_string(e).unwrap_or_default());
+        lines.push('\n');
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("log-{case}"))) {
+            let _ = f.write_all(lines.as_bytes());
+        }
+    }
+
+    /// The chain lists every tier commitment (ledger `TIER`). For each one this node holds no
+    /// message for, it asks the archivists for the case's log and reads it as it reads any link:
+    /// every event checked, every timed one counted from its anchor, the whole replayed against the
+    /// chain. So what a node knows of past tiers (who sat, who dissented: momentum, inactivity) does
+    /// not depend on what its links happened to carry, and a node that lacks a log knows it does.
+    /// A record nobody has a log for is asked about a few times and then left: it is nobody's vote.
+    pub fn sync_cases(&mut self) {
+        if self.archives.is_empty() {
+            return;
+        }
+        let tip = self.rpc.ledger(|l| l.tip()).unwrap_or(0);
+        if tip == self.synced_tip {
+            return;
+        }
+        self.synced_tip = tip;
+        let mut cases = self.unread_cases();
+        let now = Instant::now();
+        cases.retain(|c| {
+            self.asked.get(c).is_none_or(|(at, k)| *k < 6 && now.duration_since(*at) >= Duration::from_secs(15 << *k))
+        });
+        if cases.is_empty() {
+            return;
+        }
+        // only what some archivist holds is asked for (one request each for their lists)
+        let mut held: std::collections::HashSet<String> = Default::default();
+        for url in &self.archives {
+            if let Ok(b) = crate::blossom::fetch_log(url, "") {
+                held.extend(String::from_utf8_lossy(&b).lines().map(String::from));
+            }
+        }
+        cases.retain(|c| held.contains(c));
+        if cases.is_empty() {
+            return;
+        }
+        // arbitrators' registrations (the review registry) are a case of their own
+        cases.insert(0, crate::arb::registry_case());
+        for c in cases.into_iter().take(12) {
+            let k = self.asked.get(&c).map_or(0, |x| x.1);
+            self.asked.insert(c.clone(), (now, k + 1));
+            let mut got = 0;
+            for url in self.archives.clone() {
+                let Ok(b) = crate::blossom::fetch_log(&url, &c) else { continue };
+                for line in b.split(|x| *x == b'\n').filter(|l| !l.is_empty()) {
+                    let Ok(e) = serde_json::from_slice::<Event>(line) else { continue };
+                    if self.ids.contains(&e.id) || !e.verify() {
+                        continue;
+                    }
+                    if self.decode(&e).is_some() {
+                        self.arch_ids.insert(e.id.clone());
+                        got += 1;
+                    }
+                }
+            }
+            if got > 0 {
+                self.from_archive.0 += 1;
+                self.from_archive.1 += got;
+                self.log(&format!("case {}: {got} message(s) read from the archive", crate::pre(&c, 8)));
+            }
+        }
+    }
+
+    /// Cases with a tier commitment on the chain (from BITAID_INDEX_FROM on, if set) that this node
+    /// holds no message for.
+    pub fn unread_cases(&self) -> Vec<String> {
+        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let committed = &self.committed;
+        let mut cases: Vec<String> = self.rpc.ledger(|l| {
+            l.tiers
+                .iter()
+                // (three blocks deep: the links get their chance first)
+                .filter(|t| t.height >= from && t.height + 3 <= l.tip().unwrap_or(0) && !committed.contains(&t.txid.to_string()))
+                .map(|t| t.case.clone())
+                .collect()
+        });
+        cases.sort();
+        cases.dedup();
+        cases
     }
 
     /// Drops the oldest tenth of the history that belongs to no kept case. If kept cases alone
@@ -818,8 +992,8 @@ impl Node {
                         }
                     }
                     // a timed message not yet anchored waits (see `tick`)
+                    // (sealed or not: its tag names its kind, and its id is all an anchor needs)
                     None if e.tag("t").is_some_and(wire::timed_name)
-                        && e.tag("enc") != Some("1")
                         && self.anchor_height(&e.id).is_none()
                         && !self.parked.iter().any(|p| p.1.id == e.id) =>
                     {

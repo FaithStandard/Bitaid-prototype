@@ -319,8 +319,13 @@ pub fn pot_spk(a: &Alerted, r: &Rostered) -> ScriptBuf {
 }
 
 /// The incident transaction the funding output's accept leaf will spend into.
+/// Its last output records the case (ledger `INCIDENT`): the pool's signature on this transaction is
+/// what shows every node, from the chain alone, that the case exists.
 pub fn incident_tx(a: &Alerted, r: &Rostered) -> Transaction {
-    txbuild::incident(a.funding, &a.template.pots, &pot_spk(a, r))
+    let mut t = txbuild::incident(a.funding, &a.template.pots, &pot_spk(a, r));
+    let rec = bitcoin::script::PushBytesBuf::try_from(crate::ledger::incident_record(&a.case_id)).expect("37 bytes");
+    t.output.push(bitcoin::TxOut { value: bitcoin::Amount::ZERO, script_pubkey: ScriptBuf::new_op_return(&rec) });
+    t
 }
 
 pub fn terms(a: &Alerted, r: &Rostered) -> IncidentTerms {

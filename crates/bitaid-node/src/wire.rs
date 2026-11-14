@@ -544,6 +544,9 @@ impl Msg {
     pub fn timed(&self) -> bool {
         match self {
             Msg::SeatOffer { .. } | Msg::VerdictCommit { .. } | Msg::ReviewAnswer { .. } | Msg::Flag { .. } => true,
+            // the attending vote (§9): a ballot's commitment and its reveal each count within a
+            // window the chain measures from the incident's block
+            Msg::BallotCommit { .. } | Msg::BallotReveal { .. } => true,
             // (an appeal; a review stage's opening is only an announcement: the chain fixes its
             // draw block, and review tiers are numbered from 100)
             Msg::Escalate { tier, .. } => *tier >= 2 && *tier < 100,
@@ -708,7 +711,7 @@ pub fn verify(bytes: &[u8]) -> Result<Envelope, String> {
 
 /// Whether a message of this name may be timed (see `Msg::timed`), told from its tag before it is read.
 pub fn timed_name(t: &str) -> bool {
-    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate"].contains(&t)
+    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate", "ballot-commit", "ballot-reveal"].contains(&t)
 }
 
 pub fn b64(b: &[u8]) -> String {

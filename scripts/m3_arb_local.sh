@@ -74,6 +74,10 @@ R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
 # OMIT=1: r1-liar, escalating, posts a tier commitment that leaves one seat's reveal out; the commitment
 # counting every reveal stands all the same (§10.4)
 [ -n "$OMIT" ] && R1APPEAL="$R1APPEAL --omit-reveal"
+# STUFF=n: r1-liar first posts n cases that do not exist on the fee market, each with its escrow. A
+# posting counts only for a case whose incident transaction the pool co-signed, so none of them holds
+# a place in the queue.
+[ -n "$STUFF" ] && R1APPEAL="$R1APPEAL --stuff $STUFF"
 # CASES=2: the same network takes a second case (with CAPTURE, the same pair captures it again: a
 # second confirmed overturn costs them their entry bonds, §12)
 for c in $(seq 1 ${CASES:-1}); do

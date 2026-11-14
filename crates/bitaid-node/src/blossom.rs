@@ -155,6 +155,28 @@ fn serve(
                         }
                     }
                 }
+                // a case's log (§8): the signed messages of the case, as this archivist read them
+                // the cases this archivist holds a log for, one id per line
+                tiny_http::Method::Get if path == "log" => {
+                    let mut out = String::new();
+                    for f in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                        if let Some(c) = f.file_name().to_str().and_then(|n| n.strip_prefix("log-")) {
+                            out.push_str(c);
+                            out.push('\n');
+                        }
+                    }
+                    tiny_http::Response::from_data(out.into_bytes()).with_status_code(200)
+                }
+                tiny_http::Method::Get if path.starts_with("log/") => {
+                    let c = &path[4..];
+                    match (c.len() == 64 && c.chars().all(|x| x.is_ascii_hexdigit()))
+                        .then(|| std::fs::read(dir.join(format!("log-{c}"))).ok())
+                        .flatten()
+                    {
+                        Some(b) => tiny_http::Response::from_data(b).with_status_code(200),
+                        None => tiny_http::Response::from_string("not found").with_status_code(404),
+                    }
+                }
                 tiny_http::Method::Get | tiny_http::Method::Head => {
                     let h: String = path.chars().take(64).collect();
                     if h.len() != 64 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -299,4 +321,18 @@ pub fn open_footage(evidence_key: &[u8; 32], case_id: &str, blobs: &[Vec<u8>]) -
         )?);
     }
     Some(out)
+}
+
+/// Fetches a case's log from an archivist: one signed event per line. Nothing in it is taken on
+/// trust: each event is checked as if it had come over a link, and replayed against the chain.
+pub fn fetch_log(server: &str, case: &str) -> Result<Vec<u8>, String> {
+    let server = &crate::local_url(server);
+    let resp = crate::http_for(server)
+        .get(&if case.is_empty() { format!("{server}/log") } else { format!("{server}/log/{case}") })
+        .timeout(std::time::Duration::from_secs(if server.contains(".onion") { 90 } else { 20 }))
+        .call()
+        .map_err(|e| e.to_string())?;
+    let mut b = Vec::new();
+    resp.into_reader().take(64 << 20).read_to_end(&mut b).map_err(|e| e.to_string())?;
+    Ok(b)
 }

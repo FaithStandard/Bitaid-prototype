@@ -869,22 +869,9 @@ impl Replay {
             .filter(|e| e.msg.case_id() == Some(case.as_str()))
             .collect();
         // the attending vote and each attendee's loser-pays forfeiture (§9)
-        let mut bcommits: HashMap<&str, &str> = HashMap::new();
-        for e in &mine {
-            match &e.msg {
-                Msg::BallotCommit { commitment, .. } if r.seats.contains(&e.sender) => {
-                    bcommits.entry(e.sender.as_str()).or_insert(commitment.as_str());
-                }
-                Msg::BallotReveal { ballot, salt, .. } => {
-                    let ok = bcommits.get(e.sender.as_str()).is_some_and(|c| {
-                        *c == hex::encode(ballot.commitment(&wire::h32(salt).unwrap_or_default(), &e.sender))
-                    });
-                    if ok {
-                        rp.ballots.entry(e.sender.clone()).or_insert(ballot.clone());
-                    }
-                }
-                _ => {}
-            }
+        let vote = attending_vote(&mine, a, r, rpc);
+        if let Some(v) = &vote {
+            rp.ballots = v.ballots.clone();
         }
         let bv: Vec<Ballot> = rp.ballots.values().cloned().collect();
         rp.attending_settled = !bv.is_empty()
@@ -970,12 +957,18 @@ impl Replay {
             let mut anchor = None;
             if k == 1 {
                 let parties: Vec<&str> = rp.parties.iter().map(|p| p.0.as_str()).collect();
+                // the attending vote is disputed only within its escalation window: by a posting
+                // confirmed no later than `dispute_blocks` after the vote closed. A later one opens
+                // nothing: the pots are paid on the vote
+                let close = vote.as_ref().and_then(|v| v.close).map(|f| f + a.template.dispute_blocks);
                 match tier1_opening(rpc, &oracle, &case, &parties) {
-                    Some((who, h)) => {
+                    Some((who, h))
+                        if close.is_none_or(|w| tier1_posted(rpc, &oracle, &case, &parties).is_some_and(|p| p <= w)) =>
+                    {
                         opener = Some((who, false));
                         anchor = Some(h);
                     }
-                    None => opener = None,
+                    _ => opener = None,
                 }
             }
             let Some((escalator, challenger)) = opener else {
@@ -2441,7 +2434,7 @@ fn read_tier(
             if !revealed.is_empty() && counted.len() != revealed.len() {
                 continue;
             }
-            if rpc.has_op_return(txid, &tier_commitment_with(case, k, &t.seats, &counted, committed)) {
+            if rpc.has_op_return(txid, &crate::ledger::tier_record(case, k, &tier_commitment_with(case, k, &t.seats, &counted, committed))) {
                 // one not yet in a block counts as later than any that is
                 cands.push((rpc.tx_height(txid).unwrap_or(u32::MAX), txid.clone(), counted));
             }
@@ -3093,6 +3086,14 @@ pub fn escrow(poster: &XOnlyPublicKey, lock: u32, op: OutPoint, value: u64, payo
 /// Whether a posting on the ledger is one this pool's market counts: tier 1, its escrow under the
 /// poster's bond script for this pool's oracle key, holding the whole panel's fees at its bid, locked
 /// for at least `post_lock()` blocks from its confirmation.
+/// Whether a posting counts on the market: valid in itself (`posting_valid`) and for a case that
+/// exists, shown by an incident transaction the pool co-signed, confirmed before the posting (§10.7).
+/// A posting for a case nobody attended costs its author the escrow's lock and moves nothing.
+pub fn posting_counts(l: &crate::ledger::Ledger, p: &crate::ledger::Posting, oracle: &XOnlyPublicKey) -> bool {
+    posting_valid(p, oracle)
+        && l.incident(&p.case, oracle).is_some_and(|i| (i.height, i.pos) < (p.at.height, p.at.pos))
+}
+
 pub fn posting_valid(p: &crate::ledger::Posting, oracle: &XOnlyPublicKey) -> bool {
     let e = escrow(&p.poster, p.lock, p.at.op, p.at.value, ScriptBuf::new());
     p.tier == 1
@@ -3154,7 +3155,7 @@ pub fn market_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32
     // (height, place in the block, posting index, is a spend)
     let mut ev: Vec<(u32, usize, usize, bool)> = vec![];
     for (i, p) in l.postings.iter().enumerate() {
-        if !posting_valid(p, oracle) || p.at.height > height {
+        if !posting_counts(l, p, oracle) || p.at.height > height {
             continue;
         }
         ev.push((p.at.height, p.at.pos, i, false));
@@ -3226,6 +3227,87 @@ pub fn market_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32
     m
 }
 
+/// The attending vote (§9) as the chain times it. Every node with the same messages reads the same
+/// vote, because each message counts from the block that anchors it and each window is measured
+/// from the incident transaction's block:
+///
+/// * a seat's commitment counts if anchored within `commit_blocks` of the incident (its first by
+///   height; two in one block, the smaller);
+/// * its reveal counts if it opens that commitment and is anchored within `reveal_blocks` more;
+/// * the vote closes when every seat's reveal is anchored, at the last one's block, or else when the
+///   reveal window ends.
+///
+/// A seat reveals once every seat's commitment is anchored, or once the commit window has ended:
+/// nothing anchored after that counts, so no ballot is ever written knowing another.
+#[derive(Clone, Debug, Default)]
+pub struct Vote {
+    pub ballots: HashMap<String, Ballot>,
+    /// seats whose commitment counts
+    pub committed: Vec<String>,
+    /// the last block a commitment counts in, and the last a reveal counts in
+    pub commit_by: u32,
+    pub reveal_by: u32,
+    /// the block the vote closed at (None while it is open)
+    pub close: Option<u32>,
+}
+
+pub fn attending_vote(mine: &[&Envelope], a: &Alerted, r: &Rostered, rpc: &Rpc) -> Option<Vote> {
+    let i = rpc.tx_height(&r.incident_txid.to_string())?;
+    let commit_by = i + a.template.commit_blocks;
+    let reveal_by = commit_by + a.template.reveal_blocks;
+    let mut commits: HashMap<&str, (u32, &str)> = HashMap::new();
+    for e in mine {
+        if let Msg::BallotCommit { case_id, commitment } = &e.msg {
+            if *case_id != a.case_hex || !r.seats.contains(&e.sender) || e.height > commit_by {
+                continue;
+            }
+            let c = (e.height, commitment.as_str());
+            match commits.get_mut(e.sender.as_str()) {
+                Some(x) if *x <= c => {}
+                Some(x) => *x = c,
+                None => {
+                    commits.insert(e.sender.as_str(), c);
+                }
+            }
+        }
+    }
+    let mut v = Vote { commit_by, reveal_by, ..Default::default() };
+    let mut last = 0;
+    for e in mine {
+        if let Msg::BallotReveal { case_id, ballot, salt } = &e.msg {
+            if *case_id != a.case_hex || e.height > reveal_by || v.ballots.contains_key(&e.sender) {
+                continue;
+            }
+            let ok = commits.get(e.sender.as_str()).is_some_and(|c| {
+                c.1 == hex::encode(ballot.commitment(&wire::h32(salt).unwrap_or_default(), &e.sender))
+            });
+            if ok {
+                v.ballots.insert(e.sender.clone(), ballot.clone());
+                last = last.max(e.height);
+            }
+        }
+    }
+    v.committed = r.seats.iter().filter(|s| commits.contains_key(s.as_str())).cloned().collect();
+    v.close = if v.ballots.len() == r.seats.len() {
+        Some(last)
+    } else {
+        (rpc.height() >= reveal_by).then_some(reveal_by)
+    };
+    Some(v)
+}
+
+/// The block of the first valid posting for a case by one of its parties.
+pub fn tier1_posted(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[&str]) -> Option<u32> {
+    rpc.ledger(|l| {
+        l.postings
+            .iter()
+            .filter(|p| p.case == case && posting_counts(l, p, oracle))
+            .filter(|p| parties.contains(&hex::encode(p.poster.serialize()).as_str()))
+            .map(|p| p.at.height)
+            .min()
+    })
+}
+
 /// Who opened tier 1 of a case, and at what height, as the chain says: the party whose valid posting
 /// for the case comes first in the chain's order, and the height at which the market took the case
 /// up (the posting's own block if its fee met the market's, else the step that brought the fee down
@@ -3236,7 +3318,7 @@ pub fn tier1_opening(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[
         let mut ps: Vec<&crate::ledger::Posting> = l
             .postings
             .iter()
-            .filter(|p| p.case == case && posting_valid(p, oracle))
+            .filter(|p| p.case == case && posting_counts(l, p, oracle))
             .filter(|p| parties.contains(&hex::encode(p.poster.serialize()).as_str()))
             .collect();
         ps.sort_by_key(|p| (p.at.height, p.at.pos));
@@ -3291,6 +3373,26 @@ mod record_tests {
         p.lock = 1_001;
         p.at.spk = escrow(&poster, 1_001, op(1), 0, ScriptBuf::new()).tree(&oracle).script_pubkey();
         assert!(!posting_valid(&p, &oracle));
+
+        // a posting in good order still holds no place in the queue unless the pool co-signed an
+        // incident for its case, earlier on the chain
+        let inc = |h: u32, by: XOnlyPublicKey| crate::ledger::Incident {
+            case: good.case.clone(),
+            txid: op(5).txid,
+            height: h,
+            pos: 0,
+            signed_by: vec![by],
+        };
+        let queue = |i: Option<crate::ledger::Incident>| {
+            let mut l = Ledger::default();
+            l.postings.push(good.clone());
+            l.incidents.extend(i);
+            market_at(&l, &oracle, 1_010).is_active(&good.case)
+        };
+        assert!(queue(Some(inc(990, oracle))));
+        assert!(!queue(None));
+        assert!(!queue(Some(inc(990, key(8)))));
+        assert!(!queue(Some(inc(1_001, oracle))));
 
         // a registration counts as capacity only with a whole entry bond under its own keys' script
         let bond = Bond { op: op(2), value: crate::sats(ENTRY_BOND), scoped: key(3), cold: key(4), fallback: 9_000, payout: ScriptBuf::new() };

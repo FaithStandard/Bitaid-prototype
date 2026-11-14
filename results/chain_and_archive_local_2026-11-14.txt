@@ -1,0 +1,68 @@
+Bitaid prototype: chain records and archive logs, local regtest, 2026-11-14 (commit f52cd96)
+Seven suites, BITAID_CHECKPOINT_BLOCKS=1. No failed check in any.
+
+What this build adds over anchored_timing_local_2026-11-14:
+- attending ballots (commitment and reveal) count from the block that anchors them, within windows measured from the incident's block; a posting disputes the vote only within its escalation window
+- the incident transaction records its case (INCIDENT); the chain shows the pool's signature in its witness; a posting counts only for a case with such a transaction earlier on the chain
+- each tier commitment is a ledger record (TIER); archivists keep and serve each case's signed log; a node reads the logs of tiers it holds no messages for, checks and replays them
+
+== m3
+[caller] 13 passed, 0 failed
+[r1] 9 passed, 0 failed
+[r2] 9 passed, 0 failed
+[r3] 2 passed, 0 failed
+== arb
+[caller] 11 passed, 0 failed
+[r1-liar] 16 passed, 0 failed
+[r3] 8 passed, 0 failed
+[arb1] 19 passed, 0 failed
+== arb_standby
+[caller] 11 passed, 0 failed
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+== arb_mis
+[caller] 11 passed, 0 failed
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+== arb_omit
+[caller] 11 passed, 0 failed
+[r1-liar] 15 passed, 0 failed
+[r3] 21 passed, 0 failed
+== arb_double
+[caller] 11 passed, 0 failed
+[r1-liar] 26 passed, 0 failed
+[r3] 11 passed, 0 failed
+== multi (10 cases, review at 100%)
+450 passed, 0 failed across all nodes
+
+== audit (two nodes that saw none of the cases)
+[PASS] audit the record read from the archivists' logs alone equals the record read from the links: 30 tiers, 25 arbitrators
+[audit] 1 passed, 0 failed
+[PASS] audit-links every tier commitment on the chain since block 36516 is read (30 records, 30 tiers replayed, 25 arbitrators) from this node's links — 0 case(s) unread
+[PASS] audit-archive every tier commitment on the chain since block 36516 is read (30 records, 30 tiers replayed, 25 arbitrators) from the archivists' logs alone: 11 cases, 2884 messages — 0 case(s) unread
+
+== queue stuffing (STUFF=5)
+[PASS] r1-liar 5 postings for cases with no incident on chain, each a valid record with its escrow locked: none holds a place in the queue (backlog 1) — 5 on chain, 0 counted
+
+== review stages
+[archivist  134.38s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; no two-thirds finding — 16.2 s from convening
+[archivist  273.23s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 14.8 s from convening
+[archivist  412.17s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 14.2 s from convening
+[archivist  522.08s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 14.5 s from convening
+[archivist  737.05s] PASS review stage 1: 4 of 5 findings revealed and committed on chain; two thirds found I,D — 116.8 s from convening
+[archivist  763.89s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; no two-thirds finding — 17.2 s from convening
+[archivist  901.91s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; no two-thirds finding — 14.2 s from convening
+[archivist 1010.86s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 13.7 s from convening
+[archivist 1153.10s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; no two-thirds finding — 11.9 s from convening
+[archivist 1310.65s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 17.5 s from convening
+
+== omitted reveal (OMIT=1)
+[arb4   60.28s] tier 1: the commitment a038cb65 leaves my reveal out; posted one that counts it — a9299e0017d5ac3e
+
+== two postings (DOUBLE=1)
+[pool1   99.83s] co-signing the release of a posting's escrow (its case holds no place in the queue) for d05d10e9
+[pool2   99.81s] co-signing the release of a posting's escrow (its case holds no place in the queue) for d05d10e9
+[pool3   99.82s] co-signing the release of a posting's escrow (its case holds no place in the queue) for d05d10e9
+[pool4   99.81s] co-signing the release of a posting's escrow (its case holds no place in the queue) for d05d10e9
+[r3   29.38s] tier 1: e8b287d2 posted first and opens the case; standing down
+[r3   98.25s] PASS tier 1: another party's posting opened the case; this one's escrow was let go by the pool, whole — 92a51c56c92d23c7
