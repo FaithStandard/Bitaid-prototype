@@ -192,14 +192,14 @@ start)
   if [ "${HOSTILE:-0}" = 1 ]; then
     BITAID_WALLET=w nohup target/release/bitaid-node --role hostile --name hostile-pc $P --wait 7200 >"$L/hostile.out" 2>"$L/hostile.log" </dev/null &
   fi
-  echo "$ONION" > "$L/onion.txt"
+  echo "$ONION" > "$L/onion.txt"; echo "$BITAID_INDEX_FROM" > "$L/index_from.txt"
   echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE INDEX_FROM=$BITAID_INDEX_FROM"
   [ "$CHAIN" = public ] && echo "RPC_PASS=$PASS"
   ;;
 audit)
   # two nodes that saw nothing of the run read every arbitrator's record: one from its links, one from
   # the chain and the archivist's logs alone. Run while the PC side is still up; INDEX_FROM as printed.
-  export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_INDEX_FROM=${INDEX_FROM:?set INDEX_FROM to the value PC_READY printed} BITAID_CHECKPOINT_BLOCKS=${CHECKPOINT_BLOCKS:-1}
+  export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_INDEX_FROM=${INDEX_FROM:-$(cat "$L/index_from.txt")} BITAID_CHECKPOINT_BLOCKS=${CHECKPOINT_BLOCKS:-1}
   P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   BITAID_WALLET=w target/release/bitaid-node --role audit --name audit-links $P --links >"$L/audit-links.out" 2>"$L/audit-links.log"
   BITAID_WALLET=w target/release/bitaid-node --role audit --name audit-archive $P >"$L/audit-archive.out" 2>"$L/audit-archive.log"
