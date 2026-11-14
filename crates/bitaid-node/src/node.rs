@@ -132,6 +132,8 @@ pub struct Node {
     cp_events: HashMap<String, Event>,
     /// the id of every event read
     ids: std::collections::HashSet<String>,
+    /// those read from an archivist's log and not yet seen on a link
+    arch_ids: std::collections::HashSet<String>,
     /// transactions this node holds a tier commitment message for
     committed: std::collections::HashSet<String>,
     /// archivists known (announced, or BITAID_ARCHIVES): where a case's log is fetched from
@@ -437,6 +439,7 @@ impl Node {
             log_dir: None,
             cp_events: HashMap::new(),
             ids: Default::default(),
+            arch_ids: Default::default(),
             committed: Default::default(),
             archives: std::env::var("BITAID_ARCHIVES")
                 .map(|v| v.split(',').filter(|x| !x.is_empty()).map(String::from).collect())
@@ -502,6 +505,9 @@ impl Node {
     ) -> String {
         let name = msg.name();
         let timed = msg.timed();
+        if let Msg::TierCommitted { txid, .. } = &msg {
+            self.committed.insert(txid.clone());
+        }
         let h = self.height();
         let bytes = wire::sign(&self.keys, h, msg);
         let content = match enc {
@@ -778,8 +784,10 @@ impl Node {
             env.height = self.anchor_height(&e.id)?;
         }
         if !self.ids.insert(e.id.clone()) {
-            // read before (over a link and from an archivist's log, say): once is enough
-            return None;
+            // read before. A message first read from an archivist's log went into the record only;
+            // when a link then brings it, it is still handed on, once, so whoever is working the
+            // case acts on it. Anything else read twice is dropped
+            return self.arch_ids.remove(&e.id).then_some(env);
         }
         self.keep_log(e, &env);
         if let Some(f) = self.observer.as_mut() {
@@ -898,6 +906,7 @@ impl Node {
                         continue;
                     }
                     if self.decode(&e).is_some() {
+                        self.arch_ids.insert(e.id.clone());
                         got += 1;
                     }
                 }
@@ -918,7 +927,8 @@ impl Node {
         let mut cases: Vec<String> = self.rpc.ledger(|l| {
             l.tiers
                 .iter()
-                .filter(|t| t.height >= from && !committed.contains(&t.txid.to_string()))
+                // (three blocks deep: the links get their chance first)
+                .filter(|t| t.height >= from && t.height + 3 <= l.tip().unwrap_or(0) && !committed.contains(&t.txid.to_string()))
                 .map(|t| t.case.clone())
                 .collect()
         });

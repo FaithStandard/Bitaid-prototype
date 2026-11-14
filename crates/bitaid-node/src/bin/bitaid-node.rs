@@ -2518,8 +2518,12 @@ fn wait_for_market(
             n.log("STANDBY_EXPIRED: the market fee never came down to the bid before the escrow unlocks; the case ends by refund");
             return None;
         }
+        // (a block on demand on regtest, and then time for this node's ledger to read it: the
+        // ledger is read at most every two seconds, and a loop that mined without waiting ran the
+        // chain past the draw block before any offer could be anchored)
         n.rpc.mine(1).ok();
-        n.collect_until(h + 1, secs(bitaid_node::slow(900)), |_, _| None::<()>, |_| false);
+        n.collect(Duration::from_millis(2100), |_, _| None::<()>, |_| false);
+        n.rpc.sync();
     }
 }
 
