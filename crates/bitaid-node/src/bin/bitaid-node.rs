@@ -1333,6 +1333,8 @@ fn pool_member(mut n: Node) -> i32 {
                 // escalation fixed (draw_blocks() after it), and exactly the offers with valid bonds
                 // stated from the escalation to two blocks before that block, none left out
                 let in_window = |oh: u32| oh + 2 <= *height;
+                // an arbitrator suspended for inactivity as of the opening is left out by rule
+                let off = arb::inactive(&n.history, h0);
                 let block_ok = *height == h0 + bitaid_node::draw_blocks()
                     && n.rpc.block_hash(*height).as_deref() == Some(block_hash.as_str());
                 let offers_ok = listed
@@ -1340,7 +1342,7 @@ fn pool_member(mut n: Node) -> i32 {
                     .all(|o| seen.get(o).map(|x| x.0 && in_window(x.2)).unwrap_or(false))
                     && seen
                         .iter()
-                        .filter(|(_, x)| x.0 && in_window(x.2))
+                        .filter(|(o, x)| x.0 && in_window(x.2) && !off.contains(*o))
                         .all(|(o, _)| listed.contains(o));
                 let draw_ok =
                     bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
@@ -2784,7 +2786,9 @@ fn escalate_tier(
             continue;
         }
         // suspended for inactivity: no seats (§10.3)
-        if arb::inactive(&n.history, n.rpc.height() + 1).contains(&who) {
+        // (as of the tier's opening, so the pool's members, who check that no offer was left out,
+        // read the same suspensions)
+        if arb::inactive(&n.history, h_esc).contains(&who) {
             n.log(&format!(
                 "seat offer from {} refused: suspended for inactivity",
                 bitaid_node::pre(&who, 8)

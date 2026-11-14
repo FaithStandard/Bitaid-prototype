@@ -544,7 +544,9 @@ impl Msg {
     pub fn timed(&self) -> bool {
         match self {
             Msg::SeatOffer { .. } | Msg::VerdictCommit { .. } | Msg::ReviewAnswer { .. } | Msg::Flag { .. } => true,
-            Msg::Escalate { tier, .. } => *tier >= 2,
+            // (an appeal; a review stage's opening is only an announcement: the chain fixes its
+            // draw block, and review tiers are numbered from 100)
+            Msg::Escalate { tier, .. } => *tier >= 2 && *tier < 100,
             _ => false,
         }
     }
