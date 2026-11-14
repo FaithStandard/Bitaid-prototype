@@ -368,6 +368,7 @@ fn pool_member(mut n: Node) -> i32 {
     // member has co-signed (their roster can no longer be replaced)
     let mut accepted: HashMap<String, HashMap<String, case::AcceptInfo>> = HashMap::new();
     let mut cosigned: std::collections::HashSet<String> = Default::default();
+    let mut commit_best: HashMap<(String, u32), usize> = HashMap::new();
     let mut assigned: HashMap<String, Vec<u32>> = HashMap::new();
     let mut taken: HashMap<u32, String> = HashMap::new();
     let mut digests: HashMap<(String, u32), [u8; 32]> = HashMap::new();
@@ -1532,6 +1533,11 @@ fn pool_member(mut n: Node) -> i32 {
                     }
                     later!();
                 }
+                // of a tier's commitments, the one counting the most reveals stands (the first of
+                // equals), as the replay reads them
+                if commit_best.get(&key).is_some_and(|b| *b >= rv.len()) {
+                    continue;
+                }
                 let cm = bitaid_node::arb::tier_commitment_with(case_id, *tier, &seats, &rv, committed);
                 if !n.rpc.has_op_return(txid, &cm) {
                     if retried.insert((case_id.clone(), tier + 20_000)) {
@@ -1544,6 +1550,7 @@ fn pool_member(mut n: Node) -> i32 {
                     later!();
                 };
                 let w = alerts[case_id].template.dispute_blocks;
+                commit_best.insert(key.clone(), rv.len());
                 let votes: Vec<Ballot> = rv.iter().map(|x| x.1.clone()).collect();
                 match bitaid_node::arb::supermajority(seats.len(), &votes) {
                     Some(v) => {
@@ -3161,6 +3168,27 @@ fn escalate_tier(
         },
         |v| v.len() >= size,
     );
+    // (test) a hostile escalator: posts at once a commitment that leaves one seat's reveal out
+    if flag("--omit-reveal") && reveals.len() == size && size > 1 {
+        let cut: Vec<(String, Ballot)> = reveals[..size - 1].to_vec();
+        let cm = bitaid_node::arb::tier_commitment(&c, tier, &seats, &cut);
+        if let Ok(txid) = n.rpc.op_return(&cm) {
+            n.rpc.confirm(&[txid]);
+            n.send_case(
+                &c,
+                &[],
+                Msg::TierCommitted {
+                    case_id: c.clone(),
+                    tier,
+                    txid: txid.to_string(),
+                    revealed: cut.iter().map(|x| x.0.clone()).collect(),
+                    committed: vec![],
+                },
+                false,
+            );
+            n.log(&format!("(test) tier {tier}: posted a commitment that leaves the reveal of {} out", bitaid_node::pre(&reveals[size - 1].0, 8)));
+        }
+    }
     let cc = c.clone();
     let wait = if reveals.len() < size { 20 } else { 180 };
     let mut committed = n.wait(secs(wait), |env, _| match &env.msg {
@@ -4764,6 +4792,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut commits: HashMap<(String, u32), std::collections::BTreeSet<String>> = HashMap::new();
     let mut reveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut mine: HashMap<(String, u32), (Ballot, [u8; 32])> = HashMap::new();
+    let mut contested: std::collections::HashSet<(String, u32)> = Default::default();
     let mut revealed: std::collections::HashSet<(String, u32)> = Default::default();
     let mut refunds: HashMap<(String, u32), bitcoin::ScriptBuf> = HashMap::new();
     // case units committed per seat, out of --capital (§10.2); released once the case is closed and
@@ -5427,8 +5456,48 @@ fn arbitrator(mut n: Node) -> i32 {
                     }
                 }
             }
-            Msg::TierCommitted { case_id, tier, txid, .. } => {
+            Msg::TierCommitted { case_id, tier, txid, revealed: listed, .. } => {
                 let key = (case_id.clone(), tier);
+                // a commitment that leaves this seat's reveal out is answered with one that counts
+                // it: of the commitments confirmed within the escalation window, the one counting
+                // the most valid reveals stands (§10.4)
+                if revealed.contains(&key)
+                    && !flag("--no-reveal")
+                    && !listed.is_empty()
+                    && !listed.contains(&me)
+                    && contested.insert(key.clone())
+                {
+                    if let (Some(seats), Some((my, _))) = (seated.get(&key), mine.get(&key)) {
+                        let mut list: Vec<(String, Ballot)> = reveals
+                            .get(&key)
+                            .map(|l| l.iter().filter(|x| listed.contains(&x.0)).cloned().collect())
+                            .unwrap_or_default();
+                        list.push((me.clone(), my.clone()));
+                        if list.len() == listed.len() + 1 {
+                            let cm = bitaid_node::arb::tier_commitment(&case_id, tier, seats, &list);
+                            if let Ok(t2) = n.rpc.op_return(&cm) {
+                                n.rpc.confirm(&[t2]);
+                                n.send_case(
+                                    &case_id,
+                                    &[],
+                                    Msg::TierCommitted {
+                                        case_id: case_id.clone(),
+                                        tier,
+                                        txid: t2.to_string(),
+                                        revealed: list.iter().map(|x| x.0.clone()).collect(),
+                                        committed: vec![],
+                                    },
+                                    false,
+                                );
+                                n.log(&format!(
+                                    "tier {tier}: the commitment {} leaves my reveal out; posted one that counts it — {}",
+                                    bitaid_node::pre(&txid, 8),
+                                    &t2.to_string()[..16]
+                                ));
+                            }
+                        }
+                    }
+                }
                 if !flag("--challenge") || tier >= num("--max-tier", 2u32) {
                     continue;
                 }

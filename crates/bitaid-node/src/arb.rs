@@ -978,6 +978,7 @@ impl Replay {
                 a.template.commit_blocks,
                 &oracle,
                 anchor,
+                a.template.dispute_blocks,
             );
             rp.tiers.insert(k, t);
         }
@@ -1028,6 +1029,7 @@ impl Replay {
                 a.template.commit_blocks,
                 &oracle,
                 None,
+                a.template.dispute_blocks,
             );
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
@@ -2142,6 +2144,8 @@ fn read_tier(
     // tier 1: the height the chain gives its opening (the market took the case up), in place of the
     // height its escalator stated
     anchor: Option<u32>,
+    // the escalation window, in blocks: commitments confirmed within it of the first compete
+    contest: u32,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -2399,9 +2403,16 @@ fn read_tier(
             }
         }
     }
+    // The tier's commitment (§10.4). Anyone may post one: a transaction recording the roster and the
+    // reveals it counts. Whoever posts first could leave out a reveal it dislikes, so the first does
+    // not win by being first: of the commitments confirmed within the escalation window that the
+    // first one opens, the one that counts the most valid reveals stands (the earliest of equals).
+    // A seat left out posts one that includes it. The window, and every deadline that runs from the
+    // commitment, still runs from the first.
+    let mut cands: Vec<(u32, String, Vec<(String, Ballot)>)> = vec![];
     for e in mine {
         if let Msg::TierCommitted { tier, txid, revealed, committed, .. } = &e.msg {
-            if *tier != k || !t.fee_paid || t.committed {
+            if *tier != k || !t.fee_paid || cands.iter().any(|c| c.1 == *txid) {
                 continue;
             }
             // the reveals the commitment counts: those it lists (each a valid reveal of a seat), or,
@@ -2415,12 +2426,23 @@ fn read_tier(
                 continue;
             }
             if rpc.has_op_return(txid, &tier_commitment_with(case, k, &t.seats, &counted, committed)) {
-                t.committed = true;
-                t.commit_txid = Some(txid.clone());
-                // a reveal published after the commitment is not counted: that seat is charged as a
-                // missed reveal, and the committed verdict stands
-                t.reveals = counted;
+                // one not yet in a block counts as later than any that is
+                cands.push((rpc.tx_height(txid).unwrap_or(u32::MAX), txid.clone(), counted));
             }
+        }
+    }
+    cands.sort_by(|x, y| (x.0, &x.1).cmp(&(y.0, &y.1)));
+    if let Some((first_h, first_txid, _)) = cands.first().cloned() {
+        let best = cands
+            .iter()
+            .filter(|c| c.0 <= first_h.saturating_add(contest))
+            .max_by(|x, y| x.2.len().cmp(&y.2.len()).then((y.0, &y.1).cmp(&(x.0, &x.1))))
+            .cloned();
+        if let Some((_, _, counted)) = best {
+            t.committed = true;
+            t.commit_txid = Some(first_txid);
+            // a reveal the standing commitment does not count is charged as a missed reveal
+            t.reveals = counted;
         }
     }
     t.committers = t

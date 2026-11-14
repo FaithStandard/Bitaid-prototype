@@ -68,6 +68,9 @@ R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
 # NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
 [ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
+# OMIT=1: r1-liar, escalating, posts a tier commitment that leaves one seat's reveal out; the commitment
+# counting every reveal stands all the same (§10.4)
+[ -n "$OMIT" ] && R1APPEAL="$R1APPEAL --omit-reveal"
 # CASES=2: the same network takes a second case (with CAPTURE, the same pair captures it again: a
 # second confirmed overturn costs them their entry bonds, §12)
 for c in $(seq 1 ${CASES:-1}); do
