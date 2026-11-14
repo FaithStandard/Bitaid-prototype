@@ -484,6 +484,38 @@ impl Rpc {
 
     /// Funds `spk` with `sats` in a wallet transaction that also carries `record` in an OP_RETURN
     /// output; the funded output comes first. Returns it.
+    /// Publishes a record alone (an anchor): one OP_RETURN output and the wallet's change.
+    pub fn record(&self, record: &[u8]) -> Result<Txid, String> {
+        let raw = self.call("createrawtransaction", json!([[], [{"data": hex::encode(record)}]]))?;
+        let mut opts = json!({"lockUnspents": true});
+        if let Some(r) = self.wallet_fee_rate() {
+            opts["fee_rate"] = json!(r);
+        }
+        let mut tries = 0;
+        let txid = loop {
+            tries += 1;
+            let step = (|| {
+                let funded = self.wcall("fundrawtransaction", json!([raw, opts]))?;
+                let signed = self.wcall("signrawtransactionwithwallet", json!([funded["hex"]]))?;
+                self.call("sendrawtransaction", json!([signed["hex"]]))
+            })();
+            match step {
+                Ok(x) => break x,
+                Err(e)
+                    if tries < 6
+                        && ["missingorspent", "conflict", "replacement", "Insufficient funds", "exceeds your balance"]
+                            .iter()
+                            .any(|m| e.contains(m)) =>
+                {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        self.note_sent(txid.as_str());
+        Txid::from_str(txid.as_str().unwrap_or("")).map_err(|e| e.to_string())
+    }
+
     pub fn fund_with_record(&self, spk: &ScriptBuf, sats: u64, record: &[u8]) -> Result<OutPoint, String> {
         let addr = Address::from_script(spk, self.network()).map_err(|e| e.to_string())?;
         let amount = format!("{:.8}", sats as f64 / 1e8);

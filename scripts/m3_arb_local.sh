@@ -11,6 +11,8 @@ mine1() { if [ "$CHAIN" = signet ]; then h=$($CLI getblockcount); while [ $($CLI
 H=$($CLI getblockcount); [ "$H" -lt 110 ] && $CLI -rpcwallet=w generatetoaddress 110 $($CLI -rpcwallet=w getnewaddress) >/dev/null
 # every node reads the chain's records (postings, registrations) from the same height
 export BITAID_INDEX_FROM=$($CLI getblockcount)
+# timed messages are anchored by a checkpoint every block here (blocks come every 2 s)
+export BITAID_CHECKPOINT_BLOCKS=${BITAID_CHECKPOINT_BLOCKS:-1}
 for w in caller r1 r3; do
   $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1
   for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done

@@ -17,6 +17,13 @@
 //! * `REGISTER` (§10.2): an arbitrator's entry bond. It names the bond's keys and fallback height;
 //!   the output it points at in the same transaction is the bond.
 //!
+//! * `ANCHOR` (§7): a timestamp. It carries 32 bytes: the id of one signed message, or the root of a
+//!   checkpoint (a list of message ids, published beside it). A message whose timing decides
+//!   anything (a seat offer, a vote commitment, a reviewer's answer, an appeal, a flag) counts from
+//!   the first block that anchors it, never from the height its sender states. Anyone may anchor
+//!   anything: an anchor proves only that the message existed by that block, which nobody has to
+//!   take on trust, and a message left out of the checkpoints is anchored by its own sender.
+//!
 //! This module only reads: it parses blocks (as `getblock` verbosity 2 gives them), tracks which
 //! recorded outputs were spent and when, and can be cut back to a height when the chain reorganises.
 use bitcoin::secp256k1::XOnlyPublicKey;
@@ -28,6 +35,30 @@ use std::str::FromStr;
 pub const MAGIC: &[u8; 4] = b"BTAD";
 pub const KIND_POST: u8 = 1;
 pub const KIND_REGISTER: u8 = 2;
+pub const KIND_ANCHOR: u8 = 3;
+
+/// An anchor's record: 4 + 1 + 32 = 37 bytes.
+pub fn anchor_record(root: &[u8; 32]) -> Vec<u8> {
+    let mut v = MAGIC.to_vec();
+    v.push(KIND_ANCHOR);
+    v.extend_from_slice(root);
+    v
+}
+
+/// The root a checkpoint of several message ids is anchored under. One id alone is its own root.
+pub fn checkpoint_root(leaves: &[String]) -> Option<String> {
+    match leaves {
+        [] => None,
+        [one] => (one.len() == 64).then(|| one.clone()),
+        many => {
+            let mut b = Vec::with_capacity(32 * many.len());
+            for l in many {
+                b.extend_from_slice(&<[u8; 32]>::try_from(hex::decode(l).ok()?).ok()?);
+            }
+            Some(hex::encode(bitaid_core::hashes::tagged("Bitaid/checkpoint", &b)))
+        }
+    }
+}
 
 /// A posting's record: 4 + 1 + 32 + 1 + 4 + 32 + 4 = 78 bytes.
 pub fn post_record(case: &[u8; 32], tier: u8, fee: u32, poster: &XOnlyPublicKey, lock: u32) -> Vec<u8> {
@@ -87,6 +118,8 @@ pub struct Registration {
 pub struct Ledger {
     pub postings: Vec<Posting>,
     pub registrations: Vec<Registration>,
+    /// anchored roots (hex) and the block that confirmed each, in chain order
+    pub anchors: Vec<(String, u32)>,
     /// recorded outputs still unspent: (is a posting, index)
     watch: HashMap<OutPoint, (bool, usize)>,
     /// every block read: (height, hash), oldest first
@@ -174,6 +207,7 @@ impl Ledger {
                         at: Anchor { op, value, spk, height, pos, spent: None },
                     });
                 }
+                (Some(&KIND_ANCHOR), 37) => self.anchors.push((hex::encode(&p[5..37]), height)),
                 (Some(&KIND_REGISTER), 74) => {
                     let (Ok(scoped), Ok(cold), Some((op, value, spk))) = (
                         XOnlyPublicKey::from_slice(&p[5..37]),
@@ -201,6 +235,7 @@ impl Ledger {
         self.blocks.retain(|b| b.0 < height);
         self.postings.retain(|p| p.at.height < height);
         self.registrations.retain(|r| r.at.height < height);
+        self.anchors.retain(|a| a.1 < height);
         self.watch.clear();
         for (i, p) in self.postings.iter_mut().enumerate() {
             if p.at.spent.is_some_and(|s| s >= height) {
@@ -218,6 +253,11 @@ impl Ledger {
                 self.watch.insert(r.at.op, (false, i));
             }
         }
+    }
+
+    /// The first block that anchored `root`, if any has.
+    pub fn anchored(&self, root: &str) -> Option<u32> {
+        self.anchors.iter().find(|a| a.0 == root).map(|a| a.1)
     }
 
     /// The posting recorded in transaction `txid`, if any.
@@ -300,5 +340,27 @@ mod tests {
         // cut back below the records: nothing is left
         l.truncate(100);
         assert!(l.postings.is_empty() && l.registrations.is_empty() && l.tip().is_none());
+    }
+
+    #[test]
+    fn anchors_count_from_the_first_block_that_holds_them() {
+        let (a, b, c) = (hex::encode([1u8; 32]), hex::encode([2u8; 32]), hex::encode([3u8; 32]));
+        // one id is its own root; several are anchored under one root, in the order listed
+        assert_eq!(checkpoint_root(&[a.clone()]), Some(a.clone()));
+        let root = checkpoint_root(&[a.clone(), b.clone()]).unwrap();
+        assert_ne!(Some(root.clone()), checkpoint_root(&[b.clone(), a.clone()]));
+        assert!(checkpoint_root(&[]).is_none() && checkpoint_root(&["zz".into(), a.clone()]).is_none());
+        let rec = |r: &str| anchor_record(&<[u8; 32]>::try_from(hex::decode(r).unwrap()).unwrap());
+        let mut l = Ledger::default();
+        l.absorb(200, "h200", &[tx(1, &[], &[(1.0, "5120aa")], Some(&rec(&root)))]);
+        // the same root anchored again later, and a single id anchored alone
+        l.absorb(203, "h203", &[tx(2, &[], &[], Some(&rec(&root))), tx(3, &[], &[], Some(&rec(&c)))]);
+        assert_eq!((l.anchored(&root), l.anchored(&c), l.anchored(&a)), (Some(200), Some(203), None));
+        // a record of another length is not an anchor
+        l.absorb(204, "h204", &[tx(4, &[], &[], Some(&rec(&b)[..36]))]);
+        assert_eq!(l.anchored(&b), None);
+        // a reorganisation takes back what it confirmed
+        l.truncate(203);
+        assert_eq!((l.anchored(&root), l.anchored(&c)), (Some(200), None));
     }
 }

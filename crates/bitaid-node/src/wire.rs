@@ -523,6 +523,11 @@ pub enum Msg {
     Deadlock {
         case_id: Hex32,
     },
+    /// Anyone: the ids of the messages anchored on chain under one root (§7). The chain holds the
+    /// root; this list lets a node find which messages it timestamps.
+    Checkpoint {
+        leaves: Vec<Hex32>,
+    },
     /// Pool member, once per pot after replaying the case: its public attestation share for the outcome
     /// it reads from the log. Any t valid shares for one outcome combine to the scalar that completes it.
     AttestShare {
@@ -533,6 +538,16 @@ pub enum Msg {
 }
 
 impl Msg {
+    /// Whether the time of this message decides anything: such a message counts from the block that
+    /// anchors it on chain (§7), never from the height its sender states. A tier-1 escalation is only
+    /// a pointer to its posting, which the chain already times.
+    pub fn timed(&self) -> bool {
+        match self {
+            Msg::SeatOffer { .. } | Msg::VerdictCommit { .. } | Msg::ReviewAnswer { .. } | Msg::Flag { .. } => true,
+            Msg::Escalate { tier, .. } => *tier >= 2,
+            _ => false,
+        }
+    }
     pub fn name(&self) -> &'static str {
         match self {
             Msg::Announce { .. } => "announce",
@@ -576,6 +591,7 @@ impl Msg {
             Msg::TierCommitted { .. } => "tier-committed",
             Msg::Forfeits { .. } => "forfeits",
             Msg::Deadlock { .. } => "deadlock",
+            Msg::Checkpoint { .. } => "checkpoint",
             Msg::SeizureRequest { .. } => "seizure-request",
             Msg::SeizureSig { .. } => "seizure-sig",
         }
@@ -583,6 +599,7 @@ impl Msg {
     pub fn case_id(&self) -> Option<&str> {
         match self {
             Msg::Registration { .. }
+            | Msg::Checkpoint { .. }
             | Msg::Announce { .. }
             | Msg::PoolHello { .. }
             | Msg::PoolDkg1 { .. }
@@ -685,6 +702,11 @@ pub fn verify(bytes: &[u8]) -> Result<Envelope, String> {
         .verify_schnorr(&sig, &Message::from_digest(msg_digest(&sb.body)), &pk)
         .map_err(|_| "bad signature".to_string())?;
     Ok(env)
+}
+
+/// Whether a message of this name may be timed (see `Msg::timed`), told from its tag before it is read.
+pub fn timed_name(t: &str) -> bool {
+    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate"].contains(&t)
 }
 
 pub fn b64(b: &[u8]) -> String {

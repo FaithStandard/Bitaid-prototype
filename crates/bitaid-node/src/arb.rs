@@ -1051,12 +1051,9 @@ impl Replay {
             {
                 let at = registry_at(hist, h.saturating_sub(2));
                 let listed: std::collections::HashSet<&String> = t.listed.iter().collect();
-                let live = |b: &Bond| {
-                    b.value >= crate::sats(ENTRY_BOND)
-                        && rpc
-                            .utxo(&b.op)
-                            .is_some_and(|u| u.script_pubkey == b.tree(&oracle).script_pubkey())
-                };
+                // (an entry bond is one the chain registers, unspent at the draw: read the same by
+                // every node, then and later)
+                let live = |b: &Bond| chain_registered(rpc, &oracle, b, h);
                 let complete = at
                     .iter()
                     .filter(|(w, _)| !excluded.contains(*w) && !off.contains(*w))
@@ -2207,8 +2204,12 @@ fn read_tier(
                 && rpc.height() >= *height + crate::draw_depth();
             // and every listed offer was stated at least two blocks before the draw
             let window_ok = offers.iter().all(|o| t.offer_height.get(o).is_none_or(|oh| oh + 2 <= *height));
+            // and every listed offer rests on an entry bond the chain registers, unspent at the draw
+            let bonded = registry.is_some()
+                || offers.iter().all(|o| t.offers.get(o).is_some_and(|b| chain_registered(rpc, oracle, b, *height)));
             if block_ok
                 && window_ok
+                && bonded
                 && offers.iter().all(|o| t.offers.contains_key(o))
                 && draw(block_hash, case, k, offers, panel_size(k)) == *seats
                 && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
@@ -3075,6 +3076,23 @@ pub fn registered_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height:
         .count()
 }
 
+/// Whether `b` is an entry bond the chain registers (see `registered_at`), unspent at `height`.
+pub fn chain_registered(rpc: &Rpc, oracle: &XOnlyPublicKey, b: &Bond, height: u32) -> bool {
+    rpc.sync();
+    rpc.ledger(|l| {
+        l.registrations.iter().any(|r| {
+            r.at.op == b.op
+                && r.scoped == b.scoped
+                && r.cold == b.cold
+                && r.fallback == b.fallback
+                && r.at.height <= height
+                && r.at.spent.is_none_or(|s| s > height)
+                && r.at.value >= crate::sats(ENTRY_BOND)
+                && r.at.spk == b.tree(oracle).script_pubkey()
+        })
+    })
+}
+
 /// The fee market (§10.6) at `height`, replayed from the ledger alone: every node with the chain
 /// computes the same one. A posting is a confirmed transaction whose escrow holds the panel's fees
 /// (see `posting_valid`); it counts from the block that confirmed it, at the highest fee the case has
@@ -3159,4 +3177,73 @@ pub fn tier1_opening(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[
         let h = market_at(l, oracle, tip).activated(case)?;
         Some((who, h))
     })
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+    use crate::ledger::{Anchor, Ledger, Posting, Registration};
+
+    fn key(b: u8) -> XOnlyPublicKey {
+        bitcoin::secp256k1::Keypair::from_seckey_slice(&Secp256k1::new(), &[b; 32]).unwrap().x_only_public_key().0
+    }
+    fn op(n: u8) -> OutPoint {
+        OutPoint { txid: bitcoin::Txid::from_str(&hex::encode([n; 32])).unwrap(), vout: 0 }
+    }
+
+    /// A record alone moves nothing: anyone can write one, so each counts only with the output the
+    /// chain shows beside it, under the script its own fields give, holding what it claims.
+    #[test]
+    fn a_forged_record_counts_for_nothing() {
+        let (oracle, poster) = (key(9), key(1));
+        let fee = 20_000u64;
+        let lock = 1_000 + post_lock();
+        let spk = escrow(&poster, lock, op(1), 0, ScriptBuf::new()).tree(&oracle).script_pubkey();
+        let good = Posting {
+            case: hex::encode([7u8; 32]),
+            tier: 1,
+            fee,
+            poster,
+            lock,
+            at: Anchor { op: op(1), value: fee * panel_size(1) as u64, spk: spk.clone(), height: 1_000, pos: 0, spent: None },
+        };
+        assert!(posting_valid(&good, &oracle));
+        // the record names a fee its escrow does not hold
+        let mut p = good.clone();
+        p.at.value -= 1;
+        assert!(!posting_valid(&p, &oracle));
+        // the output beside it is not the escrow of the key, lock and oracle the record names
+        let mut p = good.clone();
+        p.at.spk = escrow(&key(2), lock, op(1), 0, ScriptBuf::new()).tree(&oracle).script_pubkey();
+        assert!(!posting_valid(&p, &oracle));
+        let mut p = good.clone();
+        p.at.spk = escrow(&poster, lock, op(1), 0, ScriptBuf::new()).tree(&key(8)).script_pubkey();
+        assert!(!posting_valid(&p, &oracle));
+        // an escrow its poster could take back at once holds nothing
+        let mut p = good.clone();
+        p.lock = 1_001;
+        p.at.spk = escrow(&poster, 1_001, op(1), 0, ScriptBuf::new()).tree(&oracle).script_pubkey();
+        assert!(!posting_valid(&p, &oracle));
+
+        // a registration counts as capacity only with a whole entry bond under its own keys' script
+        let bond = Bond { op: op(2), value: crate::sats(ENTRY_BOND), scoped: key(3), cold: key(4), fallback: 9_000, payout: ScriptBuf::new() };
+        let reg = |value: u64, spk: ScriptBuf| Registration {
+            scoped: bond.scoped,
+            cold: bond.cold,
+            fallback: bond.fallback,
+            at: Anchor { op: bond.op, value, spk, height: 1_000, pos: 0, spent: None },
+        };
+        let real = bond.tree(&oracle).script_pubkey();
+        let count = |r: Registration| {
+            let mut l = Ledger::default();
+            l.registrations.push(r);
+            registered_at(&l, &oracle, 1_010)
+        };
+        assert_eq!(count(reg(bond.value, real.clone())), 1);
+        assert_eq!(count(reg(bond.value - 1, real.clone())), 0);
+        assert_eq!(count(reg(bond.value, spk.clone())), 0);
+        let mut spent = reg(bond.value, real);
+        spent.at.spent = Some(1_005);
+        assert_eq!(count(spent), 0);
+    }
 }

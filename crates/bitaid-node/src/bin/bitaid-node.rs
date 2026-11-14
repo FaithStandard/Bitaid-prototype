@@ -359,6 +359,8 @@ fn pool_member(mut n: Node) -> i32 {
     };
     let okey = m.view.key_hex();
     let opid = m.view.pool_id();
+    // the pool's members take turns anchoring a checkpoint of the timed messages they hold (§7)
+    n.anchorer = Some((me.saturating_sub(1) as u32, num("--n", 4u32)));
     n.subscribe("all", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
     let mut alerts: HashMap<String, Alerted> = HashMap::new();
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
@@ -2621,9 +2623,9 @@ fn escalate_tier(
             }
         }
     }
-    // (for a higher tier, the escalation's height is still the one its envelope states)
+    // (a higher tier opens at the block that anchors its escalation on chain, §7)
     n.refresh_height();
-    n.send_case(
+    let esc_id = n.send_case(
         &c,
         &[],
         Msg::Escalate {
@@ -2649,7 +2651,13 @@ fn escalate_tier(
             );
             h
         }
-        None => n.height(),
+        None => match n.wait_anchored(&esc_id, secs(bitaid_node::slow(1800))) {
+            Some(h) => h,
+            None => {
+                n.check(&format!("tier {tier}: the escalation anchored on chain"), false, "");
+                return None;
+            }
+        },
     };
     let draw_h = h_esc + bitaid_node::draw_blocks();
     n.log(&format!("ESCALATE tier {tier} ({size} seats): {reason}; drawn from block {draw_h}"));
@@ -3367,7 +3375,9 @@ fn seat_forfeit_due(
                 .get(&(a.case_hex.clone(), *k))
                 .map(|m| m.contains_key(seat))
                 .unwrap_or(false);
-            if voted || tip < paid + a.template.commit_blocks {
+            // (a vote counts once the chain anchors it, §7: a checkpoint's list still on its way to
+            // this member gets a few blocks before the seat is taken as silent)
+            if voted || tip < paid + a.template.commit_blocks + bitaid_node::checkpoint_blocks() + 2 {
                 return None;
             }
             return Some((
