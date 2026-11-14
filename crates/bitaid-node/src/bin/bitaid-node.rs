@@ -1015,10 +1015,14 @@ fn pool_member(mut n: Node) -> i32 {
                 } else if let Some((d, what)) = (!done.contains(case_id))
                     .then(|| {
                         let key = (case_id.clone(), 1u32);
-                        escrow_payout_due(&n, a, &t, *input, panels.get(&key), offers.get(&key))
+                        let opener = esc.get(case_id).filter(|x| x.0 == 1).map(|x| &x.1);
+                        escrow_payout_due(&n, a, &t, *input, panels.get(&key), offers.get(&key), opener)
                     })
                     .flatten()
                 {
+                    n.log(&format!("co-signing {what} for {}", bitaid_node::pre(&case_id, 8)));
+                    d
+                } else if let Some((d, what)) = escrow_release_due(&n, a, &t, *input) {
                     n.log(&format!("co-signing {what} for {}", bitaid_node::pre(&case_id, 8)));
                     d
                 } else if let Some((d, what)) = (!done.contains(case_id))
@@ -2544,6 +2548,9 @@ fn escrow_payout_due(
     input: u32,
     seats: Option<&Vec<String>>,
     seen: Option<&HashMap<String, (bool, String, u32, String)>>,
+    // who opened tier 1, as this member read it from the chain: only that party's posting pays the
+    // panel (another party's posting for the same case is let go, never paid out a second time)
+    opener: Option<&String>,
 ) -> Option<([u8; 32], String)> {
     if input != 0 || t.input.len() != 1 {
         return None;
@@ -2556,6 +2563,9 @@ fn escrow_payout_due(
             .filter(|p| p.case == a.case_hex && p.at.spent.is_none() && arb::posting_valid(p, &oracle))
             .cloned()
     })?;
+    if hex::encode(p.poster.serialize()) != *opener? {
+        return None;
+    }
     let (seats, seen) = (seats?, seen?);
     let fee = arb::seat_fee(a.template.arb_fee, 1);
     if p.fee < fee || seats.len() != arb::panel_size(1) {
@@ -2577,6 +2587,56 @@ fn escrow_payout_due(
         e.spend_digest(&oracle, t),
         format!("the payment of the tier-1 panel ({} × {fee} sats) out of the posting's escrow", seats.len()),
     ))
+}
+
+/// Whether `t` hands a posting's escrow back to its poster before the lock height, and may: it
+/// spends a valid, unspent posting of the case, carries the release record, and the case is not
+/// waiting for its hearing (it stands by below the market's fee, or was heard on another posting, or
+/// was never taken up). A posting whose case holds a place in the queue is not let go.
+fn escrow_release_due(n: &Node, a: &Alerted, t: &Transaction, input: u32) -> Option<([u8; 32], String)> {
+    if input != 0 || t.input.len() != 1 {
+        return None;
+    }
+    let rec = bitaid_node::ledger::release_record();
+    if !t.output.iter().any(|o| o.script_pubkey.is_op_return() && o.script_pubkey.as_bytes().ends_with(&rec) && o.script_pubkey.len() == rec.len() + 2) {
+        return None;
+    }
+    let oracle = wire::xonly(&a.oracle_key)?;
+    n.rpc.sync();
+    let tip = n.rpc.height();
+    let p = n.rpc.ledger(|l| {
+        let p = l
+            .postings
+            .iter()
+            .find(|p| p.at.op == t.input[0].previous_output)
+            .filter(|p| p.case == a.case_hex && p.at.spent.is_none() && arb::posting_valid(p, &oracle))?;
+        (!arb::market_at(l, &oracle, tip).is_active(&p.case)).then(|| p.clone())
+    })?;
+    let e = arb::escrow(&p.poster, p.lock, p.at.op, p.at.value, bitcoin::ScriptBuf::new());
+    Some((e.spend_digest(&oracle, t), "the release of a posting's escrow (its case holds no place in the queue)".into()))
+}
+
+/// The poster's side of a release: the escrow back to its own wallet, with the pool's co-signature.
+fn release_escrow(n: &mut Node, view: &PoolView, c: &str, e: &arb::Bond, oxo: &bitcoin::secp256k1::XOnlyPublicKey) -> Result<bitcoin::Txid, String> {
+    let rec = bitcoin::script::PushBytesBuf::try_from(bitaid_node::ledger::release_record()).map_err(|e| e.to_string())?;
+    let outs = vec![(e.value, e.payout.clone()), (0, bitcoin::ScriptBuf::new_op_return(&rec))];
+    let (tx0, d) = e.spend_to(oxo, &outs);
+    let pre = Secp256k1::new().sign_schnorr(&bitcoin::secp256k1::Message::from_digest(d), &n.keys).serialize();
+    let mut res = Err("not asked".to_string());
+    for i in 0..12u32 {
+        let mut tx = tx0.clone();
+        res = pool::cosign(n, view, c, &serialize_hex(&tx), 0, &d, 60_000 + 10 * i).and_then(|(osig, _, _)| {
+            e.witness(oxo, &mut tx, &pre, &osig);
+            n.rpc.package(&tx)
+        });
+        match &res {
+            Err(x) if x.contains("members committed") => {
+                n.collect(Duration::from_secs(10), |_, _| None::<()>, |_| false);
+            }
+            _ => break,
+        }
+    }
+    res
 }
 
 /// The escalating party's side of one arbitration tier (§10.1–10.5): escalate, collect blind seat
@@ -2656,6 +2716,32 @@ fn escalate_tier(
                 true,
                 &post[..16],
             );
+            // another party's posting for the case came first on the chain: that party opens the
+            // tier and its escrow pays the panel. This one stands down, and its escrow is let go
+            // once the case holds no place in the queue (heard on the other posting)
+            let me = n.me();
+            let opener = arb::pinned_roster(&n.history, a, &n.rpc).and_then(|r| {
+                let parties: Vec<&str> = std::iter::once(a.caller.as_str()).chain(r.seats.iter().map(|x| x.as_str())).collect();
+                arb::tier1_opening(&n.rpc, &oxo, &c, &parties)
+            });
+            if let Some((who, _)) = opener.filter(|o| o.0 != me) {
+                n.log(&format!("tier 1: {} posted first and opens the case; standing down", bitaid_node::pre(&who, 8)));
+                let until = n.tip() + a.template.dispute_blocks + 2;
+                let v = watch_tier(n, a, 1, until).flatten();
+                let done = (0..60).find_map(|_| {
+                    let r = release_escrow(n, view, &c, e, &oxo);
+                    if r.is_err() {
+                        n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
+                    }
+                    r.ok()
+                });
+                n.check(
+                    "tier 1: another party's posting opened the case; this one's escrow was let go by the pool, whole",
+                    done.is_some(),
+                    &done.map(|t| t.to_string()[..16].to_string()).unwrap_or_default(),
+                );
+                return v;
+            }
             h
         }
         None => match n.wait_anchored(&esc_id, secs(bitaid_node::slow(1800))) {

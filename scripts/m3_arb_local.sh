@@ -65,6 +65,9 @@ sleep 2
 COMMON="$P --mine --settle-wait 600"
 R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
 [ -n "$MISCONDUCT" ] && R3APPEAL="--fault 1:misconduct:0"
+# DOUBLE=1: r3 posts the case on the fee market too. The posting first on the chain opens the tier and
+# pays the panel; the other party stands down and the pool lets its escrow go, whole (§10.6)
+[ -n "$DOUBLE" ] && R3APPEAL="$R3APPEAL --escalate"
 # NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
 [ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""

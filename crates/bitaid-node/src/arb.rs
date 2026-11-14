@@ -3047,7 +3047,7 @@ pub const HEARINGS_PER_DAY: u64 = 1;
 /// Blocks a posting's escrow stays locked at the least (`BITAID_POST_LOCK`, a week by default): what
 /// a posting costs whoever makes it, real case or not.
 pub fn post_lock() -> u32 {
-    std::env::var("BITAID_POST_LOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(1_008)
+    std::env::var("BITAID_POST_LOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(4_320)
 }
 
 /// The market's opening fee, in sats per seat (`BITAID_FEE0`): a constant of the network, like the
@@ -3145,11 +3145,16 @@ pub fn market_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32
     let mut m = Market::new(fee0(), start);
     // each case's postings still standing, to know which one a spend takes away
     let mut held: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut heard: std::collections::HashSet<&str> = Default::default();
     for (h, _, i, spend) in ev {
         m.advance(h, cap(h));
         let p = &l.postings[i];
         let c = p.case.as_str();
         if !spend {
+            // a case is heard once: a posting for one already heard is no demand
+            if heard.contains(c) {
+                continue;
+            }
             let best = held.get(c).into_iter().flatten().map(|j| l.postings[*j].fee).max();
             held.entry(c).or_default().push(i);
             if best.is_none_or(|b| p.fee > b) {
@@ -3167,11 +3172,23 @@ pub fn market_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32
         } else {
             let v = held.entry(c).or_default();
             v.retain(|j| *j != i);
-            if h < p.lock {
+            if p.at.released {
+                // let go with the pool's co-signature (it gives it only for a case not waiting for
+                // its hearing): the case stands on what it still has posted, if anything
+                if !heard.contains(c) {
+                    m.withdraw(c);
+                    if let Some(j) = v.iter().copied().max_by_key(|j| l.postings[*j].fee) {
+                        let q = &l.postings[j];
+                        let last = q.lock.saturating_sub(crate::draw_blocks() + crate::draw_depth());
+                        m.post(Bid { case: c.into(), fee: q.fee, weight: 1, posted_at: h, last_hearing: last });
+                    }
+                }
+            } else if h < p.lock {
                 // paid out to the seats: heard
                 m.clear(c);
                 m.withdraw(c);
                 v.clear();
+                heard.insert(c);
             } else if v.is_empty() {
                 m.withdraw(c);
             }
@@ -3227,7 +3244,7 @@ mod record_tests {
             fee,
             poster,
             lock,
-            at: Anchor { op: op(1), value: fee * panel_size(1) as u64, spk: spk.clone(), height: 1_000, pos: 0, spent: None },
+            at: Anchor { op: op(1), value: fee * panel_size(1) as u64, spk: spk.clone(), height: 1_000, pos: 0, spent: None, released: false },
         };
         assert!(posting_valid(&good, &oracle));
         // the record names a fee its escrow does not hold
@@ -3253,7 +3270,7 @@ mod record_tests {
             scoped: bond.scoped,
             cold: bond.cold,
             fallback: bond.fallback,
-            at: Anchor { op: bond.op, value, spk, height: 1_000, pos: 0, spent: None },
+            at: Anchor { op: bond.op, value, spk, height: 1_000, pos: 0, spent: None, released: false },
         };
         let real = bond.tree(&oracle).script_pubkey();
         let count = |r: Registration| {

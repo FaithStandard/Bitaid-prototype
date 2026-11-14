@@ -36,6 +36,16 @@ pub const MAGIC: &[u8; 4] = b"BTAD";
 pub const KIND_POST: u8 = 1;
 pub const KIND_REGISTER: u8 = 2;
 pub const KIND_ANCHOR: u8 = 3;
+pub const KIND_RELEASE: u8 = 4;
+
+/// A release's record (5 bytes), carried by the transaction that hands a posting's escrow back
+/// before its lock height. Such a spend takes the oracle pool's co-signature, so the pool's word is
+/// what the record carries: this escrow was let go, not paid out to a panel.
+pub fn release_record() -> Vec<u8> {
+    let mut v = MAGIC.to_vec();
+    v.push(KIND_RELEASE);
+    v
+}
 
 /// An anchor's record: 4 + 1 + 32 = 37 bytes.
 pub fn anchor_record(root: &[u8; 32]) -> Vec<u8> {
@@ -94,6 +104,8 @@ pub struct Anchor {
     pub pos: usize,
     /// the block in which the output was spent, if it has been
     pub spent: Option<u32>,
+    /// spent by a release (see `release_record`), not by a payout
+    pub released: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,22 +185,26 @@ impl Ledger {
             self.blocks.drain(..1_024);
         }
         for (pos, tx) in txs.iter().enumerate() {
+            // at most one record per transaction: the first OP_RETURN that parses
+            let rec = tx["vout"].as_array().into_iter().flatten().find_map(|o| {
+                op_return_payload(o["scriptPubKey"]["hex"].as_str()?).filter(|p| p.starts_with(MAGIC))
+            });
+            let release = rec.as_ref().is_some_and(|p| p.len() == 5 && p[4] == KIND_RELEASE);
             // spends first: a recorded output spent in this block
             for i in tx["vin"].as_array().into_iter().flatten() {
                 let (Some(t), Some(v)) = (i["txid"].as_str(), i["vout"].as_u64()) else { continue };
                 let Ok(txid) = Txid::from_str(t) else { continue };
                 if let Some((posting, ix)) = self.watch.remove(&OutPoint { txid, vout: v as u32 }) {
                     match posting {
-                        true => self.postings[ix].at.spent = Some(height),
+                        true => {
+                            self.postings[ix].at.spent = Some(height);
+                            self.postings[ix].at.released = release;
+                        }
                         false => self.registrations[ix].at.spent = Some(height),
                     }
                 }
             }
             let Some(txid) = tx["txid"].as_str().and_then(|t| Txid::from_str(t).ok()) else { continue };
-            // at most one record per transaction: the first OP_RETURN that parses
-            let rec = tx["vout"].as_array().into_iter().flatten().find_map(|o| {
-                op_return_payload(o["scriptPubKey"]["hex"].as_str()?).filter(|p| p.starts_with(MAGIC))
-            });
             let Some(p) = rec else { continue };
             match (p.get(4), p.len()) {
                 (Some(&KIND_POST), 78) => {
@@ -204,7 +220,7 @@ impl Ledger {
                         fee: le32(&p[38..42]) as u64,
                         poster,
                         lock: le32(&p[74..78]),
-                        at: Anchor { op, value, spk, height, pos, spent: None },
+                        at: Anchor { op, value, spk, height, pos, spent: None, released: false },
                     });
                 }
                 (Some(&KIND_ANCHOR), 37) => self.anchors.push((hex::encode(&p[5..37]), height)),
@@ -221,7 +237,7 @@ impl Ledger {
                         scoped,
                         cold,
                         fallback: le32(&p[69..73]),
-                        at: Anchor { op, value, spk, height, pos, spent: None },
+                        at: Anchor { op, value, spk, height, pos, spent: None, released: false },
                     });
                 }
                 _ => {}
@@ -240,6 +256,7 @@ impl Ledger {
         for (i, p) in self.postings.iter_mut().enumerate() {
             if p.at.spent.is_some_and(|s| s >= height) {
                 p.at.spent = None;
+                p.at.released = false;
             }
             if p.at.spent.is_none() {
                 self.watch.insert(p.at.op, (true, i));
@@ -328,14 +345,16 @@ mod tests {
         l.absorb(104, "h104", &[tx(6, &[(2, 1)], &[(0.1, "5120ee")], None)]);
         assert_eq!(l.postings[0].at.spent, Some(103));
         assert_eq!(l.registrations[0].at.spent, Some(104));
+        assert!(!l.postings[0].at.released);
         // a block already read changes nothing
         l.absorb(103, "other", &[tx(9, &[], &[(0.0006, "5120aa")], Some(&post))]);
         assert_eq!(l.postings.len(), 1);
         // the chain reorganises from 103: both are unspent again, and can be spent again
         l.truncate(103);
         assert_eq!((l.tip(), l.postings[0].at.spent, l.registrations[0].at.spent), (Some(100), None, None));
-        l.absorb(103, "h103b", &[tx(7, &[(1, 0)], &[(0.0006, "5120ee")], None)]);
-        assert_eq!(l.postings[0].at.spent, Some(103));
+        // this time by a release: the spend carries the release record
+        l.absorb(103, "h103b", &[tx(7, &[(1, 0)], &[(0.0006, "5120ee")], Some(&release_record()))]);
+        assert_eq!((l.postings[0].at.spent, l.postings[0].at.released), (Some(103), true));
         assert_eq!(l.hash_at(103), Some("h103b"));
         // cut back below the records: nothing is left
         l.truncate(100);
