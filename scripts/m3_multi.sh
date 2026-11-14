@@ -56,7 +56,21 @@ for c in $(seq 1 $N); do
 done
 # the last cases' units wait for their review draws
 for i in $(seq 1 45); do grep -q "final; its units wait" $L/arb*.log || break; n1=$(grep -h "final; its units wait" $L/arb*.log | wc -l); n2=$(grep -h "review draw at block" $L/arb*.out | wc -l); [ $n2 -ge $n1 ] && break; sleep 2; done
+# Two nodes that saw none of the cases read every arbitrator's record (the tiers it sat on, its momentum,
+# who is suspended): one from its links, the other from the chain and the archivists' logs alone (§7, §8).
+# Both must print the same record.
+BITAID_WALLET=w $BIN/bitaid-node --role audit --name audit-links $P --links > $L/audit-links.out 2>$L/audit-links.log
+BITAID_WALLET=w $BIN/bitaid-node --role audit --name audit-archive $P > $L/audit-archive.out 2>$L/audit-archive.log
+ra=$(grep '^record' $L/audit-links.out | sort | sha256sum); rb=$(grep '^record' $L/audit-archive.out | sort | sha256sum)
+if [ "$ra" = "$rb" ] && grep -q '^record momentum' $L/audit-archive.out; then
+  echo "[PASS] audit the record read from the archivists' logs alone equals the record read from the links: $(grep -c '^record tier' $L/audit-archive.out) tiers, $(grep -c '^record momentum' $L/audit-archive.out) arbitrators" > $L/audit.out
+  echo "[audit] 1 passed, 0 failed" >> $L/audit.out
+else
+  echo "[FAIL] audit the record read from the archivists' logs differs from the record read from the links" > $L/audit.out
+  echo "[audit] 0 passed, 1 failed" >> $L/audit.out
+fi
 kill $PIDS 2>/dev/null
+echo "== audit" >> $L/cases.txt; cat $L/audit.out >> $L/cases.txt; grep -h "PASS\|FAIL" $L/audit-links.out $L/audit-archive.out >> $L/cases.txt
 echo "== case units (§10.2-10.3)" >> $L/cases.txt
 echo "review draws seen by seated arbitrators: $(grep -h 'review draw at block' $L/arb*.out | wc -l); of which drawn: $(grep -h 'drawn for review' $L/arb*.out | wc -l)" >> $L/cases.txt
 echo "cases drawn: $(grep -ho 'case [0-9a-f]*: review draw at block [0-9]* ([0-9]*% for a [a-z]* final panel): drawn' $L/arb*.out | sort -u | wc -l) of $N" >> $L/cases.txt

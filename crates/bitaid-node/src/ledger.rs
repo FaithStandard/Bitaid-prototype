@@ -24,6 +24,19 @@
 //!   anything: an anchor proves only that the message existed by that block, which nobody has to
 //!   take on trust, and a message left out of the checkpoints is anchored by its own sender.
 //!
+//! * `INCIDENT` (§3.1, §10.7): a case that exists. The incident transaction carries the case id, and
+//!   it spends the caller's funding output through a leaf that takes the oracle pool's signature.
+//!   The record counts only with that signature: the reader takes, from the witness of each input,
+//!   the key whose signature the spent script ends by checking, and a case is real for a pool when
+//!   that pool's key is among them. Consensus checked the signature, so nobody has to. The pool
+//!   signs a transaction carrying this record only when it is the incident it co-signs for that case.
+//!
+//! * `TIER` (§10.4): a tier's commitment. It names the case and the tier and carries the hash of the
+//!   roster and the reveals counted. The chain therefore lists every tier anyone has committed, in
+//!   order, for every node; what a tier decided is in its case's log, which archivists keep and any
+//!   node fetches and checks against this hash (a record whose log nobody can produce, or whose log
+//!   does not replay into it, is nobody's vote).
+//!
 //! This module only reads: it parses blocks (as `getblock` verbosity 2 gives them), tracks which
 //! recorded outputs were spent and when, and can be cut back to a height when the chain reorganises.
 use bitcoin::secp256k1::XOnlyPublicKey;
@@ -37,6 +50,63 @@ pub const KIND_POST: u8 = 1;
 pub const KIND_REGISTER: u8 = 2;
 pub const KIND_ANCHOR: u8 = 3;
 pub const KIND_RELEASE: u8 = 4;
+pub const KIND_INCIDENT: u8 = 5;
+
+pub const KIND_TIER: u8 = 6;
+
+/// A tier commitment's record: 4 + 1 + 32 + 1 + 32 = 70 bytes. (Tiers above 255 do not exist: panels
+/// double with each, and review stages are numbered from 100.)
+pub fn tier_record(case: &str, tier: u32, commitment: &[u8; 32]) -> Vec<u8> {
+    let mut v = MAGIC.to_vec();
+    v.push(KIND_TIER);
+    v.extend_from_slice(&<[u8; 32]>::try_from(hex::decode(case).unwrap_or_default()).unwrap_or_default());
+    v.push(tier.min(255) as u8);
+    v.extend_from_slice(commitment);
+    v
+}
+
+/// A tier commitment, as recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TierRec {
+    pub case: String,
+    pub tier: u32,
+    pub commitment: String,
+    pub txid: Txid,
+    pub height: u32,
+    pub pos: usize,
+}
+
+/// An incident's record: 4 + 1 + 32 = 37 bytes.
+pub fn incident_record(case: &[u8; 32]) -> Vec<u8> {
+    let mut v = MAGIC.to_vec();
+    v.push(KIND_INCIDENT);
+    v.extend_from_slice(case);
+    v
+}
+
+/// The record a transaction carries, as the reader takes it: its first OP_RETURN output that holds
+/// one. (For whoever signs a transaction and must know what the chain will read from it.)
+pub fn record_of(tx: &bitcoin::Transaction) -> Option<Vec<u8>> {
+    tx.output
+        .iter()
+        .find_map(|o| op_return_payload(&hex::encode(o.script_pubkey.as_bytes())).filter(|p| p.starts_with(MAGIC)))
+}
+
+/// The key whose signature a spent tapscript ends by checking (`… <key> OP_CHECKSIG`), read from an
+/// input's witness as `getblock` gives it: the script is the item before the control block.
+fn closing_key(witness: &[Value]) -> Option<XOnlyPublicKey> {
+    let n = witness.len();
+    if n < 3 {
+        return None;
+    }
+    let control = hex::decode(witness[n - 1].as_str()?).ok()?;
+    if control.len() < 33 || (control.len() - 33) % 32 != 0 || control[0] & 0xfe != 0xc0 {
+        return None;
+    }
+    let script = hex::decode(witness[n - 2].as_str()?).ok()?;
+    let k = script.len().checked_sub(34)?;
+    (script[k] == 0x20 && script[k + 33] == 0xac).then(|| XOnlyPublicKey::from_slice(&script[k + 1..k + 33]).ok())?
+}
 
 /// A release's record (5 bytes), carried by the transaction that hands a posting's escrow back
 /// before its lock height. Such a spend takes the oracle pool's co-signature, so the pool's word is
@@ -126,8 +196,22 @@ pub struct Registration {
     pub at: Anchor,
 }
 
+/// A case's incident transaction, as recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Incident {
+    pub case: String,
+    pub txid: Txid,
+    pub height: u32,
+    pub pos: usize,
+    /// the keys whose signatures its inputs' scripts ended by checking
+    pub signed_by: Vec<XOnlyPublicKey>,
+}
+
 #[derive(Default, Clone, Debug)]
 pub struct Ledger {
+    pub incidents: Vec<Incident>,
+    /// every tier commitment recorded, in chain order
+    pub tiers: Vec<TierRec>,
     pub postings: Vec<Posting>,
     pub registrations: Vec<Registration>,
     /// anchored roots (hex) and the block that confirmed each, in chain order
@@ -224,6 +308,25 @@ impl Ledger {
                     });
                 }
                 (Some(&KIND_ANCHOR), 37) => self.anchors.push((hex::encode(&p[5..37]), height)),
+                (Some(&KIND_TIER), 70) => self.tiers.push(TierRec {
+                    case: hex::encode(&p[5..37]),
+                    tier: p[37] as u32,
+                    commitment: hex::encode(&p[38..70]),
+                    txid,
+                    height,
+                    pos,
+                }),
+                (Some(&KIND_INCIDENT), 37) => {
+                    let signed_by: Vec<XOnlyPublicKey> = tx["vin"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|i| closing_key(i["txinwitness"].as_array()?))
+                        .collect();
+                    if !signed_by.is_empty() {
+                        self.incidents.push(Incident { case: hex::encode(&p[5..37]), txid, height, pos, signed_by });
+                    }
+                }
                 (Some(&KIND_REGISTER), 74) => {
                     let (Ok(scoped), Ok(cold), Some((op, value, spk))) = (
                         XOnlyPublicKey::from_slice(&p[5..37]),
@@ -252,6 +355,8 @@ impl Ledger {
         self.postings.retain(|p| p.at.height < height);
         self.registrations.retain(|r| r.at.height < height);
         self.anchors.retain(|a| a.1 < height);
+        self.incidents.retain(|i| i.height < height);
+        self.tiers.retain(|t| t.height < height);
         self.watch.clear();
         for (i, p) in self.postings.iter_mut().enumerate() {
             if p.at.spent.is_some_and(|s| s >= height) {
@@ -275,6 +380,11 @@ impl Ledger {
     /// The first block that anchored `root`, if any has.
     pub fn anchored(&self, root: &str) -> Option<u32> {
         self.anchors.iter().find(|a| a.0 == root).map(|a| a.1)
+    }
+
+    /// The incident of `case` co-signed by the pool `oracle`: the first on the chain, if any.
+    pub fn incident(&self, case: &str, oracle: &XOnlyPublicKey) -> Option<&Incident> {
+        self.incidents.iter().find(|i| i.case == case && i.signed_by.contains(oracle))
     }
 
     /// The posting recorded in transaction `txid`, if any.
@@ -381,5 +491,39 @@ mod tests {
         // a reorganisation takes back what it confirmed
         l.truncate(203);
         assert_eq!((l.anchored(&root), l.anchored(&c)), (Some(200), None));
+    }
+
+    /// An incident record counts only with the pool's signature, which the chain shows in the
+    /// witness of the input it spends: a record on a transaction the pool did not sign is not read.
+    #[test]
+    fn an_incident_counts_only_with_the_pools_signature() {
+        let pool = key(9);
+        let other = key(8);
+        let case = [7u8; 32];
+        let script = |k: &XOnlyPublicKey| {
+            let mut s = vec![0x20];
+            s.extend_from_slice(&key(3).serialize());
+            s.push(0xad);
+            s.push(0x20);
+            s.extend_from_slice(&k.serialize());
+            s.push(0xac);
+            hex::encode(s)
+        };
+        let control = hex::encode([0xc0u8; 33]);
+        let tx = |id: u8, wit: Value| json!({"txid": txid(id), "vin": [{"txid": txid(1), "vout": 0, "txinwitness": wit}],
+            "vout": [{"value": 0.001, "scriptPubKey": {"hex": "51"}}, {"value": 0, "scriptPubKey": {"hex": opret(&incident_record(&case))}}]});
+        let mut l = Ledger::default();
+        l.absorb(10, "a", &[
+            // a key-path spend: one signature, no script, nobody's word
+            tx(20, json!(["00"])),
+            // a script that ends by checking some other key
+            tx(21, json!(["00", "00", script(&other), control])),
+        ]);
+        assert!(l.incident(&hex::encode(case), &pool).is_none());
+        l.absorb(11, "b", &[tx(22, json!(["00", "00", script(&pool), control]))]);
+        let i = l.incident(&hex::encode(case), &pool).expect("read");
+        assert_eq!((i.height, i.signed_by.clone()), (11, vec![pool]));
+        l.truncate(11);
+        assert!(l.incident(&hex::encode(case), &pool).is_none());
     }
 }
