@@ -922,11 +922,27 @@ impl Replay {
             let prev = rp.tiers.get(&(k - 1)).cloned();
             // who opens tier k: a party, or a dissenter of tier k-1 buying the re-roll itself (§10.4)
             let mut opener: Option<(String, bool)> = None;
+            // a tier above the first is opened only within the escalation window of the tier below:
+            // by an escalation anchored no later than `dispute_blocks` after the block of that tier's
+            // first commitment. One anchored later opens nothing: the verdict below is final, the
+            // pots are paid on it, and no later panel changes what anyone owes
+            let close = if k >= 2 {
+                match prev
+                    .as_ref()
+                    .and_then(|t| t.commit_txid.as_ref())
+                    .and_then(|x| rpc.tx_height(x))
+                {
+                    Some(h) => h + a.template.dispute_blocks,
+                    None => break,
+                }
+            } else {
+                u32::MAX
+            };
             for e in &mine {
                 let Msg::Escalate { tier, .. } = &e.msg else {
                     continue;
                 };
-                if *tier != k {
+                if *tier != k || e.height > close {
                     continue;
                 }
                 let s = &e.sender;
@@ -2704,6 +2720,18 @@ pub struct TierLog {
     pub review: bool,
     /// a confirmed review: from this height the case stands on this verdict
     pub overturn: Option<Ballot>,
+}
+
+/// Whether an escalation to tier `k` anchored at `h` came after the escalation window of the tier
+/// below closed, as far as this node's log shows that tier (the replay decides; this spares a party
+/// and an arbitrator the cost of a hearing that will count for nothing).
+pub fn appeal_late(hist: &[Envelope], rpc: &Rpc, a: &Alerted, k: u32, h: u32) -> bool {
+    k >= 2
+        && !is_review(k)
+        && ledger(hist, rpc, &a.oracle_key)
+            .iter()
+            .find(|t| t.case == a.case_hex && t.tier == k - 1)
+            .is_some_and(|t| h > t.height + a.template.dispute_blocks)
 }
 
 /// Every committed tier of every case in the log, ordered by the height of its commitment. Old cases

@@ -2618,6 +2618,38 @@ fn escrow_release_due(n: &Node, a: &Alerted, t: &Transaction, input: u32) -> Opt
     Some((e.spend_digest(&oracle, t), "the release of a posting's escrow (its case holds no place in the queue)".into()))
 }
 
+thread_local! {
+    /// an appeal of this party's came after the window closed: the case is final
+    static CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// the escrow of a posting that stood down for another party's, to be let go after the hearing
+    static STOOD_DOWN: std::cell::RefCell<Option<arb::Bond>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A party whose posting stood down asks the pool to let its escrow go, once the case holds no place
+/// in the queue.
+fn release_stood_down(n: &mut Node, a: &Alerted, view: &PoolView) {
+    let Some(e) = STOOD_DOWN.with(|x| x.borrow_mut().take()) else { return };
+    let c = a.case_hex.clone();
+    let oxo = wire::xonly(&view.key_hex()).unwrap();
+    let mut done = None;
+    for _ in 0..120 {
+        n.rpc.sync();
+        let tip = n.rpc.height();
+        if !n.rpc.ledger(|l| arb::market_at(l, &oxo, tip).is_active(&c)) {
+            done = release_escrow(n, view, &c, &e, &oxo).ok();
+            if done.is_some() {
+                break;
+            }
+        }
+        n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
+    }
+    n.check(
+        "tier 1: another party's posting opened the case; this one's escrow was let go by the pool, whole",
+        done.is_some(),
+        &done.map(|t| t.to_string()[..16].to_string()).unwrap_or_default(),
+    );
+}
+
 /// The poster's side of a release: the escrow back to its own wallet, with the pool's co-signature.
 fn release_escrow(n: &mut Node, view: &PoolView, c: &str, e: &arb::Bond, oxo: &bitcoin::secp256k1::XOnlyPublicKey) -> Result<bitcoin::Txid, String> {
     let rec = bitcoin::script::PushBytesBuf::try_from(bitaid_node::ledger::release_record()).map_err(|e| e.to_string())?;
@@ -2720,27 +2752,12 @@ fn escalate_tier(
             });
             if let Some((who, _)) = opener.filter(|o| o.0 != me) {
                 n.log(&format!("tier 1: {} posted first and opens the case; standing down", bitaid_node::pre(&who, 8)));
-                // the pool lets the escrow go once the case holds no place in the queue: when the
-                // opener's escrow has paid the panel
-                let mut done = None;
-                for _ in 0..120 {
-                    n.rpc.sync();
-                    let tip = n.rpc.height();
-                    if !n.rpc.ledger(|l| arb::market_at(l, &oxo, tip).is_active(&c)) {
-                        done = release_escrow(n, view, &c, e, &oxo).ok();
-                        if done.is_some() {
-                            break;
-                        }
-                    }
-                    n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
-                }
+                // the pool lets the escrow go once the case holds no place in the queue. That is asked
+                // for once the hearing is over (`release_stood_down`), so that waiting for it never
+                // costs this party its window to appeal
+                STOOD_DOWN.with(|x| *x.borrow_mut() = Some(e.clone()));
                 let until = n.tip() + a.template.dispute_blocks + 2;
                 let v = watch_tier(n, a, 1, until).flatten();
-                n.check(
-                    "tier 1: another party's posting opened the case; this one's escrow was let go by the pool, whole",
-                    done.is_some(),
-                    &done.map(|t| t.to_string()[..16].to_string()).unwrap_or_default(),
-                );
                 return v;
             }
             n.send_case(&c, &[], esc_msg.clone(), false);
@@ -2754,6 +2771,11 @@ fn escalate_tier(
             }
         },
     };
+    if arb::appeal_late(&n.history, &n.rpc, a, tier, h_esc) {
+        n.log(&format!("tier {tier}: the escalation was anchored at block {h_esc}, after the window of the tier below closed; the verdict below is final"));
+        CLOSED.with(|x| x.set(true));
+        return None;
+    }
     let draw_h = h_esc + bitaid_node::draw_blocks();
     n.log(&format!("ESCALATE tier {tier} ({size} seats): {reason}; drawn from block {draw_h}"));
     let t0 = Instant::now();
@@ -5163,6 +5185,11 @@ fn arbitrator(mut n: Node) -> i32 {
                     // review panels are drawn from the whole pool, not offered for (§10.3)
                     continue;
                 }
+                // an appeal anchored after the window of the tier below closed opens nothing
+                if arb::appeal_late(&n.history, &n.rpc, a, tier, env.height) {
+                    n.log(&format!("case {}: escalation to tier {tier} came after the window closed; not offering", bitaid_node::pre(&case_id, 8)));
+                    continue;
+                }
                 // --tiers 1,2: the tiers this arbitrator serves (an operator's choice of workload)
                 if let Some(ts) = arg("--tiers") {
                     if !ts.split(',').any(|x| x.trim().parse() == Ok(tier)) {
@@ -6562,6 +6589,9 @@ fn responder(mut n: Node) -> i32 {
             };
             let mut standing: Option<Ballot> = None;
             loop {
+                if CLOSED.with(|x| x.get()) {
+                    break;
+                }
                 match verdict.take() {
                     Some(v) => standing = Some(v),
                     None => n.log(&format!(
@@ -6632,6 +6662,7 @@ fn responder(mut n: Node) -> i32 {
             }
         }
     }
+    release_stood_down(&mut n, &a, &view);
     let Some(paid) = settle(&mut n, &a, &set, &view, flag("--broadcast")) else {
         return n.summary();
     };
