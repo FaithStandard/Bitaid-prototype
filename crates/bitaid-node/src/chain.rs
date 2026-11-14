@@ -79,9 +79,19 @@ impl Rpc {
             .post(&url)
             .set("Authorization", &self.auth)
             .send_string(&body.to_string());
+        // a long-lived wallet's listings outgrow the client's default cap of 10 MB: read up to 256 MB
+        let body = |resp: ureq::Response| -> Result<String, String> {
+            use std::io::Read;
+            let mut s = String::new();
+            resp.into_reader()
+                .take(256 << 20)
+                .read_to_string(&mut s)
+                .map_err(|e| e.to_string())?;
+            Ok(s)
+        };
         let text = match r {
-            Ok(resp) => resp.into_string().map_err(|e| e.to_string())?,
-            Err(ureq::Error::Status(_, resp)) => resp.into_string().map_err(|e| e.to_string())?,
+            Ok(resp) => body(resp)?,
+            Err(ureq::Error::Status(_, resp)) => body(resp)?,
             Err(e) => return Err(format!("{method}: {e}")),
         };
         let v: Value = serde_json::from_str(&text).map_err(|e| format!("{method}: {e}: {text}"))?;
@@ -630,7 +640,14 @@ impl Rpc {
             })
             .unwrap_or_else(|| crate::sats(20_000))
             .max(1_000);
-        let utxos = self.wcall("listunspent", json!([1]))?;
+        // only coins that can pay the fee, and no more of them than a busy machine could have in use
+        let utxos = self.wcall(
+            "listunspent",
+            json!([1, 9_999_999, [], true, {
+                "minimumAmount": (fee + 1_000) as f64 / 1e8,
+                "maximumCount": 2_000
+            }]),
+        )?;
         let u = {
             let mut used = self.used.lock().unwrap();
             let mut got = None;
