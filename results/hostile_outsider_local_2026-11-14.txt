@@ -1,0 +1,16 @@
+Bitaid prototype: a hostile outsider's forged records, local regtest, 2026-11-14
+HOSTILE=1 CAPTURE=1 CHALLENGE=1 STALL=1 sh scripts/m3_arb_local.sh
+
+[caller] 11 passed, 0 failed
+[r1-liar] 15 passed, 0 failed
+[r3] 8 passed, 0 failed
+[arb1] 19 passed, 0 failed
+[hostile] 5 passed, 0 failed
+
+[PASS] hostile an outsider's records were all accepted by the chain: a posting for a real case, an incident record and a posting for an invented one, two tier records no panel made
+[PASS] hostile the invented case: its incident record, on a transaction the pool never signed, is not read, and its posting holds no place in the queue
+[PASS] hostile the real case was heard by a panel of its parties' drawing, the outsider's posting, offer and announcement notwithstanding
+[PASS] hostile once heard, the case holds no place in the queue: the outsider's posting keeps no slot
+[PASS] hostile the outsider's escrow paid nobody: it sits unspent until its lock
+[hostile] 5 passed, 0 failed
+[r1-liar   33.35s] seat offer from 4bd8ae51 refused: entry bond missing or below the floor

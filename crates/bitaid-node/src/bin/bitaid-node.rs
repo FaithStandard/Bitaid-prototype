@@ -320,6 +320,7 @@ fn main() {
         "archivist" => archivist(node),
         "arbitrator" => arbitrator(node),
         "audit" => audit(node),
+        "hostile" => hostile(node),
         "caller" => caller(node),
         "responder" => responder(node),
         r => panic!("unknown role {r}"),
@@ -4812,6 +4813,127 @@ fn registry_payout(hist: &[wire::Envelope], who: &str) -> Option<bitcoin::Script
         }
         _ => None,
     })
+}
+
+/// An outsider with coins and a link, and no part in any case, tries what the chain's records might
+/// seem to allow (a test). It waits for a real incident, then:
+///
+/// 1. posts for that case itself, before its parties do, with a full escrow;
+/// 2. records an "incident" for a case it invented, on a transaction the pool never signed, and posts
+///    for it;
+/// 3. records tier commitments for the real case that no panel made;
+/// 4. anchors a root that lists nothing, and announces a checkpoint of messages nobody sent;
+/// 5. offers a seat on a bond that does not exist, and announces the escalation as if it were a party.
+///
+/// None of it may move anything: the case is heard on its parties' posting, the invented case holds no
+/// place in the queue, and the outsider's escrow pays nobody.
+fn hostile(mut n: Node) -> i32 {
+    n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)]);
+    let Some(view) = pool::discover(&mut n, &arg("--pool").unwrap_or("bitaid".into()), secs(num("--setup-wait", 600u64))) else {
+        n.log("no oracle pool found");
+        return 1;
+    };
+    let oxo = wire::xonly(&view.key_hex()).unwrap();
+    let me = n.keys.x_only_public_key().0;
+    let start = n.rpc.height();
+    let end = Instant::now() + secs(bitaid_node::slow(num("--wait", 600u64)));
+    let case = loop {
+        n.rpc.sync();
+        if let Some(c) = n.rpc.ledger(|l| l.incidents.iter().find(|i| i.height >= start && i.signed_by.contains(&oxo)).map(|i| i.case.clone())) {
+            break c;
+        }
+        if Instant::now() > end {
+            n.log("no incident appeared");
+            return 1;
+        }
+        let _ = n.wait(secs(1), |_, _| None::<()>);
+    };
+    n.log(&format!("incident of case {} on chain; acting", bitaid_node::pre(&case, 8)));
+    let fee = bitaid_node::sats(num("--fee", 20_000u64));
+    let lock = n.rpc.height() + arb::post_lock() + 6;
+    let back = n.rpc.new_spk().unwrap_or_default();
+    let e0 = arb::escrow(&me, lock, bitcoin::OutPoint::null(), fee * 3, back);
+    let post = |n: &Node, c: &[u8; 32]| {
+        n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &bitaid_node::ledger::post_record(c, 1, fee as u32, &me, lock))
+    };
+    // 1
+    let mine = post(&n, &wire::h32(&case).unwrap_or_default());
+    // 2
+    let fake: [u8; 32] = rand::random();
+    let forged = n.rpc.record(&bitaid_node::ledger::incident_record(&fake));
+    n.rpc.mine(1).ok();
+    let fake_post = post(&n, &fake);
+    // 3
+    let t1 = n.rpc.record(&bitaid_node::ledger::tier_record(&case, 1, &rand::random()));
+    let t2 = n.rpc.record(&bitaid_node::ledger::tier_record(&case, 2, &rand::random()));
+    // 4
+    let _ = n.rpc.record(&bitaid_node::ledger::anchor_record(&rand::random()));
+    n.send(kind::ANCHOR, vec![], Msg::Checkpoint { leaves: vec![hex::encode(rand::random::<[u8; 32]>()), hex::encode(rand::random::<[u8; 32]>())] }, None);
+    // 5
+    n.send_case(
+        &case,
+        &[],
+        Msg::SeatOffer {
+            case_id: case.clone(),
+            tier: 1,
+            bond: format!("{}:0", hex::encode(rand::random::<[u8; 32]>())),
+            bond_scoped: hex::encode(me.serialize()),
+            bond_cold: hex::encode(me.serialize()),
+            bond_fallback: lock,
+            bond_value: bitaid_node::sats(10_000_000),
+            payout_spk: hex::encode(n.rpc.new_spk().unwrap_or_default().as_bytes()),
+        },
+        false,
+    );
+    n.send_case(
+        &case,
+        &[],
+        Msg::Escalate { case_id: case.clone(), tier: 1, reason: "an outsider's".into(), post: mine.as_ref().map(|o| o.txid.to_string()).unwrap_or_default() },
+        false,
+    );
+    n.rpc.mine(1).ok();
+    n.check(
+        "an outsider's records were all accepted by the chain: a posting for a real case, an incident record and a posting for an invented one, two tier records no panel made",
+        mine.is_ok() && forged.is_ok() && fake_post.is_ok() && t1.is_ok() && t2.is_ok(),
+        "",
+    );
+    // the real case is heard all the same: a tier-1 commitment that is not the outsider's
+    let forged_tiers: Vec<String> = [&t1, &t2].iter().filter_map(|t| t.as_ref().ok().map(|x| x.to_string())).collect();
+    let mut heard = false;
+    while Instant::now() < end && !heard {
+        let _ = n.wait(secs(2), |_, _| None::<()>);
+        n.rpc.sync();
+        heard = n.rpc.ledger(|l| l.tiers.iter().any(|t| t.case == case && t.tier == 1 && !forged_tiers.contains(&t.txid.to_string())));
+    }
+    // and a few blocks more, for the panel's payment
+    let until = n.rpc.height() + 6;
+    n.collect_until(until, secs(bitaid_node::slow(240)), |_, _| None::<()>, |_| false);
+    n.rpc.sync();
+    let tip = n.rpc.height();
+    let fake_hex = hex::encode(fake);
+    let (real_incident, fake_incident, fake_queued, case_queued) = n.rpc.ledger(|l| {
+        let m = arb::market_at(l, &oxo, tip);
+        (
+            l.incident(&case, &oxo).is_some(),
+            l.incident(&fake_hex, &oxo).is_some(),
+            m.is_active(&fake_hex) || m.is_standby(&fake_hex),
+            m.is_active(&case) || m.is_standby(&case),
+        )
+    });
+    n.check(
+        "the invented case: its incident record, on a transaction the pool never signed, is not read, and its posting holds no place in the queue",
+        real_incident && !fake_incident && !fake_queued,
+        "",
+    );
+    n.check("the real case was heard by a panel of its parties' drawing, the outsider's posting, offer and announcement notwithstanding", heard, "");
+    n.check(
+        "once heard, the case holds no place in the queue: the outsider's posting keeps no slot",
+        heard && !case_queued,
+        "",
+    );
+    let unspent = mine.as_ref().ok().is_some_and(|o| n.rpc.utxo(o).is_some());
+    n.check("the outsider's escrow paid nobody: it sits unspent until its lock", unspent, "");
+    n.summary()
 }
 
 /// A node that saw none of the cases reads every arbitrator's record (§10.4): which tiers it sat on,
