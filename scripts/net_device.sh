@@ -30,6 +30,8 @@ responder|caller)
   export BITAID_TIME_SCALE=${TIME_SCALE:-1} BITAID_SAT_SCALE=${SAT_SCALE:-1}
   # INDEX_FROM: the height the run began at, for a chain node without a transaction index
   [ -n "$INDEX_FROM" ] && export BITAID_INDEX_FROM=$INDEX_FROM
+  # timed messages are anchored by a checkpoint every block on a test run
+  export BITAID_CHECKPOINT_BLOCKS=${CHECKPOINT_BLOCKS:-1}
   # faucet coins: keep the keys of this device's bond and funding output, to take back what is left
   # a day later (sh scripts/net_device.sh reclaim, with the same RPC_PASS and PC)
   [ "${SAT_SCALE:-1}" -gt 1 ] && export BITAID_KEYFILE=$HOME/bitaid_keys_$1.jsonl

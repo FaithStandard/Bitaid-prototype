@@ -11,6 +11,8 @@ mine1() { if [ "$CHAIN" = signet ]; then h=$($CLI getblockcount); while [ $($CLI
 H=$($CLI getblockcount); [ "$H" -lt 110 ] && $CLI -rpcwallet=w generatetoaddress 110 $($CLI -rpcwallet=w getnewaddress) >/dev/null
 # every node reads the chain's records (postings, registrations) from the same height
 export BITAID_INDEX_FROM=$($CLI getblockcount)
+# timed messages are anchored by a checkpoint every block here (blocks come every 2 s)
+export BITAID_CHECKPOINT_BLOCKS=${BITAID_CHECKPOINT_BLOCKS:-1}
 for w in caller r1 r3; do
   $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1
   for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done
@@ -63,9 +65,15 @@ sleep 2
 COMMON="$P --mine --settle-wait 600"
 R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
 [ -n "$MISCONDUCT" ] && R3APPEAL="--fault 1:misconduct:0"
+# DOUBLE=1: r3 posts the case on the fee market too. The posting first on the chain opens the tier and
+# pays the panel; the other party stands down and the pool lets its escrow go, whole (§10.6)
+[ -n "$DOUBLE" ] && R3APPEAL="$R3APPEAL --escalate"
 # NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
 [ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
+# OMIT=1: r1-liar, escalating, posts a tier commitment that leaves one seat's reveal out; the commitment
+# counting every reveal stands all the same (§10.4)
+[ -n "$OMIT" ] && R1APPEAL="$R1APPEAL --omit-reveal"
 # CASES=2: the same network takes a second case (with CAPTURE, the same pair captures it again: a
 # second confirmed overturn costs them their entry bonds, §12)
 for c in $(seq 1 ${CASES:-1}); do

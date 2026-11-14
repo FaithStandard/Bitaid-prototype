@@ -1,0 +1,59 @@
+Bitaid prototype: anchored timing, local regtest, 2026-11-14 (commit 6ffbc48)
+Seven suites, BITAID_CHECKPOINT_BLOCKS=1. No failed check in any.
+
+What this build adds over anchor_local_2026-11-13:
+- seat offers, vote commitments, review answers, flags and appeals count from the block that anchors them (OP_RETURN checkpoints by pool members in turn; any node anchors its own after a wait)
+- an arbitrator's entry bond is read from the chain at the height that matters
+- of a tier's commitments confirmed within the escalation window, the one counting the most valid reveals stands
+- an appeal opens a tier only if anchored within the window of the tier below
+- two postings for one case: the first on the chain opens and pays; the other stands down and the pool releases its escrow whole; postings lock 4,320 blocks
+
+== m3
+[caller] 13 passed, 0 failed
+[r1] 9 passed, 0 failed
+[r2] 9 passed, 0 failed
+[r3] 2 passed, 0 failed
+== arb
+[caller] 11 passed, 0 failed
+[r1-liar] 15 passed, 0 failed
+[r3] 8 passed, 0 failed
+[arb1] 19 passed, 0 failed
+== arb_standby
+[caller] 11 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r3] 8 passed, 0 failed
+== arb_mis
+[caller] 11 passed, 0 failed
+[r1-liar] 27 passed, 0 failed
+[r3] 8 passed, 0 failed
+== arb_omit
+[caller] 11 passed, 0 failed
+[r1-liar] 15 passed, 0 failed
+[r3] 21 passed, 0 failed
+== arb_double
+[caller] 11 passed, 0 failed
+[r1-liar] 26 passed, 0 failed
+[r3] 11 passed, 0 failed
+== multi (10 cases, review at 100%)
+433 passed, 0 failed across all nodes; 9 of 10 cases drawn for review
+
+== review stages (must reach findings)
+[archivist  158.80s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 14.5 s from convening
+[archivist  406.00s] PASS review stage 1: 4 of 5 findings revealed and committed on chain; two thirds found I,D — 137.5 s from convening
+[archivist  463.83s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 13.9 s from convening
+[archivist  564.04s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; no two-thirds finding — 14.4 s from convening
+[archivist  769.23s] PASS review stage 1: 4 of 5 findings revealed and committed on chain; no two-thirds finding — 115.6 s from convening
+[archivist  892.31s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 16.0 s from convening
+[archivist  985.56s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 14.0 s from convening
+[archivist 1091.22s] PASS review stage 1: 5 of 5 findings revealed and committed on chain; two thirds found I,D — 14.7 s from convening
+
+== omitted reveal (OMIT=1)
+[arb1   57.91s] tier 1: the commitment f8e2d564 leaves my reveal out; posted one that counts it — 2594ca9f3edd0c44
+
+== two postings (DOUBLE=1)
+[pool1   97.14s] co-signing the release of a posting's escrow (its case holds no place in the queue) for 50c3decc
+[pool2   97.16s] co-signing the release of a posting's escrow (its case holds no place in the queue) for 50c3decc
+[pool3   97.15s] co-signing the release of a posting's escrow (its case holds no place in the queue) for 50c3decc
+[pool4   97.15s] co-signing the release of a posting's escrow (its case holds no place in the queue) for 50c3decc
+[r3   24.94s] tier 1: 108aca5b posted first and opens the case; standing down
+[r3   95.57s] PASS tier 1: another party's posting opened the case; this one's escrow was let go by the pool, whole — dcc1fc5d2986a77f

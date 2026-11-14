@@ -922,11 +922,27 @@ impl Replay {
             let prev = rp.tiers.get(&(k - 1)).cloned();
             // who opens tier k: a party, or a dissenter of tier k-1 buying the re-roll itself (§10.4)
             let mut opener: Option<(String, bool)> = None;
+            // a tier above the first is opened only within the escalation window of the tier below:
+            // by an escalation anchored no later than `dispute_blocks` after the block of that tier's
+            // first commitment. One anchored later opens nothing: the verdict below is final, the
+            // pots are paid on it, and no later panel changes what anyone owes
+            let close = if k >= 2 {
+                match prev
+                    .as_ref()
+                    .and_then(|t| t.commit_txid.as_ref())
+                    .and_then(|x| rpc.tx_height(x))
+                {
+                    Some(h) => h + a.template.dispute_blocks,
+                    None => break,
+                }
+            } else {
+                u32::MAX
+            };
             for e in &mine {
                 let Msg::Escalate { tier, .. } = &e.msg else {
                     continue;
                 };
-                if *tier != k {
+                if *tier != k || e.height > close {
                     continue;
                 }
                 let s = &e.sender;
@@ -978,6 +994,7 @@ impl Replay {
                 a.template.commit_blocks,
                 &oracle,
                 anchor,
+                a.template.dispute_blocks,
             );
             rp.tiers.insert(k, t);
         }
@@ -1028,6 +1045,7 @@ impl Replay {
                 a.template.commit_blocks,
                 &oracle,
                 None,
+                a.template.dispute_blocks,
             );
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
@@ -1051,12 +1069,9 @@ impl Replay {
             {
                 let at = registry_at(hist, h.saturating_sub(2));
                 let listed: std::collections::HashSet<&String> = t.listed.iter().collect();
-                let live = |b: &Bond| {
-                    b.value >= crate::sats(ENTRY_BOND)
-                        && rpc
-                            .utxo(&b.op)
-                            .is_some_and(|u| u.script_pubkey == b.tree(&oracle).script_pubkey())
-                };
+                // (an entry bond is one the chain registers, unspent at the draw: read the same by
+                // every node, then and later)
+                let live = |b: &Bond| chain_registered(rpc, &oracle, b, h);
                 let complete = at
                     .iter()
                     .filter(|(w, _)| !excluded.contains(*w) && !off.contains(*w))
@@ -2145,6 +2160,8 @@ fn read_tier(
     // tier 1: the height the chain gives its opening (the market took the case up), in place of the
     // height its escalator stated
     anchor: Option<u32>,
+    // the escalation window, in blocks: commitments confirmed within it of the first compete
+    contest: u32,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -2207,8 +2224,12 @@ fn read_tier(
                 && rpc.height() >= *height + crate::draw_depth();
             // and every listed offer was stated at least two blocks before the draw
             let window_ok = offers.iter().all(|o| t.offer_height.get(o).is_none_or(|oh| oh + 2 <= *height));
+            // and every listed offer rests on an entry bond the chain registers, unspent at the draw
+            let bonded = registry.is_some()
+                || offers.iter().all(|o| t.offers.get(o).is_some_and(|b| chain_registered(rpc, oracle, b, *height)));
             if block_ok
                 && window_ok
+                && bonded
                 && offers.iter().all(|o| t.offers.contains_key(o))
                 && draw(block_hash, case, k, offers, panel_size(k)) == *seats
                 && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
@@ -2398,9 +2419,16 @@ fn read_tier(
             }
         }
     }
+    // The tier's commitment (§10.4). Anyone may post one: a transaction recording the roster and the
+    // reveals it counts. Whoever posts first could leave out a reveal it dislikes, so the first does
+    // not win by being first: of the commitments confirmed within the escalation window that the
+    // first one opens, the one that counts the most valid reveals stands (the earliest of equals).
+    // A seat left out posts one that includes it. The window, and every deadline that runs from the
+    // commitment, still runs from the first.
+    let mut cands: Vec<(u32, String, Vec<(String, Ballot)>)> = vec![];
     for e in mine {
         if let Msg::TierCommitted { tier, txid, revealed, committed, .. } = &e.msg {
-            if *tier != k || !t.fee_paid || t.committed {
+            if *tier != k || !t.fee_paid || cands.iter().any(|c| c.1 == *txid) {
                 continue;
             }
             // the reveals the commitment counts: those it lists (each a valid reveal of a seat), or,
@@ -2414,12 +2442,23 @@ fn read_tier(
                 continue;
             }
             if rpc.has_op_return(txid, &tier_commitment_with(case, k, &t.seats, &counted, committed)) {
-                t.committed = true;
-                t.commit_txid = Some(txid.clone());
-                // a reveal published after the commitment is not counted: that seat is charged as a
-                // missed reveal, and the committed verdict stands
-                t.reveals = counted;
+                // one not yet in a block counts as later than any that is
+                cands.push((rpc.tx_height(txid).unwrap_or(u32::MAX), txid.clone(), counted));
             }
+        }
+    }
+    cands.sort_by(|x, y| (x.0, &x.1).cmp(&(y.0, &y.1)));
+    if let Some((first_h, first_txid, _)) = cands.first().cloned() {
+        let best = cands
+            .iter()
+            .filter(|c| c.0 <= first_h.saturating_add(contest))
+            .max_by(|x, y| x.2.len().cmp(&y.2.len()).then((y.0, &y.1).cmp(&(x.0, &x.1))))
+            .cloned();
+        if let Some((_, _, counted)) = best {
+            t.committed = true;
+            t.commit_txid = Some(first_txid);
+            // a reveal the standing commitment does not count is charged as a missed reveal
+            t.reveals = counted;
         }
     }
     t.committers = t
@@ -2681,6 +2720,18 @@ pub struct TierLog {
     pub review: bool,
     /// a confirmed review: from this height the case stands on this verdict
     pub overturn: Option<Ballot>,
+}
+
+/// Whether an escalation to tier `k` anchored at `h` came after the escalation window of the tier
+/// below closed, as far as this node's log shows that tier (the replay decides; this spares a party
+/// and an arbitrator the cost of a hearing that will count for nothing).
+pub fn appeal_late(hist: &[Envelope], rpc: &Rpc, a: &Alerted, k: u32, h: u32) -> bool {
+    k >= 2
+        && !is_review(k)
+        && ledger(hist, rpc, &a.oracle_key)
+            .iter()
+            .find(|t| t.case == a.case_hex && t.tier == k - 1)
+            .is_some_and(|t| h > t.height + a.template.dispute_blocks)
 }
 
 /// Every committed tier of every case in the log, ordered by the height of its commitment. Old cases
@@ -3024,7 +3075,7 @@ pub const HEARINGS_PER_DAY: u64 = 1;
 /// Blocks a posting's escrow stays locked at the least (`BITAID_POST_LOCK`, a week by default): what
 /// a posting costs whoever makes it, real case or not.
 pub fn post_lock() -> u32 {
-    std::env::var("BITAID_POST_LOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(1_008)
+    std::env::var("BITAID_POST_LOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(4_320)
 }
 
 /// The market's opening fee, in sats per seat (`BITAID_FEE0`): a constant of the network, like the
@@ -3075,6 +3126,23 @@ pub fn registered_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height:
         .count()
 }
 
+/// Whether `b` is an entry bond the chain registers (see `registered_at`), unspent at `height`.
+pub fn chain_registered(rpc: &Rpc, oracle: &XOnlyPublicKey, b: &Bond, height: u32) -> bool {
+    rpc.sync();
+    rpc.ledger(|l| {
+        l.registrations.iter().any(|r| {
+            r.at.op == b.op
+                && r.scoped == b.scoped
+                && r.cold == b.cold
+                && r.fallback == b.fallback
+                && r.at.height <= height
+                && r.at.spent.is_none_or(|s| s > height)
+                && r.at.value >= crate::sats(ENTRY_BOND)
+                && r.at.spk == b.tree(oracle).script_pubkey()
+        })
+    })
+}
+
 /// The fee market (§10.6) at `height`, replayed from the ledger alone: every node with the chain
 /// computes the same one. A posting is a confirmed transaction whose escrow holds the panel's fees
 /// (see `posting_valid`); it counts from the block that confirmed it, at the highest fee the case has
@@ -3105,11 +3173,16 @@ pub fn market_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32
     let mut m = Market::new(fee0(), start);
     // each case's postings still standing, to know which one a spend takes away
     let mut held: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut heard: std::collections::HashSet<&str> = Default::default();
     for (h, _, i, spend) in ev {
         m.advance(h, cap(h));
         let p = &l.postings[i];
         let c = p.case.as_str();
         if !spend {
+            // a case is heard once: a posting for one already heard is no demand
+            if heard.contains(c) {
+                continue;
+            }
             let best = held.get(c).into_iter().flatten().map(|j| l.postings[*j].fee).max();
             held.entry(c).or_default().push(i);
             if best.is_none_or(|b| p.fee > b) {
@@ -3127,11 +3200,23 @@ pub fn market_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32
         } else {
             let v = held.entry(c).or_default();
             v.retain(|j| *j != i);
-            if h < p.lock {
+            if p.at.released {
+                // let go with the pool's co-signature (it gives it only for a case not waiting for
+                // its hearing): the case stands on what it still has posted, if anything
+                if !heard.contains(c) {
+                    m.withdraw(c);
+                    if let Some(j) = v.iter().copied().max_by_key(|j| l.postings[*j].fee) {
+                        let q = &l.postings[j];
+                        let last = q.lock.saturating_sub(crate::draw_blocks() + crate::draw_depth());
+                        m.post(Bid { case: c.into(), fee: q.fee, weight: 1, posted_at: h, last_hearing: last });
+                    }
+                }
+            } else if h < p.lock {
                 // paid out to the seats: heard
                 m.clear(c);
                 m.withdraw(c);
                 v.clear();
+                heard.insert(c);
             } else if v.is_empty() {
                 m.withdraw(c);
             }
@@ -3159,4 +3244,73 @@ pub fn tier1_opening(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[
         let h = market_at(l, oracle, tip).activated(case)?;
         Some((who, h))
     })
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+    use crate::ledger::{Anchor, Ledger, Posting, Registration};
+
+    fn key(b: u8) -> XOnlyPublicKey {
+        bitcoin::secp256k1::Keypair::from_seckey_slice(&Secp256k1::new(), &[b; 32]).unwrap().x_only_public_key().0
+    }
+    fn op(n: u8) -> OutPoint {
+        OutPoint { txid: bitcoin::Txid::from_str(&hex::encode([n; 32])).unwrap(), vout: 0 }
+    }
+
+    /// A record alone moves nothing: anyone can write one, so each counts only with the output the
+    /// chain shows beside it, under the script its own fields give, holding what it claims.
+    #[test]
+    fn a_forged_record_counts_for_nothing() {
+        let (oracle, poster) = (key(9), key(1));
+        let fee = 20_000u64;
+        let lock = 1_000 + post_lock();
+        let spk = escrow(&poster, lock, op(1), 0, ScriptBuf::new()).tree(&oracle).script_pubkey();
+        let good = Posting {
+            case: hex::encode([7u8; 32]),
+            tier: 1,
+            fee,
+            poster,
+            lock,
+            at: Anchor { op: op(1), value: fee * panel_size(1) as u64, spk: spk.clone(), height: 1_000, pos: 0, spent: None, released: false },
+        };
+        assert!(posting_valid(&good, &oracle));
+        // the record names a fee its escrow does not hold
+        let mut p = good.clone();
+        p.at.value -= 1;
+        assert!(!posting_valid(&p, &oracle));
+        // the output beside it is not the escrow of the key, lock and oracle the record names
+        let mut p = good.clone();
+        p.at.spk = escrow(&key(2), lock, op(1), 0, ScriptBuf::new()).tree(&oracle).script_pubkey();
+        assert!(!posting_valid(&p, &oracle));
+        let mut p = good.clone();
+        p.at.spk = escrow(&poster, lock, op(1), 0, ScriptBuf::new()).tree(&key(8)).script_pubkey();
+        assert!(!posting_valid(&p, &oracle));
+        // an escrow its poster could take back at once holds nothing
+        let mut p = good.clone();
+        p.lock = 1_001;
+        p.at.spk = escrow(&poster, 1_001, op(1), 0, ScriptBuf::new()).tree(&oracle).script_pubkey();
+        assert!(!posting_valid(&p, &oracle));
+
+        // a registration counts as capacity only with a whole entry bond under its own keys' script
+        let bond = Bond { op: op(2), value: crate::sats(ENTRY_BOND), scoped: key(3), cold: key(4), fallback: 9_000, payout: ScriptBuf::new() };
+        let reg = |value: u64, spk: ScriptBuf| Registration {
+            scoped: bond.scoped,
+            cold: bond.cold,
+            fallback: bond.fallback,
+            at: Anchor { op: bond.op, value, spk, height: 1_000, pos: 0, spent: None, released: false },
+        };
+        let real = bond.tree(&oracle).script_pubkey();
+        let count = |r: Registration| {
+            let mut l = Ledger::default();
+            l.registrations.push(r);
+            registered_at(&l, &oracle, 1_010)
+        };
+        assert_eq!(count(reg(bond.value, real.clone())), 1);
+        assert_eq!(count(reg(bond.value - 1, real.clone())), 0);
+        assert_eq!(count(reg(bond.value, spk.clone())), 0);
+        let mut spent = reg(bond.value, real);
+        spent.at.spent = Some(1_005);
+        assert_eq!(count(spent), 0);
+    }
 }

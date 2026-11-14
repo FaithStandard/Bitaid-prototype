@@ -143,6 +143,8 @@ start)
   [ "$CHAIN" = public ] && { mkdir -p "$WIN/keys"; export BITAID_KEYFILE="$WIN/keys/bitaid_keys_pc.jsonl"; }
   # nodes without a transaction index read the blocks of the run themselves, from this height on
   export BITAID_INDEX_FROM=${INDEX_FROM:-$(( $($CLI getblockcount) - 1 ))}
+  # timed messages are anchored by a checkpoint every block on a test run
+  export BITAID_CHECKPOINT_BLOCKS=${CHECKPOINT_BLOCKS:-1}
   X="--exit-after ${WAIT:-10800}"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
   # bonded links: the Core demands a proof of stake from every peer; a proof names the address the

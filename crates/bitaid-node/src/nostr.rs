@@ -21,6 +21,8 @@ pub mod kind {
     pub const ALERT: u16 = 21_000;
     /// Every other message of a case, tagged with the case id (`c`) and, if addressed, recipients (`p`).
     pub const CASE: u16 = 21_001;
+    /// Checkpoints: the lists of message ids anchored on chain under one root (§7).
+    pub const ANCHOR: u16 = 21_002;
     /// Service announcements (oracle key, archivist URL): a regular kind, so relays keep them for
     /// nodes that start later.
     pub const ANNOUNCE: u16 = 7_002;

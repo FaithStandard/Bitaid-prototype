@@ -113,6 +113,20 @@ pub struct Node {
     history_only: std::collections::HashSet<String>,
     /// encrypted case messages whose key has not arrived yet
     locked: VecDeque<Event>,
+    /// timed messages (see `Msg::timed`) no block has anchored yet, with the subscription each came
+    /// by and the chain height when it arrived. They are delivered, at the height that anchors
+    /// them, once the chain does.
+    parked: VecDeque<(String, Event, u32)>,
+    /// checkpoints read: message id -> the roots it is listed under
+    listed: HashMap<String, Vec<String>>,
+    /// this node's own timed messages not yet anchored: id -> the chain height when sent
+    own_timed: HashMap<String, u32>,
+    /// ids this node has put in an anchor of its own, and the chain height when it did
+    anchoring: HashMap<String, u32>,
+    /// a pool member anchors checkpoints of what it holds: (its turn, of how many)
+    pub anchorer: Option<(u32, u32)>,
+    anchored_last: u32,
+    ticked: Instant,
     /// cases whose messages other traffic never pushes out, with their per-sender counts
     kept: HashMap<String, Kept>,
     pub t0: Instant,
@@ -377,6 +391,13 @@ impl Node {
     }
 
     fn with_net(name: &str, client: Net, rpc: Rpc, keys: Keypair) -> Node {
+        let mut n = Self::bare(name, client, rpc, keys);
+        // every node reads the checkpoints: they say which messages each anchor on chain timestamps
+        n.client.subscribe("anchors", vec![Filter::kinds(&[kind::ANCHOR])]);
+        n
+    }
+
+    fn bare(name: &str, client: Net, rpc: Rpc, keys: Keypair) -> Node {
         Node {
             name: name.into(),
             keys,
@@ -388,6 +409,13 @@ impl Node {
             observer: None,
             history_only: Default::default(),
             locked: VecDeque::new(),
+            parked: VecDeque::new(),
+            listed: HashMap::new(),
+            own_timed: HashMap::new(),
+            anchoring: HashMap::new(),
+            anchorer: None,
+            anchored_last: 0,
+            ticked: Instant::now(),
             kept: HashMap::new(),
             t0: Instant::now(),
             last_sent: Instant::now() - Duration::from_secs(10),
@@ -442,6 +470,7 @@ impl Node {
         enc: Option<&str>,
     ) -> String {
         let name = msg.name();
+        let timed = msg.timed();
         let h = self.height();
         let bytes = wire::sign(&self.keys, h, msg);
         let content = match enc {
@@ -462,7 +491,127 @@ impl Node {
         }
         self.client.publish(&e);
         self.last_sent = Instant::now();
+        if timed {
+            self.own_timed.insert(e.id.clone(), self.rpc.height());
+        }
         e.id
+    }
+
+    /// The first block that anchors message `id` on chain: alone, or in a checkpoint this node has
+    /// the list of.
+    pub fn anchor_height(&self, id: &str) -> Option<u32> {
+        let roots = self.listed.get(id);
+        self.rpc.ledger(|l| {
+            std::iter::once(id)
+                .chain(roots.into_iter().flatten().map(|r| r.as_str()))
+                .filter_map(|r| l.anchored(r))
+                .min()
+        })
+    }
+
+    /// Waits until the chain anchors message `id` (one of this node's own), and returns the block.
+    pub fn wait_anchored(&mut self, id: &str, timeout: Duration) -> Option<u32> {
+        let end = Instant::now() + timeout;
+        loop {
+            self.rpc.sync();
+            if let Some(h) = self.anchor_height(id) {
+                return Some(h);
+            }
+            if Instant::now() >= end {
+                return None;
+            }
+            self.pull(Duration::from_millis(500));
+        }
+    }
+
+    /// Once a second: delivers the parked messages the chain now anchors, and anchors what is this
+    /// node's to anchor. A pool member anchors a checkpoint of every timed message it holds, on its
+    /// turn; any node anchors its own timed message that no checkpoint took up in time.
+    fn tick(&mut self) {
+        if self.ticked.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.ticked = Instant::now();
+        if self.parked.is_empty() && self.own_timed.is_empty() {
+            return;
+        }
+        self.rpc.sync();
+        let tip = self.rpc.ledger(|l| l.tip()).unwrap_or(0);
+        // deliver
+        let parked = std::mem::take(&mut self.parked);
+        for (sub, e, at) in parked {
+            if self.anchor_height(&e.id).is_some() {
+                if let Some(env) = self.decode(&e) {
+                    if !self.history_only.contains(&sub) {
+                        self.push_backlog(env, e);
+                    }
+                }
+            } else if tip.saturating_sub(at) < 4_032 {
+                self.parked.push_back((sub, e, at));
+            }
+        }
+        let own: Vec<String> = self.own_timed.keys().cloned().collect();
+        for id in own {
+            if self.anchor_height(&id).is_some() {
+                self.own_timed.remove(&id);
+            }
+        }
+        // anchor
+        let period = crate::checkpoint_blocks();
+        let retry = period + 3;
+        self.anchoring.retain(|_, h| tip.saturating_sub(*h) < retry);
+        let mut leaves: Vec<String> = vec![];
+        if let Some((turn, of)) = self.anchorer {
+            // on this member's turn, everything parked; out of turn, what has waited two periods
+            let mine = (tip / period) % of.max(1) == turn && tip.saturating_sub(self.anchored_last) >= period;
+            for (_, e, at) in &self.parked {
+                if (mine || tip.saturating_sub(*at) >= 2 * period + 2) && !self.anchoring.contains_key(&e.id) {
+                    leaves.push(e.id.clone());
+                }
+            }
+        }
+        // this node's own, left out for two periods
+        for (id, at) in &self.own_timed {
+            if tip.saturating_sub(*at) >= 2 * period + 2 && !self.anchoring.contains_key(id) && !leaves.contains(id) {
+                leaves.push(id.clone());
+            }
+        }
+        leaves.sort();
+        leaves.dedup();
+        leaves.truncate(4_096);
+        let Some(root) = crate::ledger::checkpoint_root(&leaves) else { return };
+        let Some(r32) = wire::h32(&root) else { return };
+        // whether it is published or not, these are not tried again for a few blocks
+        for l in &leaves {
+            self.anchoring.insert(l.clone(), tip);
+        }
+        self.anchored_last = tip;
+        match self.rpc.record(&crate::ledger::anchor_record(&r32)) {
+            Ok(txid) => {
+                if leaves.len() > 1 {
+                    self.note_checkpoint(&leaves);
+                    self.send(kind::ANCHOR, vec![], Msg::Checkpoint { leaves: leaves.clone() }, None);
+                }
+                self.log(&format!("anchored {} message(s) — {}", leaves.len(), crate::pre(&txid.to_string(), 16)));
+            }
+            Err(e) => self.log(&format!("anchor not published: {e}")),
+        }
+    }
+
+    fn note_checkpoint(&mut self, leaves: &[String]) {
+        if leaves.len() < 2 || leaves.len() > 4_096 {
+            return;
+        }
+        let Some(root) = crate::ledger::checkpoint_root(leaves) else { return };
+        if self.listed.len() > 400_000 {
+            self.listed.clear();
+        }
+        for l in leaves {
+            let v = self.listed.entry(l.clone()).or_default();
+            if !v.contains(&root) && v.len() < 8 {
+                v.push(root.clone());
+            }
+        }
     }
 
     /// The chain height, refreshed at most every 10 s, so a slow chain connection never delays
@@ -563,6 +712,15 @@ impl Node {
                 return None;
             }
         }
+        let mut env = env;
+        if let Msg::Checkpoint { leaves } = &env.msg {
+            self.note_checkpoint(leaves);
+            return None;
+        }
+        // a timed message counts from the block that anchors it, and not before
+        if env.msg.timed() {
+            env.height = self.anchor_height(&e.id)?;
+        }
         if let Some(f) = self.observer.as_mut() {
             f(&env);
         }
@@ -653,14 +811,33 @@ impl Node {
     fn pull(&mut self, timeout: Duration) -> bool {
         match self.client.next_event(timeout) {
             Some((sub, e)) => {
-                if let Some(env) = self.decode(&e) {
-                    if !self.history_only.contains(&sub) {
-                        self.push_backlog(env, e);
+                match self.decode(&e) {
+                    Some(env) => {
+                        if !self.history_only.contains(&sub) {
+                            self.push_backlog(env, e);
+                        }
                     }
+                    // a timed message not yet anchored waits (see `tick`)
+                    None if e.tag("t").is_some_and(wire::timed_name)
+                        && e.tag("enc") != Some("1")
+                        && self.anchor_height(&e.id).is_none()
+                        && !self.parked.iter().any(|p| p.1.id == e.id) =>
+                    {
+                        let at = self.rpc.ledger(|l| l.tip()).unwrap_or(0);
+                        self.parked.push_back((sub, e, at));
+                        if self.parked.len() > MAX_LOCKED {
+                            self.parked.pop_front();
+                        }
+                    }
+                    None => {}
                 }
+                self.tick();
                 true
             }
-            None => false,
+            None => {
+                self.tick();
+                false
+            }
         }
     }
 

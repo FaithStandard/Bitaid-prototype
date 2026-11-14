@@ -359,6 +359,8 @@ fn pool_member(mut n: Node) -> i32 {
     };
     let okey = m.view.key_hex();
     let opid = m.view.pool_id();
+    // the pool's members take turns anchoring a checkpoint of the timed messages they hold (§7)
+    n.anchorer = Some((me.saturating_sub(1) as u32, num("--n", 4u32)));
     n.subscribe("all", vec![Filter::kinds(&[kind::ALERT, kind::CASE])]);
     let mut alerts: HashMap<String, Alerted> = HashMap::new();
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
@@ -366,6 +368,7 @@ fn pool_member(mut n: Node) -> i32 {
     // member has co-signed (their roster can no longer be replaced)
     let mut accepted: HashMap<String, HashMap<String, case::AcceptInfo>> = HashMap::new();
     let mut cosigned: std::collections::HashSet<String> = Default::default();
+    let mut commit_best: HashMap<(String, u32), usize> = HashMap::new();
     let mut assigned: HashMap<String, Vec<u32>> = HashMap::new();
     let mut taken: HashMap<u32, String> = HashMap::new();
     let mut digests: HashMap<(String, u32), [u8; 32]> = HashMap::new();
@@ -1012,10 +1015,14 @@ fn pool_member(mut n: Node) -> i32 {
                 } else if let Some((d, what)) = (!done.contains(case_id))
                     .then(|| {
                         let key = (case_id.clone(), 1u32);
-                        escrow_payout_due(&n, a, &t, *input, panels.get(&key), offers.get(&key))
+                        let opener = esc.get(case_id).filter(|x| x.0 == 1).map(|x| &x.1);
+                        escrow_payout_due(&n, a, &t, *input, panels.get(&key), offers.get(&key), opener)
                     })
                     .flatten()
                 {
+                    n.log(&format!("co-signing {what} for {}", bitaid_node::pre(&case_id, 8)));
+                    d
+                } else if let Some((d, what)) = escrow_release_due(&n, a, &t, *input) {
                     n.log(&format!("co-signing {what} for {}", bitaid_node::pre(&case_id, 8)));
                     d
                 } else if let Some((d, what)) = (!done.contains(case_id))
@@ -1326,6 +1333,8 @@ fn pool_member(mut n: Node) -> i32 {
                 // escalation fixed (draw_blocks() after it), and exactly the offers with valid bonds
                 // stated from the escalation to two blocks before that block, none left out
                 let in_window = |oh: u32| oh + 2 <= *height;
+                // an arbitrator suspended for inactivity as of the opening is left out by rule
+                let off = arb::inactive(&n.history, h0);
                 let block_ok = *height == h0 + bitaid_node::draw_blocks()
                     && n.rpc.block_hash(*height).as_deref() == Some(block_hash.as_str());
                 let offers_ok = listed
@@ -1333,7 +1342,7 @@ fn pool_member(mut n: Node) -> i32 {
                     .all(|o| seen.get(o).map(|x| x.0 && in_window(x.2)).unwrap_or(false))
                     && seen
                         .iter()
-                        .filter(|(_, x)| x.0 && in_window(x.2))
+                        .filter(|(o, x)| x.0 && in_window(x.2) && !off.contains(*o))
                         .all(|(o, _)| listed.contains(o));
                 let draw_ok =
                     bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
@@ -1530,6 +1539,11 @@ fn pool_member(mut n: Node) -> i32 {
                     }
                     later!();
                 }
+                // of a tier's commitments, the one counting the most reveals stands (the first of
+                // equals), as the replay reads them
+                if commit_best.get(&key).is_some_and(|b| *b >= rv.len()) {
+                    continue;
+                }
                 let cm = bitaid_node::arb::tier_commitment_with(case_id, *tier, &seats, &rv, committed);
                 if !n.rpc.has_op_return(txid, &cm) {
                     if retried.insert((case_id.clone(), tier + 20_000)) {
@@ -1542,6 +1556,7 @@ fn pool_member(mut n: Node) -> i32 {
                     later!();
                 };
                 let w = alerts[case_id].template.dispute_blocks;
+                commit_best.insert(key.clone(), rv.len());
                 let votes: Vec<Ballot> = rv.iter().map(|x| x.1.clone()).collect();
                 match bitaid_node::arb::supermajority(seats.len(), &votes) {
                     Some(v) => {
@@ -2535,6 +2550,9 @@ fn escrow_payout_due(
     input: u32,
     seats: Option<&Vec<String>>,
     seen: Option<&HashMap<String, (bool, String, u32, String)>>,
+    // who opened tier 1, as this member read it from the chain: only that party's posting pays the
+    // panel (another party's posting for the same case is let go, never paid out a second time)
+    opener: Option<&String>,
 ) -> Option<([u8; 32], String)> {
     if input != 0 || t.input.len() != 1 {
         return None;
@@ -2547,6 +2565,9 @@ fn escrow_payout_due(
             .filter(|p| p.case == a.case_hex && p.at.spent.is_none() && arb::posting_valid(p, &oracle))
             .cloned()
     })?;
+    if hex::encode(p.poster.serialize()) != *opener? {
+        return None;
+    }
     let (seats, seen) = (seats?, seen?);
     let fee = arb::seat_fee(a.template.arb_fee, 1);
     if p.fee < fee || seats.len() != arb::panel_size(1) {
@@ -2568,6 +2589,88 @@ fn escrow_payout_due(
         e.spend_digest(&oracle, t),
         format!("the payment of the tier-1 panel ({} × {fee} sats) out of the posting's escrow", seats.len()),
     ))
+}
+
+/// Whether `t` hands a posting's escrow back to its poster before the lock height, and may: it
+/// spends a valid, unspent posting of the case, carries the release record, and the case is not
+/// waiting for its hearing (it stands by below the market's fee, or was heard on another posting, or
+/// was never taken up). A posting whose case holds a place in the queue is not let go.
+fn escrow_release_due(n: &Node, a: &Alerted, t: &Transaction, input: u32) -> Option<([u8; 32], String)> {
+    if input != 0 || t.input.len() != 1 {
+        return None;
+    }
+    let rec = bitaid_node::ledger::release_record();
+    if !t.output.iter().any(|o| o.script_pubkey.is_op_return() && o.script_pubkey.as_bytes().ends_with(&rec) && o.script_pubkey.len() == rec.len() + 2) {
+        return None;
+    }
+    let oracle = wire::xonly(&a.oracle_key)?;
+    n.rpc.sync();
+    let tip = n.rpc.height();
+    let p = n.rpc.ledger(|l| {
+        let p = l
+            .postings
+            .iter()
+            .find(|p| p.at.op == t.input[0].previous_output)
+            .filter(|p| p.case == a.case_hex && p.at.spent.is_none() && arb::posting_valid(p, &oracle))?;
+        (!arb::market_at(l, &oracle, tip).is_active(&p.case)).then(|| p.clone())
+    })?;
+    let e = arb::escrow(&p.poster, p.lock, p.at.op, p.at.value, bitcoin::ScriptBuf::new());
+    Some((e.spend_digest(&oracle, t), "the release of a posting's escrow (its case holds no place in the queue)".into()))
+}
+
+thread_local! {
+    /// an appeal of this party's came after the window closed: the case is final
+    static CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// the escrow of a posting that stood down for another party's, to be let go after the hearing
+    static STOOD_DOWN: std::cell::RefCell<Option<arb::Bond>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A party whose posting stood down asks the pool to let its escrow go, once the case holds no place
+/// in the queue.
+fn release_stood_down(n: &mut Node, a: &Alerted, view: &PoolView) {
+    let Some(e) = STOOD_DOWN.with(|x| x.borrow_mut().take()) else { return };
+    let c = a.case_hex.clone();
+    let oxo = wire::xonly(&view.key_hex()).unwrap();
+    let mut done = None;
+    for _ in 0..120 {
+        n.rpc.sync();
+        let tip = n.rpc.height();
+        if !n.rpc.ledger(|l| arb::market_at(l, &oxo, tip).is_active(&c)) {
+            done = release_escrow(n, view, &c, &e, &oxo).ok();
+            if done.is_some() {
+                break;
+            }
+        }
+        n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
+    }
+    n.check(
+        "tier 1: another party's posting opened the case; this one's escrow was let go by the pool, whole",
+        done.is_some(),
+        &done.map(|t| t.to_string()[..16].to_string()).unwrap_or_default(),
+    );
+}
+
+/// The poster's side of a release: the escrow back to its own wallet, with the pool's co-signature.
+fn release_escrow(n: &mut Node, view: &PoolView, c: &str, e: &arb::Bond, oxo: &bitcoin::secp256k1::XOnlyPublicKey) -> Result<bitcoin::Txid, String> {
+    let rec = bitcoin::script::PushBytesBuf::try_from(bitaid_node::ledger::release_record()).map_err(|e| e.to_string())?;
+    let outs = vec![(e.value, e.payout.clone()), (0, bitcoin::ScriptBuf::new_op_return(&rec))];
+    let (tx0, d) = e.spend_to(oxo, &outs);
+    let pre = Secp256k1::new().sign_schnorr(&bitcoin::secp256k1::Message::from_digest(d), &n.keys).serialize();
+    let mut res = Err("not asked".to_string());
+    for i in 0..12u32 {
+        let mut tx = tx0.clone();
+        res = pool::cosign(n, view, c, &serialize_hex(&tx), 0, &d, 60_000 + 10 * i).and_then(|(osig, _, _)| {
+            e.witness(oxo, &mut tx, &pre, &osig);
+            n.rpc.package(&tx)
+        });
+        match &res {
+            Err(x) if x.contains("members committed") => {
+                n.collect(Duration::from_secs(10), |_, _| None::<()>, |_| false);
+            }
+            _ => break,
+        }
+    }
+    res
 }
 
 /// The escalating party's side of one arbitration tier (§10.1–10.5): escalate, collect blind seat
@@ -2621,19 +2724,11 @@ fn escalate_tier(
             }
         }
     }
-    // (for a higher tier, the escalation's height is still the one its envelope states)
+    // (a higher tier opens at the block that anchors its escalation on chain, §7)
     n.refresh_height();
-    n.send_case(
-        &c,
-        &[],
-        Msg::Escalate {
-            case_id: c.clone(),
-            tier,
-            reason: reason.into(),
-            post: post.clone(),
-        },
-        false,
-    );
+    // (tier 1 is announced only once the chain shows this party's posting opens the case)
+    let esc_msg = Msg::Escalate { case_id: c.clone(), tier, reason: reason.into(), post: post.clone() };
+    let esc_id = if escrow.is_none() { n.send_case(&c, &[], esc_msg.clone(), false) } else { String::new() };
     let h_esc = match &escrow {
         Some(e) => {
             n.rpc.mine(1).ok();
@@ -2647,10 +2742,40 @@ fn escalate_tier(
                 true,
                 &post[..16],
             );
+            // another party's posting for the case came first on the chain: that party opens the
+            // tier and its escrow pays the panel. This one stands down, and its escrow is let go
+            // once the case holds no place in the queue (heard on the other posting)
+            let me = n.me();
+            let opener = arb::pinned_roster(&n.history, a, &n.rpc).and_then(|r| {
+                let parties: Vec<&str> = std::iter::once(a.caller.as_str()).chain(r.seats.iter().map(|x| x.as_str())).collect();
+                arb::tier1_opening(&n.rpc, &oxo, &c, &parties)
+            });
+            if let Some((who, _)) = opener.filter(|o| o.0 != me) {
+                n.log(&format!("tier 1: {} posted first and opens the case; standing down", bitaid_node::pre(&who, 8)));
+                // the pool lets the escrow go once the case holds no place in the queue. That is asked
+                // for once the hearing is over (`release_stood_down`), so that waiting for it never
+                // costs this party its window to appeal
+                STOOD_DOWN.with(|x| *x.borrow_mut() = Some(e.clone()));
+                let until = n.tip() + a.template.dispute_blocks + 2;
+                let v = watch_tier(n, a, 1, until).flatten();
+                return v;
+            }
+            n.send_case(&c, &[], esc_msg.clone(), false);
             h
         }
-        None => n.height(),
+        None => match n.wait_anchored(&esc_id, secs(bitaid_node::slow(1800))) {
+            Some(h) => h,
+            None => {
+                n.check(&format!("tier {tier}: the escalation anchored on chain"), false, "");
+                return None;
+            }
+        },
     };
+    if arb::appeal_late(&n.history, &n.rpc, a, tier, h_esc) {
+        n.log(&format!("tier {tier}: the escalation was anchored at block {h_esc}, after the window of the tier below closed; the verdict below is final"));
+        CLOSED.with(|x| x.set(true));
+        return None;
+    }
     let draw_h = h_esc + bitaid_node::draw_blocks();
     n.log(&format!("ESCALATE tier {tier} ({size} seats): {reason}; drawn from block {draw_h}"));
     let t0 = Instant::now();
@@ -2683,7 +2808,9 @@ fn escalate_tier(
             continue;
         }
         // suspended for inactivity: no seats (§10.3)
-        if arb::inactive(&n.history, n.rpc.height() + 1).contains(&who) {
+        // (as of the tier's opening, so the pool's members, who check that no offer was left out,
+        // read the same suspensions)
+        if arb::inactive(&n.history, h_esc).contains(&who) {
             n.log(&format!(
                 "seat offer from {} refused: suspended for inactivity",
                 bitaid_node::pre(&who, 8)
@@ -3153,6 +3280,29 @@ fn escalate_tier(
         },
         |v| v.len() >= size,
     );
+    // (test) a hostile escalator: posts at once a commitment that leaves one seat's reveal out
+    let mut omitted = String::new();
+    if flag("--omit-reveal") && reveals.len() == size && size > 1 {
+        let cut: Vec<(String, Ballot)> = reveals[..size - 1].to_vec();
+        let cm = bitaid_node::arb::tier_commitment(&c, tier, &seats, &cut);
+        if let Ok(txid) = n.rpc.op_return(&cm) {
+            n.rpc.confirm(&[txid]);
+            n.send_case(
+                &c,
+                &[],
+                Msg::TierCommitted {
+                    case_id: c.clone(),
+                    tier,
+                    txid: txid.to_string(),
+                    revealed: cut.iter().map(|x| x.0.clone()).collect(),
+                    committed: vec![],
+                },
+                false,
+            );
+            omitted = txid.to_string();
+            n.log(&format!("(test) tier {tier}: posted a commitment that leaves the reveal of {} out", bitaid_node::pre(&reveals[size - 1].0, 8)));
+        }
+    }
     let cc = c.clone();
     let wait = if reveals.len() < size { 20 } else { 180 };
     let mut committed = n.wait(secs(wait), |env, _| match &env.msg {
@@ -3161,7 +3311,7 @@ fn escalate_tier(
             tier: t,
             txid,
             ..
-        } if *case_id == cc && *t == tier => Some(txid.clone()),
+        } if *case_id == cc && *t == tier && *txid != omitted => Some(txid.clone()),
         _ => None,
     });
     let commitment = bitaid_node::arb::tier_commitment(&c, tier, &seats, &reveals);
@@ -3367,7 +3517,9 @@ fn seat_forfeit_due(
                 .get(&(a.case_hex.clone(), *k))
                 .map(|m| m.contains_key(seat))
                 .unwrap_or(false);
-            if voted || tip < paid + a.template.commit_blocks {
+            // (a vote counts once the chain anchors it, §7: a checkpoint's list still on its way to
+            // this member gets a few blocks before the seat is taken as silent)
+            if voted || tip < paid + a.template.commit_blocks + bitaid_node::checkpoint_blocks() + 2 {
                 return None;
             }
             return Some((
@@ -4754,6 +4906,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut commits: HashMap<(String, u32), std::collections::BTreeSet<String>> = HashMap::new();
     let mut reveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut mine: HashMap<(String, u32), (Ballot, [u8; 32])> = HashMap::new();
+    let mut contested: std::collections::HashSet<(String, u32)> = Default::default();
     let mut revealed: std::collections::HashSet<(String, u32)> = Default::default();
     let mut refunds: HashMap<(String, u32), bitcoin::ScriptBuf> = HashMap::new();
     // case units committed per seat, out of --capital (§10.2); released once the case is closed and
@@ -5003,9 +5156,38 @@ fn arbitrator(mut n: Node) -> i32 {
                 if s == me {
                     continue;
                 }
+                // tier 1 is opened by whoever's posting the chain shows first (§10.6): an
+                // escalation from anyone else is not followed
+                if tier == 1 {
+                    n.rpc.sync();
+                    let oracle = wire::xonly(&a.oracle_key);
+                    let first = n.rpc.ledger(|l| {
+                        let mut v: Vec<_> = l
+                            .postings
+                            .iter()
+                            .filter(|p| p.case == case_id && oracle.is_some_and(|o| arb::posting_valid(p, &o)))
+                            .filter(|p| {
+                                rosters.get(&case_id).is_none_or(|r| {
+                                    let k = hex::encode(p.poster.serialize());
+                                    a.caller == k || r.seats.contains(&k)
+                                })
+                            })
+                            .collect();
+                        v.sort_by_key(|p| (p.at.height, p.at.pos));
+                        v.first().map(|p| hex::encode(p.poster.serialize()))
+                    });
+                    if first.is_some_and(|f| f != s) {
+                        continue;
+                    }
+                }
                 escalator.insert((case_id.clone(), tier), s);
                 if arb::is_review(tier) {
                     // review panels are drawn from the whole pool, not offered for (§10.3)
+                    continue;
+                }
+                // an appeal anchored after the window of the tier below closed opens nothing
+                if arb::appeal_late(&n.history, &n.rpc, a, tier, env.height) {
+                    n.log(&format!("case {}: escalation to tier {tier} came after the window closed; not offering", bitaid_node::pre(&case_id, 8)));
                     continue;
                 }
                 // --tiers 1,2: the tiers this arbitrator serves (an operator's choice of workload)
@@ -5417,8 +5599,48 @@ fn arbitrator(mut n: Node) -> i32 {
                     }
                 }
             }
-            Msg::TierCommitted { case_id, tier, txid, .. } => {
+            Msg::TierCommitted { case_id, tier, txid, revealed: listed, .. } => {
                 let key = (case_id.clone(), tier);
+                // a commitment that leaves this seat's reveal out is answered with one that counts
+                // it: of the commitments confirmed within the escalation window, the one counting
+                // the most valid reveals stands (§10.4)
+                if revealed.contains(&key)
+                    && !flag("--no-reveal")
+                    && !listed.is_empty()
+                    && !listed.contains(&me)
+                    && contested.insert(key.clone())
+                {
+                    if let (Some(seats), Some((my, _))) = (seated.get(&key), mine.get(&key)) {
+                        let mut list: Vec<(String, Ballot)> = reveals
+                            .get(&key)
+                            .map(|l| l.iter().filter(|x| listed.contains(&x.0)).cloned().collect())
+                            .unwrap_or_default();
+                        list.push((me.clone(), my.clone()));
+                        if list.len() == listed.len() + 1 {
+                            let cm = bitaid_node::arb::tier_commitment(&case_id, tier, seats, &list);
+                            if let Ok(t2) = n.rpc.op_return(&cm) {
+                                n.rpc.confirm(&[t2]);
+                                n.send_case(
+                                    &case_id,
+                                    &[],
+                                    Msg::TierCommitted {
+                                        case_id: case_id.clone(),
+                                        tier,
+                                        txid: t2.to_string(),
+                                        revealed: list.iter().map(|x| x.0.clone()).collect(),
+                                        committed: vec![],
+                                    },
+                                    false,
+                                );
+                                n.log(&format!(
+                                    "tier {tier}: the commitment {} leaves my reveal out; posted one that counts it — {}",
+                                    bitaid_node::pre(&txid, 8),
+                                    &t2.to_string()[..16]
+                                ));
+                            }
+                        }
+                    }
+                }
                 if !flag("--challenge") || tier >= num("--max-tier", 2u32) {
                     continue;
                 }
@@ -6367,6 +6589,9 @@ fn responder(mut n: Node) -> i32 {
             };
             let mut standing: Option<Ballot> = None;
             loop {
+                if CLOSED.with(|x| x.get()) {
+                    break;
+                }
                 match verdict.take() {
                     Some(v) => standing = Some(v),
                     None => n.log(&format!(
@@ -6437,6 +6662,7 @@ fn responder(mut n: Node) -> i32 {
             }
         }
     }
+    release_stood_down(&mut n, &a, &view);
     let Some(paid) = settle(&mut n, &a, &set, &view, flag("--broadcast")) else {
         return n.summary();
     };

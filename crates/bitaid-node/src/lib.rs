@@ -21,15 +21,24 @@ pub fn production() -> bool {
     std::env::var("BITAID_PRODUCTION").is_ok_and(|v| v == "1")
 }
 
+/// Blocks from a tier's opening to its draw block (`BITAID_DRAW_BLOCKS`). Offers count from the
+/// block that anchors them and must be anchored two blocks before the draw, so the default leaves
+/// two checkpoint periods and a margin.
 pub fn draw_blocks() -> u32 {
     std::env::var("BITAID_DRAW_BLOCKS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3)
+        .unwrap_or(2 * checkpoint_blocks() + 4)
 }
 
 /// Blocks above a draw block before anyone draws from it (`BITAID_DRAW_DEPTH`, default 3): a short
 /// reorganisation that replaced the block would otherwise leave nodes with different panels.
+/// How often, in blocks, the pool's members anchor a checkpoint of the timed messages they hold
+/// (§7; env BITAID_CHECKPOINT_BLOCKS, default 6).
+pub fn checkpoint_blocks() -> u32 {
+    std::env::var("BITAID_CHECKPOINT_BLOCKS").ok().and_then(|v| v.parse().ok()).filter(|v| *v > 0).unwrap_or(6)
+}
+
 pub fn draw_depth() -> u32 {
     std::env::var("BITAID_DRAW_DEPTH")
         .ok()
