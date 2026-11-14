@@ -3169,6 +3169,7 @@ fn escalate_tier(
         |v| v.len() >= size,
     );
     // (test) a hostile escalator: posts at once a commitment that leaves one seat's reveal out
+    let mut omitted = String::new();
     if flag("--omit-reveal") && reveals.len() == size && size > 1 {
         let cut: Vec<(String, Ballot)> = reveals[..size - 1].to_vec();
         let cm = bitaid_node::arb::tier_commitment(&c, tier, &seats, &cut);
@@ -3186,6 +3187,7 @@ fn escalate_tier(
                 },
                 false,
             );
+            omitted = txid.to_string();
             n.log(&format!("(test) tier {tier}: posted a commitment that leaves the reveal of {} out", bitaid_node::pre(&reveals[size - 1].0, 8)));
         }
     }
@@ -3197,7 +3199,7 @@ fn escalate_tier(
             tier: t,
             txid,
             ..
-        } if *case_id == cc && *t == tier => Some(txid.clone()),
+        } if *case_id == cc && *t == tier && *txid != omitted => Some(txid.clone()),
         _ => None,
     });
     let commitment = bitaid_node::arb::tier_commitment(&c, tier, &seats, &reveals);
