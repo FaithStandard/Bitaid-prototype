@@ -187,11 +187,28 @@ start)
   if [ "${ROGUE:-0}" = 1 ] && [ -x target/release/examples/rogue ]; then
     BITAID_WALLET=w nohup target/release/examples/rogue --peer 127.0.0.1:7700 --wait ${ROGUE_WAIT:-7200} >"$L/rogue.out" 2>"$L/rogue.log" </dev/null &
   fi
+  # HOSTILE=1: an outsider with coins and a link forges what the chain's records might seem to allow
+  # (see m3_arb_local.sh): the case must be heard as if none of it existed
+  if [ "${HOSTILE:-0}" = 1 ]; then
+    BITAID_WALLET=w nohup target/release/bitaid-node --role hostile --name hostile-pc $P --wait 7200 >"$L/hostile.out" 2>"$L/hostile.log" </dev/null &
+  fi
   echo "$ONION" > "$L/onion.txt"
   echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE INDEX_FROM=$BITAID_INDEX_FROM"
   [ "$CHAIN" = public ] && echo "RPC_PASS=$PASS"
   ;;
+audit)
+  # two nodes that saw nothing of the run read every arbitrator's record: one from its links, one from
+  # the chain and the archivist's logs alone. Run while the PC side is still up; INDEX_FROM as printed.
+  export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_INDEX_FROM=${INDEX_FROM:?set INDEX_FROM to the value PC_READY printed} BITAID_CHECKPOINT_BLOCKS=${CHECKPOINT_BLOCKS:-1}
+  P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
+  BITAID_WALLET=w target/release/bitaid-node --role audit --name audit-links $P --links >"$L/audit-links.out" 2>"$L/audit-links.log"
+  BITAID_WALLET=w target/release/bitaid-node --role audit --name audit-archive $P >"$L/audit-archive.out" 2>"$L/audit-archive.log"
+  ra=$(grep '^record' "$L/audit-links.out" | sort | sha256sum); rb=$(grep '^record' "$L/audit-archive.out" | sort | sha256sum)
+  grep -h "PASS\|FAIL" "$L/audit-links.out" "$L/audit-archive.out"
+  if [ "$ra" = "$rb" ] && grep -q '^record momentum' "$L/audit-archive.out"; then echo "AUDIT_PASS: the record read from the archive alone equals the record read from the links ($(grep -c '^record tier' "$L/audit-archive.out") tiers)"; else echo "AUDIT_FAIL: the two records differ"; fi | tee "$L/audit.out"
+  ;;
 report)
+  cat "$L"/hostile.out "$L"/audit.out 2>/dev/null
   cat "$L"/rogue.out 2>/dev/null; grep -h "refused .* claims height" "$L"/*.log 2>/dev/null | head -3; grep -hc "flooding\|longer than the limit\|malformed" "$L"/core.log 2>/dev/null
   cat "$L"/r*.out "$L"/arb1.out "$L"/archivist.out 2>/dev/null; grep -h "review\|unit of\|FAIL" "$L"/arb*.out 2>/dev/null | sed 's/arb[0-9]*-pc //' | sed 's/ — .*//' | sort | uniq -c; grep -h "link up\|link down\|pool key\|pool ready\|reserved\|co-signed\|stalling\|attestation share\|deemed" "$L"/*.log | tail -30
   ;;

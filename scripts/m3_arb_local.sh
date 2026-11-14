@@ -83,6 +83,11 @@ R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
 for c in $(seq 1 ${CASES:-1}); do
 [ $c -gt 1 ] && for f in caller r1 r3; do mv $L/$f.out $L/$f.$((c-1)).out; done
 [ $c -gt 1 ] && { for w in caller r1 r3; do for i in 1 2 3; do $CLI -rpcwallet=w sendtoaddress $($CLI -rpcwallet=$w getnewaddress) 3 >/dev/null; done; done; mine1; }
+# HOSTILE=1: an outsider with coins and a link forges what the chain's records might seem to allow: a
+# posting for the real case before its parties', an incident record and posting for an invented case,
+# tier records no panel made, an empty anchor and checkpoint, a seat offer on no bond, an escalation
+# that is not a party's. The case must be heard as if none of it existed.
+[ -n "$HOSTILE" ] && [ $c = 1 ] && { BITAID_TEST_FAULT= BITAID_WALLET=w $BIN/bitaid-node --role hostile --name hostile $P --wait 900 > $L/hostile.out 2>$L/hostile.log & HP="$!"; }
 BITAID_TEST_FAULT= BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
 BITAID_TEST_FAULT= BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
@@ -104,5 +109,6 @@ grep -h "review\|unit of\|FAIL" $L/arb*.out | sort | uniq -c | tee arb_release.t
 kill $PIDS 2>/dev/null
 [ "$CHALLENGE" = bad ] && CHALLENGER=4
 [ -n "$CHALLENGE" ] && for i in $(seq 1 150); do grep -q "passed" $L/arb${CHALLENGER:-1}.out 2>/dev/null && break; sleep 2; done
-cat $L/caller.out $L/r1.out $L/r3.out $L/arb${CHALLENGER:-1}.out | tee arb_result.txt
+[ -n "$HOSTILE" ] && { for i in $(seq 1 60); do grep -q "passed" $L/hostile.out 2>/dev/null && break; sleep 2; done; kill $HP 2>/dev/null; }
+cat $L/caller.out $L/r1.out $L/r3.out $L/arb${CHALLENGER:-1}.out $([ -n "$HOSTILE" ] && echo $L/hostile.out) | tee arb_result.txt
 grep -h "FAIL" $L/*.out >/dev/null && exit 1 || exit 0
