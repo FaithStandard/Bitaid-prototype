@@ -2694,17 +2694,9 @@ fn escalate_tier(
     }
     // (a higher tier opens at the block that anchors its escalation on chain, §7)
     n.refresh_height();
-    let esc_id = n.send_case(
-        &c,
-        &[],
-        Msg::Escalate {
-            case_id: c.clone(),
-            tier,
-            reason: reason.into(),
-            post: post.clone(),
-        },
-        false,
-    );
+    // (tier 1 is announced only once the chain shows this party's posting opens the case)
+    let esc_msg = Msg::Escalate { case_id: c.clone(), tier, reason: reason.into(), post: post.clone() };
+    let esc_id = if escrow.is_none() { n.send_case(&c, &[], esc_msg.clone(), false) } else { String::new() };
     let h_esc = match &escrow {
         Some(e) => {
             n.rpc.mine(1).ok();
@@ -2728,15 +2720,22 @@ fn escalate_tier(
             });
             if let Some((who, _)) = opener.filter(|o| o.0 != me) {
                 n.log(&format!("tier 1: {} posted first and opens the case; standing down", bitaid_node::pre(&who, 8)));
+                // the pool lets the escrow go once the case holds no place in the queue: when the
+                // opener's escrow has paid the panel
+                let mut done = None;
+                for _ in 0..120 {
+                    n.rpc.sync();
+                    let tip = n.rpc.height();
+                    if !n.rpc.ledger(|l| arb::market_at(l, &oxo, tip).is_active(&c)) {
+                        done = release_escrow(n, view, &c, e, &oxo).ok();
+                        if done.is_some() {
+                            break;
+                        }
+                    }
+                    n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
+                }
                 let until = n.tip() + a.template.dispute_blocks + 2;
                 let v = watch_tier(n, a, 1, until).flatten();
-                let done = (0..60).find_map(|_| {
-                    let r = release_escrow(n, view, &c, e, &oxo);
-                    if r.is_err() {
-                        n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
-                    }
-                    r.ok()
-                });
                 n.check(
                     "tier 1: another party's posting opened the case; this one's escrow was let go by the pool, whole",
                     done.is_some(),
@@ -2744,6 +2743,7 @@ fn escalate_tier(
                 );
                 return v;
             }
+            n.send_case(&c, &[], esc_msg.clone(), false);
             h
         }
         None => match n.wait_anchored(&esc_id, secs(bitaid_node::slow(1800))) {
@@ -5133,6 +5133,30 @@ fn arbitrator(mut n: Node) -> i32 {
                 };
                 if s == me {
                     continue;
+                }
+                // tier 1 is opened by whoever's posting the chain shows first (§10.6): an
+                // escalation from anyone else is not followed
+                if tier == 1 {
+                    n.rpc.sync();
+                    let oracle = wire::xonly(&a.oracle_key);
+                    let first = n.rpc.ledger(|l| {
+                        let mut v: Vec<_> = l
+                            .postings
+                            .iter()
+                            .filter(|p| p.case == case_id && oracle.is_some_and(|o| arb::posting_valid(p, &o)))
+                            .filter(|p| {
+                                rosters.get(&case_id).is_none_or(|r| {
+                                    let k = hex::encode(p.poster.serialize());
+                                    a.caller == k || r.seats.contains(&k)
+                                })
+                            })
+                            .collect();
+                        v.sort_by_key(|p| (p.at.height, p.at.pos));
+                        v.first().map(|p| hex::encode(p.poster.serialize()))
+                    });
+                    if first.is_some_and(|f| f != s) {
+                        continue;
+                    }
                 }
                 escalator.insert((case_id.clone(), tier), s);
                 if arb::is_review(tier) {
