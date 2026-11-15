@@ -750,6 +750,8 @@ pub fn reserve_nonces(
             false,
         );
         let (c, v, want) = (case.to_string(), view.clone(), idx.clone());
+        let have = got.len();
+        let mut at_t: Option<Instant> = None;
         // members answer once a bonded acceptance reaches them and its bond is read from the chain:
         // over Tor, on a phone, that takes well over 20 s (public signet run, 2026-11-15)
         let acks = n.collect(
@@ -772,7 +774,14 @@ pub fn reserve_nonces(
                 }
                 _ => None,
             },
-            |a| a.len() >= v.members.len(),
+            // enough members end the wait; the rest get a few seconds more, never the whole limit
+            // (a member that will not answer must not cost the case the links' worst)
+            |a| {
+                if a.len() + have >= v.t && at_t.is_none() {
+                    at_t = Some(Instant::now());
+                }
+                a.len() + have >= v.members.len() || at_t.is_some_and(|t| t.elapsed() > Duration::from_secs(5))
+            },
         );
         got.extend(acks);
         let acks = got.clone();

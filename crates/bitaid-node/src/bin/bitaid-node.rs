@@ -75,8 +75,11 @@ fn draw_hash(n: &Node, h: u32) -> String {
     n.rpc.block_hash(h).unwrap_or_default()
 }
 
+/// A wait of `n` seconds. One of a minute or more is a wait on others (a reply, a step of the case):
+/// it is stretched with the chain's blocks and is never shorter than the links' worst
+/// (`bitaid_node::reply`). Shorter ones are this node's own pacing and stay as written.
 fn secs(n: u64) -> Duration {
-    Duration::from_secs(bitaid_node::slow(n))
+    Duration::from_secs(if n >= 60 { bitaid_node::reply(n) } else { n })
 }
 
 fn relay_host(url: &str) -> String {
