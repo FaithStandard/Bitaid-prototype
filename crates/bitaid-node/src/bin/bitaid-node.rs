@@ -6694,7 +6694,11 @@ fn responder(mut n: Node) -> i32 {
     let corrupt = flag("--bad-partial");
     let caller_id = a.caller.clone();
     let (set, r, my_seat) = loop {
-        let Some(r) = n.wait(secs(120), |env, _| {
+        // the roster comes once the joining window has closed (the template's window from the
+        // first acceptance, or longer on slow links) and the pool has reserved nonces: the window
+        // and then a reply's worth, never less
+        let roster_wait = Duration::from_secs(3 * a.template.joining_window as u64) + secs(120);
+        let Some(r) = n.wait(roster_wait, |env, _| {
             (env.sender == caller_id)
                 .then(|| Rostered::from_msg(&env.msg))
                 .flatten()
