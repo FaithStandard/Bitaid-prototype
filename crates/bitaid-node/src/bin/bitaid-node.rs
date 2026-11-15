@@ -2127,7 +2127,9 @@ fn settle(
         &a.case_hex,
         &pots,
         &indices,
-        secs(num("--settle-wait", 300u64)),
+        // the outcome is attested once the case is final, which may be several tiers on: waited for
+        // as long as a case may take, and over as soon as the attestations come
+        secs(num("--settle-wait", 7200u64)),
     );
     for note in &notes {
         n.log(note);

@@ -62,7 +62,7 @@ for i in $(seq 1 ${ARBS:-10}); do
   BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 600 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done
 sleep 2
-COMMON="$P --mine --settle-wait 600"
+COMMON="$P --mine --settle-wait ${SETTLE_WAIT:-600}"
 R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
 [ -n "$MISCONDUCT" ] && R3APPEAL="--fault 1:misconduct:0"
 # DOUBLE=1: r3 posts the case on the fee market too. The posting first on the chain opens the tier and
