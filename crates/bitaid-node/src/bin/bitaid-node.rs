@@ -393,6 +393,9 @@ fn pool_member(mut n: Node) -> i32 {
     // nonce indices of cases whose incident was never co-signed go back to the batch after
     // RELEASE_BLOCKS; such a case is never served again (no attestation was ever made under them)
     let mut reserved_at: HashMap<String, u32> = HashMap::new();
+    // the height at which this member confirmed each case's roster: its refund height is judged
+    // from there, however long the co-signing then takes
+    let mut roster_at: HashMap<String, u32> = HashMap::new();
     let mut released: std::collections::HashSet<String> = Default::default();
     const RELEASE_BLOCKS: u32 = 144;
     let mut done: std::collections::HashSet<String> = Default::default();
@@ -835,6 +838,11 @@ fn pool_member(mut n: Node) -> i32 {
                 if a.caller != s {
                     continue;
                 }
+                // links reorder messages (over Tor, a roster and its replacement can arrive either
+                // way round): a version older than, or the same as, the one held is not taken
+                if rosters.get(case_id).is_some_and(|h| h.set_version >= r.set_version) {
+                    continue;
+                }
                 // once the incident is co-signed, the set is fixed: a replacement could seat the
                 // caller's own identities and steer the vote (review finding: roster swap)
                 if cosigned.contains(case_id) {
@@ -916,6 +924,7 @@ fn pool_member(mut n: Node) -> i32 {
                     bound: hex::encode(case::bound_id(a, &r)),
                 };
                 let seats = r.seats.clone();
+                roster_at.insert(case_id.clone(), n.rpc.height());
                 rosters.insert(case_id.clone(), r);
                 n.send_case(case_id, &seats, ack, false);
             }
@@ -958,10 +967,19 @@ fn pool_member(mut n: Node) -> i32 {
                         r,
                         accepted.get(case_id).unwrap_or(&empty),
                         |op| n.rpc.utxo(op),
-                        tip,
+                        roster_at.get(case_id).copied().unwrap_or(tip).min(tip),
                         case::exposure_bond(a, bitaid_node::sats(BOND_FLOOR)),
                         fallback_blocks() / 2,
                     )
+                    .and_then(|_| {
+                        // the bonds' fallbacks, against the chain now
+                        let acc = accepted.get(case_id).unwrap_or(&empty);
+                        r.seats
+                            .iter()
+                            .all(|x| acc.get(x).is_some_and(|ac| ac.bond_fallback >= tip + fallback_blocks() / 2))
+                            .then_some(())
+                            .ok_or_else(|| "a seat's bond fallback has come too near".to_string())
+                    })
                     .and_then(|_| {
                         (a.fallback_height >= tip + funding_margin())
                             .then_some(())
@@ -6225,8 +6243,8 @@ fn caller(mut n: Node) -> i32 {
     // the links is not the caller's to know, and over Tor it is at times longer than any window worth
     // the name (public signet run, 2026-11-15: every responder accepted, after the 30 s had gone).
     // The caller waits for the first acceptance as long as links may need; from then the roster stays
-    // open for the window, or for as long as that first acceptance took if that was longer, since the
-    // others are on the same kind of link. A full roster closes it at once.
+    // open for the window (Specification §5: 120 s after acceptance), or three times as long as that
+    // first acceptance took if that is longer, since the others are on the same kind of link. A full roster closes it at once.
     let window = secs(template.joining_window as u64);
     let mut end = alert_t + Duration::from_secs(bitaid_node::reply(600));
     let mut first_accept = None;
@@ -6288,7 +6306,7 @@ fn caller(mut n: Node) -> i32 {
         }
         if first_accept.is_none() {
             first_accept = Some(alert_t.elapsed());
-            end = Instant::now() + window.max(alert_t.elapsed());
+            end = Instant::now() + window.max(alert_t.elapsed() * 3);
         }
         n.log(&format!("accepted by {} (bond {})", bitaid_node::pre(&who, 8), bitaid_node::pre(&bond, 12)));
         accepts.push((who, p, spk));

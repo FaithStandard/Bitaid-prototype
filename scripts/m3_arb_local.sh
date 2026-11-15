@@ -91,7 +91,7 @@ for c in $(seq 1 ${CASES:-1}); do
 BITAID_TEST_FAULT= BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D $R3APPEAL --offer-window 8 --broadcast > $L/r3.out 2>$L/r3.log & RP="$!"
 BITAID_TEST_FAULT= BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate $R1APPEAL --offer-window 8 --accept-delay-ms 300 > $L/r1.out 2>$L/r1.log & RP="$RP $!"
 sleep 2
-BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-blocks ${DISPUTE_BLOCKS:-6} --alert-delay 4 --commit-blocks ${COMMIT_BLOCKS:-30} --reveal-blocks ${REVEAL_BLOCKS:-6} ${REVIEW_PCT:+--review-pct $REVIEW_PCT} ${ARB_FEE:+--arb-fee $ARB_FEE} > $L/caller.out 2>$L/caller.log
+BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window ${WINDOW:-6} --dispute-blocks ${DISPUTE_BLOCKS:-6} --alert-delay 4 --commit-blocks ${COMMIT_BLOCKS:-30} --reveal-blocks ${REVEAL_BLOCKS:-6} ${REVIEW_PCT:+--review-pct $REVIEW_PCT} ${ARB_FEE:+--arb-fee $ARB_FEE} > $L/caller.out 2>$L/caller.log
 for p in $RP; do wait $p; done
 # §10.2-10.3: every seated arbitrator waits for the case's review draw and, if passed over, releases its
 # units with the pool's co-signature; give them time before stopping the network
