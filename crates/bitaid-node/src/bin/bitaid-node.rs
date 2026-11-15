@@ -440,6 +440,8 @@ fn pool_member(mut n: Node) -> i32 {
     let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
     let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut verdicts: HashMap<String, Ballot> = HashMap::new();
+    // the tier each case's recorded verdict comes from (commitments can arrive out of order)
+    let mut verdict_tier: HashMap<String, u32> = HashMap::new();
     #[allow(clippy::type_complexity)]
     // per escalated case: when it lapses if never seated, the escalation it replaced, and the deemed-
     // consent height it cancelled (given back if it lapses: an unpaid escalation must not send a case
@@ -1593,7 +1595,9 @@ fn pool_member(mut n: Node) -> i32 {
                     .is_some_and(|h| n.tip() >= h + alerts[case_id].template.reveal_blocks);
                 if (rv.len() < seats.len() && !deadline_passed)
                     || !fees_ok.contains(&key)
-                    || esc.get(case_id).map(|x| x.0) != Some(*tier)
+                    // a tier that has been opened: links reorder, so the next tier's escalation
+                    // may have arrived first, and this commitment still counts for the case
+                    || esc.get(case_id).is_none_or(|x| x.0 < *tier)
                 {
                     if retried.insert((case_id.clone(), tier + 10_000)) {
                         n.log(&format!(
@@ -1624,6 +1628,26 @@ fn pool_member(mut n: Node) -> i32 {
                 let w = alerts[case_id].template.dispute_blocks;
                 commit_best.insert(key.clone(), rv.len());
                 let votes: Vec<Ballot> = rv.iter().map(|x| x.1.clone()).collect();
+                // a tier already appealed (its escalation came first): its verdict is recorded as
+                // the one a hung higher tier would leave standing, and nothing becomes final on it
+                if esc.get(case_id).is_some_and(|x| x.0 > *tier) {
+                    if let Some(v) = bitaid_node::arb::supermajority(seats.len(), &votes) {
+                        if verdict_tier.get(case_id).is_none_or(|t| *t < *tier) {
+                            verdicts.insert(case_id.clone(), v.clone());
+                            verdict_tier.insert(case_id.clone(), *tier);
+                        }
+                        n.log(&format!("tier {tier} verdict {} committed on chain in block {ch}; already appealed", verdict_classes(&v)));
+                    }
+                    continue;
+                }
+                // a hung tier is judged against the tier below, so that one is read first
+                if *tier > 1
+                    && bitaid_node::arb::supermajority(seats.len(), &votes).is_none()
+                    && !commit_best.contains_key(&(case_id.clone(), tier - 1))
+                    && !bitaid_node::arb::is_review(*tier)
+                {
+                    later!();
+                }
                 match bitaid_node::arb::supermajority(seats.len(), &votes) {
                     Some(v) => {
                         let k = bitaid_node::arb::verdict_key(&v);
@@ -1636,6 +1660,7 @@ fn pool_member(mut n: Node) -> i32 {
                             n.log(&format!("tier {tier}: dissenter {} owes {:.1}× the fee (provisional until the final ruling)", bitaid_node::pre(&d, 8), bitaid_node::arb::penalty_factor(seats.len(), dissenters.len())));
                         }
                         verdicts.insert(case_id.clone(), v.clone());
+                        verdict_tier.insert(case_id.clone(), *tier);
                         n.log(&format!("tier {tier} verdict {} committed on chain in block {ch}; final at block {} unless appealed", verdict_classes(&v), ch + w));
                         ready_at.insert(case_id.clone(), ch + w);
                     }
