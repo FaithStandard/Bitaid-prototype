@@ -1086,9 +1086,10 @@ impl Node {
             if left.is_zero() {
                 break;
             }
-            match self.wait(left, &mut f) {
-                Some(t) => out.push(t),
-                None => break,
+            // in slices of two seconds, so a rule that depends on time (`enough` ending a wait some
+            // while after the first answer) is asked again even when nothing more arrives
+            if let Some(t) = self.wait(left.min(Duration::from_secs(2)), &mut f) {
+                out.push(t);
             }
         }
         out
