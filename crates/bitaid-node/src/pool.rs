@@ -729,14 +729,17 @@ pub fn reserve_nonces(
     case: &str,
 ) -> Result<(Vec<u32>, Vec<Point>), String> {
     let size = view.batch.r.len() as u32;
-    for attempt in 0..4 {
-        let mut idx: Vec<u32> = Vec::new();
-        while idx.len() < 3 {
-            let j = rand::random::<u32>() % size;
-            if !idx.contains(&j) {
-                idx.push(j);
-            }
+    // the same indices are asked for again on every attempt: a member that has reserved them for
+    // this case answers again, and holds them, so new indices would only be refused
+    let mut idx: Vec<u32> = Vec::new();
+    while idx.len() < 3 {
+        let j = rand::random::<u32>() % size;
+        if !idx.contains(&j) {
+            idx.push(j);
         }
+    }
+    let mut got: std::collections::BTreeSet<u16> = Default::default();
+    for attempt in 0..4 {
         n.send_case(
             case,
             &view.identities(),
@@ -747,8 +750,10 @@ pub fn reserve_nonces(
             false,
         );
         let (c, v, want) = (case.to_string(), view.clone(), idx.clone());
+        // members answer once a bonded acceptance reaches them and its bond is read from the chain:
+        // over Tor, on a phone, that takes well over 20 s (public signet run, 2026-11-15)
         let acks = n.collect(
-            Duration::from_secs(20),
+            Duration::from_secs(crate::slow(20)),
             |env, _| match &env.msg {
                 Msg::NonceAssignment {
                     case_id,
@@ -767,8 +772,10 @@ pub fn reserve_nonces(
                 }
                 _ => None,
             },
-            |got| got.len() >= v.members.len(),
+            |a| a.len() >= v.members.len(),
         );
+        got.extend(acks);
+        let acks = got.clone();
         if acks.len() >= view.t {
             n.log(&format!(
                 "nonces {idx:?} reserved by {} of {} members",
@@ -781,7 +788,7 @@ pub fn reserve_nonces(
             ));
         }
         n.log(&format!(
-            "attempt {attempt}: only {} members reserved {idx:?}; trying other indices",
+            "attempt {attempt}: only {} members reserved {idx:?} so far; asking again",
             acks.len()
         ));
     }
