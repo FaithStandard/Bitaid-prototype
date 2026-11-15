@@ -896,6 +896,8 @@ pub fn cosign_tries(
             false,
         );
         let (c, v, ch) = (case.to_string(), view.clone(), chosen.clone());
+        let t_sign = Instant::now();
+        let mut first_share: Option<Duration> = None;
         let shares = n.collect(
             // the signing round ends when every chosen member has signed; one that does not within
             // the reply time is excluded and the session run again without it
@@ -917,7 +919,16 @@ pub fn cosign_tries(
                 }
                 _ => None,
             },
-            |got| got.len() >= ch.len(),
+            // a member that committed and will not sign must not cost the session the links' worst:
+            // once a share is in, the others get twice as long as it took, and at least a minute
+            // (they are on the same kind of link), then the session is run again without them
+            |got| {
+                if !got.is_empty() && first_share.is_none() {
+                    first_share = Some(t_sign.elapsed());
+                }
+                got.len() >= ch.len()
+                    || first_share.is_some_and(|f| t_sign.elapsed() > (f * 3).max(Duration::from_secs(60)))
+            },
         );
         if shares.len() < chosen.len() {
             for m in &chosen {

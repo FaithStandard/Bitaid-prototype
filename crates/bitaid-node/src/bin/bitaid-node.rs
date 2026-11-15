@@ -6760,7 +6760,9 @@ fn responder(mut n: Node) -> i32 {
 
     // ------------------------------------------------ incident confirmed, then evidence and ballot
     let cid = caller_id.clone();
-    let inc = n.wait(secs(120), |env, _| match &env.msg {
+    // the incident comes once the pool has co-signed it, which may take several sessions when a
+    // member stalls: waited for as long as a case may take, and over as soon as it comes
+    let inc = n.wait(secs(1800), |env, _| match &env.msg {
         Msg::Incident { case_id, txid } if *case_id == c && env.sender == cid => Some(txid.clone()),
         _ => None,
     });
