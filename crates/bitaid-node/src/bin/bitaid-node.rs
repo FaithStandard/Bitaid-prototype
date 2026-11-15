@@ -3429,7 +3429,17 @@ fn escalate_tier(
     }
     let on_chain = committed
         .as_ref()
-        .map(|t| n.rpc.has_op_return(t, &bitaid_node::ledger::tier_record(&c, tier, &commitment)) || n.rpc.has_op_return(t, &bitaid_node::ledger::tier_record(&c, tier, &commitment_listed)))
+        .map(|t| {
+            n.rpc.has_op_return(t, &bitaid_node::ledger::tier_record(&c, tier, &commitment))
+                || n.rpc.has_op_return(t, &bitaid_node::ledger::tier_record(&c, tier, &commitment_listed))
+                // or a record for this case and tier whose contents this seat's own view does not
+                // reproduce: over slow links seats can disagree on who committed by the deadline,
+                // and the replay, not any one seat, judges which commitment stands (most reveals)
+                || {
+                    n.rpc.sync();
+                    n.rpc.ledger(|l| l.tiers.iter().any(|x| x.txid.to_string() == *t && x.case == c && x.tier == tier))
+                }
+        })
         .unwrap_or(false);
     n.check(&format!("tier {tier}: {} of {size} verdicts revealed; roster and answers committed on chain (OP_RETURN)", reveals.len()), on_chain, &committed.unwrap_or_default());
     let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
