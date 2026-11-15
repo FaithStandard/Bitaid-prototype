@@ -125,6 +125,8 @@ pub struct Node {
     anchoring: HashMap<String, u32>,
     /// a pool member anchors checkpoints of what it holds: (its turn, of how many)
     pub anchorer: Option<(u32, u32)>,
+    /// messages held back by BITAID_LAG: (when they are let through, subscription, event)
+    lagged: VecDeque<(Instant, String, Event)>,
     /// an archivist keeps each case's open messages here, one signed event per line in
     /// `log-<case>`, each timed one after the checkpoint that anchors it: what `/log/<case>` serves
     pub log_dir: Option<std::path::PathBuf>,
@@ -436,6 +438,7 @@ impl Node {
             own_timed: HashMap::new(),
             anchoring: HashMap::new(),
             anchorer: None,
+            lagged: VecDeque::new(),
             log_dir: None,
             cp_events: HashMap::new(),
             ids: Default::default(),
@@ -983,7 +986,20 @@ impl Node {
     }
 
     fn pull(&mut self, timeout: Duration) -> bool {
-        match self.client.next_event(timeout) {
+        // BITAID_LAG: what arrives is held back as a slow link would hold it
+        let got = match crate::lag() {
+            None if self.lagged.is_empty() => self.client.next_event(timeout),
+            lag => {
+                let due = |q: &VecDeque<(Instant, String, Event)>| q.iter().position(|x| x.0 <= Instant::now());
+                if due(&self.lagged).is_none() {
+                    if let Some((sub, e)) = self.client.next_event(timeout.min(Duration::from_millis(200))) {
+                        self.lagged.push_back((Instant::now() + lag.unwrap_or_default(), sub, e));
+                    }
+                }
+                due(&self.lagged).and_then(|i| self.lagged.remove(i)).map(|x| (x.1, x.2))
+            }
+        };
+        match got {
             Some((sub, e)) => {
                 match self.decode(&e) {
                     Some(env) => {

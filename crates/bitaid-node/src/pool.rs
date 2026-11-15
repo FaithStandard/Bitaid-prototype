@@ -753,7 +753,7 @@ pub fn reserve_nonces(
         // members answer once a bonded acceptance reaches them and its bond is read from the chain:
         // over Tor, on a phone, that takes well over 20 s (public signet run, 2026-11-15)
         let acks = n.collect(
-            Duration::from_secs(crate::slow(20)),
+            Duration::from_secs(crate::reply(20)),
             |env, _| match &env.msg {
                 Msg::NonceAssignment {
                     case_id,
@@ -839,9 +839,9 @@ pub fn cosign_tries(
         );
         let (c, v, ex) = (case.to_string(), view.clone(), excluded.clone());
         let commits = n.collect(
-            // members over slow links replay the case before their first answer: a session waits
-            // 30 s, stretched with the chain's blocks (BITAID_TIME_SCALE) up to 2 minutes
-            Duration::from_secs(crate::slow(60).min(240) / 2),
+            // a session waits for t commitments and ends when it has them (`reply`: never less
+            // than the links' worst)
+            Duration::from_secs(crate::reply(30)),
             |env, _| match &env.msg {
                 Msg::PoolCommit {
                     case_id,
@@ -888,9 +888,9 @@ pub fn cosign_tries(
         );
         let (c, v, ch) = (case.to_string(), view.clone(), chosen.clone());
         let shares = n.collect(
-            // the signing round: 6 s, or 30 s on a slow chain (TIME_SCALE above 1), where members are
-            // phones over Tor and a commitment taken but not signed within 6 s cost the whole session
-            Duration::from_secs(if crate::slow(60) > 60 { 30 } else { 6 }),
+            // the signing round ends when every chosen member has signed; one that does not within
+            // the reply time is excluded and the session run again without it
+            Duration::from_secs(crate::reply(6)),
             |env, _| match &env.msg {
                 Msg::PoolSigShare {
                     case_id,

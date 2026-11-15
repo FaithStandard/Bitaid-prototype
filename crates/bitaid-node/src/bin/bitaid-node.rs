@@ -4425,7 +4425,7 @@ fn review_stage(
     );
     let cc = c.clone();
     let mut committed = n.wait(
-        secs(if reveals.len() < size { 20 } else { 180 }),
+        Duration::from_secs(bitaid_node::reply(if reveals.len() < size { 20 } else { 180 })),
         |env, _| match &env.msg {
             Msg::TierCommitted {
                 case_id,
@@ -6218,7 +6218,14 @@ fn caller(mut n: Node) -> i32 {
     let rpc_view = |op: &OutPoint| n.rpc.utxo(op);
     let _ = rpc_view;
     let mut accepts: Vec<(String, Point, String)> = Vec::new();
-    let end = alert_t + secs(template.joining_window as u64);
+    // The window is not counted from the alert: how long the alert and an acceptance take to cross
+    // the links is not the caller's to know, and over Tor it is at times longer than any window worth
+    // the name (public signet run, 2026-11-15: every responder accepted, after the 30 s had gone).
+    // The caller waits for the first acceptance as long as links may need; from then the roster stays
+    // open for the window, or for as long as that first acceptance took if that was longer, since the
+    // others are on the same kind of link. A full roster closes it at once.
+    let window = secs(template.joining_window as u64);
+    let mut end = alert_t + Duration::from_secs(bitaid_node::reply(600));
     let mut first_accept = None;
     while Instant::now() < end && accepts.len() < max {
         let left = end.saturating_duration_since(Instant::now());
@@ -6276,7 +6283,10 @@ fn caller(mut n: Node) -> i32 {
         if bitcoin::ScriptBuf::from_hex(&spk).is_err() || accepts.iter().any(|x| x.0 == who) {
             continue;
         }
-        first_accept.get_or_insert(alert_t.elapsed());
+        if first_accept.is_none() {
+            first_accept = Some(alert_t.elapsed());
+            end = Instant::now() + window.max(alert_t.elapsed());
+        }
         n.log(&format!("accepted by {} (bond {})", bitaid_node::pre(&who, 8), bitaid_node::pre(&bond, 12)));
         accepts.push((who, p, spk));
     }
@@ -7040,7 +7050,7 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
             false,
         );
         let cc = c.clone();
-        let signed = n.wait(secs(20), |env, _| match &env.msg {
+        let signed = n.wait(Duration::from_secs(bitaid_node::reply(20)), |env, _| match &env.msg {
             Msg::SeizureSig { case_id, txid, .. } if *case_id == cc && *txid == gid => Some(()),
             _ => None,
         });

@@ -62,6 +62,39 @@ pub fn slow(secs: u64) -> u64 {
     (secs as f64 * k) as u64
 }
 
+/// How long to wait for an answer that crosses links. Two rules, both from the public signet runs
+/// over Tor (2026-11-15), where 20 and 30 second waits tuned on a local machine ended cases that
+/// every party was answering:
+///
+/// * a wait on a reply ends when the reply comes, so a long limit costs nothing where links are fast;
+/// * the limit is never shorter than the worst the links do. Over Tor a link drops and is rebuilt in
+///   minutes, not seconds, and an onion service is at times unreachable for longer.
+///
+/// `BITAID_REPLY_MIN` is that floor in seconds (0 on a local machine; 900 on runs over Tor): every
+/// wait on a reply is at least that long, whatever figure the code names.
+pub fn reply(secs: u64) -> u64 {
+    let floor: u64 = std::env::var("BITAID_REPLY_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    slow(secs).max(floor)
+}
+
+/// Links as they are over Tor, for local runs: `BITAID_LAG="lo-hi,pct:spike"` in milliseconds delays
+/// every message this node receives by a time drawn between `lo` and `hi`, and `pct` in a hundred by
+/// `spike` instead (a circuit being rebuilt). Unset, nothing is delayed. A local run with no lag
+/// proves the logic; only one with lag shows whether the waits fit the network.
+pub fn lag() -> Option<std::time::Duration> {
+    let v = std::env::var("BITAID_LAG").ok()?;
+    let (range, spike) = v.split_once(',').unwrap_or((v.as_str(), ""));
+    let (lo, hi) = range.split_once('-')?;
+    let (lo, hi): (u64, u64) = (lo.parse().ok()?, hi.parse().ok()?);
+    let mut ms = lo + rand::random::<u64>() % (hi.saturating_sub(lo) + 1);
+    if let Some((pct, sp)) = spike.split_once(':') {
+        if rand::random::<u64>() % 100 < pct.parse().unwrap_or(0) {
+            ms = sp.parse().unwrap_or(ms);
+        }
+    }
+    Some(std::time::Duration::from_millis(ms))
+}
+
 /// Amounts divided for a test chain whose coins come from a faucet: `BITAID_SAT_SCALE` (default 1)
 /// divides every amount the prototype chooses — bonds, case pots, fees, retention — so a run fits a
 /// few hundredths of a coin. Every mechanism and proportion stays the same.
