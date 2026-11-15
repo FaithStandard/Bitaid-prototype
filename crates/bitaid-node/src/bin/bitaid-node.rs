@@ -556,16 +556,28 @@ fn pool_member(mut n: Node) -> i32 {
         // not while an escalation of the case waits here to be judged: links reorder messages, and
         // one that came before the commitment of the tier it appeals may be the reason the verdict
         // is not final (lagged run, 2026-11-15: a member attested a verdict the others saw appealed)
-        let held: std::collections::HashSet<String> = deferred
+        // Nor while an appeal of it is held until a block anchors it, and not until the anchors of the
+        // window's last blocks have had time to be listed: an appeal counts from its anchor (§7), and
+        // a checkpoint's list can reach a member some blocks after the checkpoint itself
+        let mut held: std::collections::HashSet<String> = deferred
             .iter()
             .filter_map(|(_, e, _)| match &e.msg {
                 Msg::Escalate { case_id, .. } => Some(case_id.clone()),
                 _ => None,
             })
             .collect();
+        held.extend(n.parked_cases("escalate"));
+        let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
         let due: Vec<String> = ready_at
             .iter()
-            .filter(|(c, h)| tip >= **h && !held.contains(*c))
+            .filter(|(c, h)| tip >= **h + grace && !held.contains(*c))
+            .filter(|(_, h)| {
+                // every anchor up to the window's close accounted for. One nobody can account for
+                // (anyone may anchor a root that lists nothing) holds the case four times the grace
+                // and no longer
+                let unknown = n.unexplained_anchors(h.saturating_sub(64), **h);
+                unknown == 0 || tip >= **h + 4 * grace
+            })
             .map(|(c, _)| c.clone())
             .collect();
         for c in due {

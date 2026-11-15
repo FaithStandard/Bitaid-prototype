@@ -119,6 +119,8 @@ pub struct Node {
     parked: VecDeque<(String, Event, u32)>,
     /// checkpoints read: message id -> the roots it is listed under
     listed: HashMap<String, Vec<String>>,
+    /// checkpoint roots whose list this node has read
+    roots: std::collections::HashSet<String>,
     /// this node's own timed messages not yet anchored: id -> the chain height when sent
     own_timed: HashMap<String, u32>,
     /// ids this node has put in an anchor of its own, and the chain height when it did
@@ -435,6 +437,7 @@ impl Node {
             locked: VecDeque::new(),
             parked: VecDeque::new(),
             listed: HashMap::new(),
+            roots: Default::default(),
             own_timed: HashMap::new(),
             anchoring: HashMap::new(),
             anchorer: None,
@@ -650,6 +653,7 @@ impl Node {
         if self.listed.len() > 400_000 {
             self.listed.clear();
         }
+        self.roots.insert(root.clone());
         for l in leaves {
             let v = self.listed.entry(l.clone()).or_default();
             if !v.contains(&root) && v.len() < 8 {
@@ -920,6 +924,30 @@ impl Node {
                 self.log(&format!("case {}: {got} message(s) read from the archive", crate::pre(&c, 8)));
             }
         }
+    }
+
+    /// Anchors on the chain in blocks `from..=to` that this node cannot account for: a root that is
+    /// neither a checkpoint whose list it has read nor the id of a message it holds. Each may stand
+    /// for a message this node has not received yet; a step that turns on what was anchored in those
+    /// blocks (a verdict's finality: was it appealed?) waits until there are none.
+    pub fn unexplained_anchors(&self, from: u32, to: u32) -> usize {
+        let (roots, ids) = (&self.roots, &self.ids);
+        self.rpc.ledger(|l| {
+            l.anchors
+                .iter()
+                .filter(|(r, h)| *h >= from && *h <= to && !roots.contains(r) && !ids.contains(r))
+                .count()
+        })
+    }
+
+    /// Cases with a message of the named kind (an appeal, say) held here until a block anchors it:
+    /// received, but not yet counted.
+    pub fn parked_cases(&self, name: &str) -> std::collections::HashSet<String> {
+        self.parked
+            .iter()
+            .filter(|(_, e, _)| e.tag("t") == Some(name))
+            .filter_map(|(_, e, _)| e.tag("c").map(String::from))
+            .collect()
     }
 
     /// Cases with a tier commitment on the chain (from BITAID_INDEX_FROM on, if set) that this node
