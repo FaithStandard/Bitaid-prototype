@@ -553,9 +553,19 @@ fn pool_member(mut n: Node) -> i32 {
         }
         // deemed consent: every seat revealed and the dispute window has passed; each member reads
         // the outcome from the ballots itself and releases its own share
+        // not while an escalation of the case waits here to be judged: links reorder messages, and
+        // one that came before the commitment of the tier it appeals may be the reason the verdict
+        // is not final (lagged run, 2026-11-15: a member attested a verdict the others saw appealed)
+        let held: std::collections::HashSet<String> = deferred
+            .iter()
+            .filter_map(|(_, e, _)| match &e.msg {
+                Msg::Escalate { case_id, .. } => Some(case_id.clone()),
+                _ => None,
+            })
+            .collect();
         let due: Vec<String> = ready_at
             .iter()
-            .filter(|(_, h)| tip >= **h)
+            .filter(|(c, h)| tip >= **h && !held.contains(*c))
             .map(|(c, _)| c.clone())
             .collect();
         for c in due {
