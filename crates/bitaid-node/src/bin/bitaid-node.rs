@@ -714,11 +714,21 @@ fn pool_member(mut n: Node) -> i32 {
                 let Some(a) = alerts.get(case_id) else {
                     continue;
                 };
-                if a.caller != s
-                    || indices.len() != 3
-                    || assigned.contains_key(case_id)
-                    || released.contains(case_id)
-                {
+                if a.caller != s || indices.len() != 3 || released.contains(case_id) {
+                    continue;
+                }
+                // already reserved for this case: the same request is answered again (the first
+                // answer may have come after the caller stopped waiting); other indices are not
+                if let Some(mine) = assigned.get(case_id) {
+                    if mine == indices {
+                        let nonces = indices.iter().map(|j| point_hex(&m.batch.r[*j as usize])).collect();
+                        n.send_case(
+                            case_id,
+                            std::slice::from_ref(&s),
+                            Msg::NonceAssignment { case_id: case_id.clone(), member: me, indices: indices.clone(), nonces },
+                            false,
+                        );
+                    }
                     continue;
                 }
                 // nonces are reserved for a case someone accepted, not for any alert: alerts cost
