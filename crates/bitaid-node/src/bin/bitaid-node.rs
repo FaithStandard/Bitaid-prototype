@@ -1516,12 +1516,18 @@ fn pool_member(mut n: Node) -> i32 {
                 if !panels.contains_key(&key) {
                     later!();
                 }
+                // a seat not (yet) on the panel here: a replacement whose drawing this member has
+                // not read, links reordering the two; looked at again
+                if !panels.get(&key).is_some_and(|p| p.contains(&s)) {
+                    later!();
+                }
                 if panels.get(&key).map(|p| p.contains(&s)).unwrap_or(false) {
-                    // a commit seen after the seat's deadline does not count: the seat is forfeit
+                    // a commit anchored after the seat's deadline does not count: the seat is forfeit
+                    // (judged by the block that anchors it, the same for every member)
                     let late = fee_at
                         .get(&(case_id.clone(), *tier, s.clone()))
                         .zip(alerts.get(case_id))
-                        .is_some_and(|(h, a)| n.tip() >= h + a.template.commit_blocks);
+                        .is_some_and(|(h, a)| env.height >= h + a.template.commit_blocks);
                     if late {
                         n.log(&format!(
                             "tier {tier}: the commit of {} came after its deadline; not counted",
