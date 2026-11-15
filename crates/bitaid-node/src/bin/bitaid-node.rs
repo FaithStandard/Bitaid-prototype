@@ -6245,7 +6245,8 @@ fn caller(mut n: Node) -> i32 {
     // The caller waits for the first acceptance as long as links may need; from then the roster stays
     // open for the window (Specification §5: 120 s after acceptance), or three times as long as that
     // first acceptance took if that is longer, since the others are on the same kind of link. A full roster closes it at once.
-    let window = secs(template.joining_window as u64);
+    // a protocol window, not a wait on a reply: as the template states it
+    let window = Duration::from_secs(template.joining_window as u64);
     let mut end = alert_t + Duration::from_secs(bitaid_node::reply(600));
     let mut first_accept = None;
     while Instant::now() < end && accepts.len() < max {
@@ -6339,11 +6340,12 @@ fn caller(mut n: Node) -> i32 {
     n.add_case_key(&c, case_key);
     let mut seated = accepts.clone();
     let mut version = 0u32;
-    let refund_height = n.rpc.height() + template.refund_delay;
     // the caller's pot key: fresh for this case, never the scoped key (review finding 16)
     let pot_k = random_scalar();
     keep_case_key(&n, &c, "pot", &pot_k);
     let (set, roster) = loop {
+        // each version a full refund delay from now: a re-rolled set may come many blocks later
+        let refund_height = n.rpc.height() + template.refund_delay;
         let mut r = Rostered {
             set_version: version,
             seats: seated.iter().map(|x| x.0.clone()).collect(),
