@@ -75,8 +75,11 @@ fn draw_hash(n: &Node, h: u32) -> String {
     n.rpc.block_hash(h).unwrap_or_default()
 }
 
+/// A wait of `n` seconds. One of a minute or more is a wait on others (a reply, a step of the case):
+/// it is stretched with the chain's blocks and is never shorter than the links' worst
+/// (`bitaid_node::reply`). Shorter ones are this node's own pacing and stay as written.
 fn secs(n: u64) -> Duration {
-    Duration::from_secs(bitaid_node::slow(n))
+    Duration::from_secs(if n >= 60 { bitaid_node::reply(n) } else { n })
 }
 
 fn relay_host(url: &str) -> String {
@@ -390,6 +393,9 @@ fn pool_member(mut n: Node) -> i32 {
     // nonce indices of cases whose incident was never co-signed go back to the batch after
     // RELEASE_BLOCKS; such a case is never served again (no attestation was ever made under them)
     let mut reserved_at: HashMap<String, u32> = HashMap::new();
+    // the height at which this member confirmed each case's roster: its refund height is judged
+    // from there, however long the co-signing then takes
+    let mut roster_at: HashMap<String, u32> = HashMap::new();
     let mut released: std::collections::HashSet<String> = Default::default();
     const RELEASE_BLOCKS: u32 = 144;
     let mut done: std::collections::HashSet<String> = Default::default();
@@ -434,6 +440,8 @@ fn pool_member(mut n: Node) -> i32 {
     let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
     let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
     let mut verdicts: HashMap<String, Ballot> = HashMap::new();
+    // the tier each case's recorded verdict comes from (commitments can arrive out of order)
+    let mut verdict_tier: HashMap<String, u32> = HashMap::new();
     #[allow(clippy::type_complexity)]
     // per escalated case: when it lapses if never seated, the escalation it replaced, and the deemed-
     // consent height it cancelled (given back if it lapses: an unpaid escalation must not send a case
@@ -547,9 +555,31 @@ fn pool_member(mut n: Node) -> i32 {
         }
         // deemed consent: every seat revealed and the dispute window has passed; each member reads
         // the outcome from the ballots itself and releases its own share
+        // not while an escalation of the case waits here to be judged: links reorder messages, and
+        // one that came before the commitment of the tier it appeals may be the reason the verdict
+        // is not final (lagged run, 2026-11-15: a member attested a verdict the others saw appealed)
+        // Nor while an appeal of it is held until a block anchors it, and not until the anchors of the
+        // window's last blocks have had time to be listed: an appeal counts from its anchor (§7), and
+        // a checkpoint's list can reach a member some blocks after the checkpoint itself
+        let mut held: std::collections::HashSet<String> = deferred
+            .iter()
+            .filter_map(|(_, e, _)| match &e.msg {
+                Msg::Escalate { case_id, .. } => Some(case_id.clone()),
+                _ => None,
+            })
+            .collect();
+        held.extend(n.parked_cases("escalate"));
+        let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
         let due: Vec<String> = ready_at
             .iter()
-            .filter(|(_, h)| tip >= **h)
+            .filter(|(c, h)| tip >= **h + grace && !held.contains(*c))
+            .filter(|(_, h)| {
+                // every anchor up to the window's close accounted for. One nobody can account for
+                // (anyone may anchor a root that lists nothing) holds the case four times the grace
+                // and no longer
+                let unknown = n.unexplained_anchors(h.saturating_sub(64), **h);
+                unknown == 0 || tip >= **h + 4 * grace
+            })
             .map(|(c, _)| c.clone())
             .collect();
         for c in due {
@@ -832,6 +862,11 @@ fn pool_member(mut n: Node) -> i32 {
                 if a.caller != s {
                     continue;
                 }
+                // links reorder messages (over Tor, a roster and its replacement can arrive either
+                // way round): a version older than, or the same as, the one held is not taken
+                if rosters.get(case_id).is_some_and(|h| h.set_version >= r.set_version) {
+                    continue;
+                }
                 // once the incident is co-signed, the set is fixed: a replacement could seat the
                 // caller's own identities and steer the vote (review finding: roster swap)
                 if cosigned.contains(case_id) {
@@ -913,6 +948,7 @@ fn pool_member(mut n: Node) -> i32 {
                     bound: hex::encode(case::bound_id(a, &r)),
                 };
                 let seats = r.seats.clone();
+                roster_at.insert(case_id.clone(), n.rpc.height());
                 rosters.insert(case_id.clone(), r);
                 n.send_case(case_id, &seats, ack, false);
             }
@@ -955,10 +991,19 @@ fn pool_member(mut n: Node) -> i32 {
                         r,
                         accepted.get(case_id).unwrap_or(&empty),
                         |op| n.rpc.utxo(op),
-                        tip,
+                        roster_at.get(case_id).copied().unwrap_or(tip).min(tip),
                         case::exposure_bond(a, bitaid_node::sats(BOND_FLOOR)),
                         fallback_blocks() / 2,
                     )
+                    .and_then(|_| {
+                        // the bonds' fallbacks, against the chain now
+                        let acc = accepted.get(case_id).unwrap_or(&empty);
+                        r.seats
+                            .iter()
+                            .all(|x| acc.get(x).is_some_and(|ac| ac.bond_fallback >= tip + fallback_blocks() / 2))
+                            .then_some(())
+                            .ok_or_else(|| "a seat's bond fallback has come too near".to_string())
+                    })
                     .and_then(|_| {
                         (a.fallback_height >= tip + funding_margin())
                             .then_some(())
@@ -1471,12 +1516,18 @@ fn pool_member(mut n: Node) -> i32 {
                 if !panels.contains_key(&key) {
                     later!();
                 }
+                // a seat not (yet) on the panel here: a replacement whose drawing this member has
+                // not read, links reordering the two; looked at again
+                if !panels.get(&key).is_some_and(|p| p.contains(&s)) {
+                    later!();
+                }
                 if panels.get(&key).map(|p| p.contains(&s)).unwrap_or(false) {
-                    // a commit seen after the seat's deadline does not count: the seat is forfeit
+                    // a commit anchored after the seat's deadline does not count: the seat is forfeit
+                    // (judged by the block that anchors it, the same for every member)
                     let late = fee_at
                         .get(&(case_id.clone(), *tier, s.clone()))
                         .zip(alerts.get(case_id))
-                        .is_some_and(|(h, a)| n.tip() >= h + a.template.commit_blocks);
+                        .is_some_and(|(h, a)| env.height >= h + a.template.commit_blocks);
                     if late {
                         n.log(&format!(
                             "tier {tier}: the commit of {} came after its deadline; not counted",
@@ -1550,7 +1601,9 @@ fn pool_member(mut n: Node) -> i32 {
                     .is_some_and(|h| n.tip() >= h + alerts[case_id].template.reveal_blocks);
                 if (rv.len() < seats.len() && !deadline_passed)
                     || !fees_ok.contains(&key)
-                    || esc.get(case_id).map(|x| x.0) != Some(*tier)
+                    // a tier that has been opened: links reorder, so the next tier's escalation
+                    // may have arrived first, and this commitment still counts for the case
+                    || esc.get(case_id).is_none_or(|x| x.0 < *tier)
                 {
                     if retried.insert((case_id.clone(), tier + 10_000)) {
                         n.log(&format!(
@@ -1581,6 +1634,26 @@ fn pool_member(mut n: Node) -> i32 {
                 let w = alerts[case_id].template.dispute_blocks;
                 commit_best.insert(key.clone(), rv.len());
                 let votes: Vec<Ballot> = rv.iter().map(|x| x.1.clone()).collect();
+                // a tier already appealed (its escalation came first): its verdict is recorded as
+                // the one a hung higher tier would leave standing, and nothing becomes final on it
+                if esc.get(case_id).is_some_and(|x| x.0 > *tier) {
+                    if let Some(v) = bitaid_node::arb::supermajority(seats.len(), &votes) {
+                        if verdict_tier.get(case_id).is_none_or(|t| *t < *tier) {
+                            verdicts.insert(case_id.clone(), v.clone());
+                            verdict_tier.insert(case_id.clone(), *tier);
+                        }
+                        n.log(&format!("tier {tier} verdict {} committed on chain in block {ch}; already appealed", verdict_classes(&v)));
+                    }
+                    continue;
+                }
+                // a hung tier is judged against the tier below, so that one is read first
+                if *tier > 1
+                    && bitaid_node::arb::supermajority(seats.len(), &votes).is_none()
+                    && !commit_best.contains_key(&(case_id.clone(), tier - 1))
+                    && !bitaid_node::arb::is_review(*tier)
+                {
+                    later!();
+                }
                 match bitaid_node::arb::supermajority(seats.len(), &votes) {
                     Some(v) => {
                         let k = bitaid_node::arb::verdict_key(&v);
@@ -1593,6 +1666,7 @@ fn pool_member(mut n: Node) -> i32 {
                             n.log(&format!("tier {tier}: dissenter {} owes {:.1}× the fee (provisional until the final ruling)", bitaid_node::pre(&d, 8), bitaid_node::arb::penalty_factor(seats.len(), dissenters.len())));
                         }
                         verdicts.insert(case_id.clone(), v.clone());
+                        verdict_tier.insert(case_id.clone(), *tier);
                         n.log(&format!("tier {tier} verdict {} committed on chain in block {ch}; final at block {} unless appealed", verdict_classes(&v), ch + w));
                         ready_at.insert(case_id.clone(), ch + w);
                     }
@@ -2096,7 +2170,9 @@ fn settle(
         &a.case_hex,
         &pots,
         &indices,
-        secs(num("--settle-wait", 300u64)),
+        // the outcome is attested once the case is final, which may be several tiers on: waited for
+        // as long as a case may take, and over as soon as the attestations come
+        secs(num("--settle-wait", 7200u64)),
     );
     for note in &notes {
         n.log(note);
@@ -2619,6 +2695,7 @@ fn escrow_release_due(n: &Node, a: &Alerted, t: &Transaction, input: u32) -> Opt
 thread_local! {
     /// --stuff: the invented cases this party posted
     static STUFFED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static STUFFED_TX: std::cell::RefCell<Vec<bitcoin::Txid>> = const { std::cell::RefCell::new(Vec::new()) };
     /// an appeal of this party's came after the window closed: the case is final
     static CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// the escrow of a posting that stood down for another party's, to be let go after the hearing
@@ -2716,8 +2793,16 @@ fn escalate_tier(
         for _ in 0..num("--stuff", 0u32) {
             let fake: [u8; 32] = rand::random();
             let r = bitaid_node::ledger::post_record(&fake, 1, fee1.min(u32::MAX as u64) as u32, &me, lock);
-            if n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &r).is_ok() {
-                STUFFED.with(|x| x.borrow_mut().push(hex::encode(fake)));
+            // a posting counts only with its escrow as output 0, as for the real one: tried again
+            // when the wallet puts it elsewhere
+            for _ in 0..8 {
+                if let Ok(op) = n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &r) {
+                    if op.vout == 0 {
+                        STUFFED.with(|x| x.borrow_mut().push(hex::encode(fake)));
+                        STUFFED_TX.with(|x| x.borrow_mut().push(op.txid));
+                        break;
+                    }
+                }
             }
         }
         match n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &rec) {
@@ -2755,12 +2840,26 @@ fn escalate_tier(
             );
             let stuffed = STUFFED.with(|x| x.borrow().clone());
             if !stuffed.is_empty() {
+                // the invented cases' postings, confirmed (the case may have been taken up on
+                // another posting before this party's own and these were mined)
+                let stx = STUFFED_TX.with(|x| x.borrow().clone());
+                n.rpc.confirm(&stx);
+                // the ledger is read at most every two seconds: read until it holds the chain's tip
+                let want = n.rpc.height();
+                for _ in 0..30 {
+                    n.rpc.sync();
+                    if n.rpc.ledger(|l| l.tip()).is_some_and(|t| t >= want) {
+                        break;
+                    }
+                    n.collect(Duration::from_millis(700), |_, _| None::<()>, |_| false);
+                }
                 let tip = n.rpc.height();
-                let (on_chain, counted, backlog) = n.rpc.ledger(|l| {
+                let (on_chain, counted, backlog, recorded) = n.rpc.ledger(|l| {
                     let m = arb::market_at(l, &oxo, tip);
                     let on = l.postings.iter().filter(|p| stuffed.contains(&p.case) && arb::posting_valid(p, &oxo)).count();
+                    let rec = l.postings.iter().filter(|p| stuffed.contains(&p.case)).count();
                     let cn = stuffed.iter().filter(|c| m.is_active(c) || m.is_standby(c)).count();
-                    (on, cn, m.backlog())
+                    (on, cn, m.backlog(), rec)
                 });
                 n.check(
                     &format!(
@@ -2768,7 +2867,7 @@ fn escalate_tier(
                         stuffed.len()
                     ),
                     on_chain == stuffed.len() && counted == 0 && backlog <= 1,
-                    &format!("{on_chain} on chain, {counted} counted"),
+                    &format!("{on_chain} valid on chain of {recorded} recorded, {counted} counted"),
                 );
             }
             // another party's posting for the case came first on the chain: that party opens the
@@ -3384,7 +3483,17 @@ fn escalate_tier(
     }
     let on_chain = committed
         .as_ref()
-        .map(|t| n.rpc.has_op_return(t, &bitaid_node::ledger::tier_record(&c, tier, &commitment)) || n.rpc.has_op_return(t, &bitaid_node::ledger::tier_record(&c, tier, &commitment_listed)))
+        .map(|t| {
+            n.rpc.has_op_return(t, &bitaid_node::ledger::tier_record(&c, tier, &commitment))
+                || n.rpc.has_op_return(t, &bitaid_node::ledger::tier_record(&c, tier, &commitment_listed))
+                // or a record for this case and tier whose contents this seat's own view does not
+                // reproduce: over slow links seats can disagree on who committed by the deadline,
+                // and the replay, not any one seat, judges which commitment stands (most reveals)
+                || {
+                    n.rpc.sync();
+                    n.rpc.ledger(|l| l.tiers.iter().any(|x| x.txid.to_string() == *t && x.case == c && x.tier == tier))
+                }
+        })
         .unwrap_or(false);
     n.check(&format!("tier {tier}: {} of {size} verdicts revealed; roster and answers committed on chain (OP_RETURN)", reveals.len()), on_chain, &committed.unwrap_or_default());
     let votes: Vec<Ballot> = reveals.iter().map(|x| x.1.clone()).collect();
@@ -4425,7 +4534,7 @@ fn review_stage(
     );
     let cc = c.clone();
     let mut committed = n.wait(
-        secs(if reveals.len() < size { 20 } else { 180 }),
+        Duration::from_secs(bitaid_node::reply(if reveals.len() < size { 20 } else { 180 })),
         |env, _| match &env.msg {
             Msg::TierCommitted {
                 case_id,
@@ -6218,7 +6327,15 @@ fn caller(mut n: Node) -> i32 {
     let rpc_view = |op: &OutPoint| n.rpc.utxo(op);
     let _ = rpc_view;
     let mut accepts: Vec<(String, Point, String)> = Vec::new();
-    let end = alert_t + secs(template.joining_window as u64);
+    // The window is not counted from the alert: how long the alert and an acceptance take to cross
+    // the links is not the caller's to know, and over Tor it is at times longer than any window worth
+    // the name (public signet run, 2026-11-15: every responder accepted, after the 30 s had gone).
+    // The caller waits for the first acceptance as long as links may need; from then the roster stays
+    // open for the window (Specification §5: 120 s after acceptance), or three times as long as that
+    // first acceptance took if that is longer, since the others are on the same kind of link. A full roster closes it at once.
+    // a protocol window, not a wait on a reply: as the template states it
+    let window = Duration::from_secs(template.joining_window as u64);
+    let mut end = alert_t + Duration::from_secs(bitaid_node::reply(600));
     let mut first_accept = None;
     while Instant::now() < end && accepts.len() < max {
         let left = end.saturating_duration_since(Instant::now());
@@ -6276,7 +6393,10 @@ fn caller(mut n: Node) -> i32 {
         if bitcoin::ScriptBuf::from_hex(&spk).is_err() || accepts.iter().any(|x| x.0 == who) {
             continue;
         }
-        first_accept.get_or_insert(alert_t.elapsed());
+        if first_accept.is_none() {
+            first_accept = Some(alert_t.elapsed());
+            end = Instant::now() + window.max(alert_t.elapsed() * 3);
+        }
         n.log(&format!("accepted by {} (bond {})", bitaid_node::pre(&who, 8), bitaid_node::pre(&bond, 12)));
         accepts.push((who, p, spk));
     }
@@ -6308,11 +6428,12 @@ fn caller(mut n: Node) -> i32 {
     n.add_case_key(&c, case_key);
     let mut seated = accepts.clone();
     let mut version = 0u32;
-    let refund_height = n.rpc.height() + template.refund_delay;
     // the caller's pot key: fresh for this case, never the scoped key (review finding 16)
     let pot_k = random_scalar();
     keep_case_key(&n, &c, "pot", &pot_k);
     let (set, roster) = loop {
+        // each version a full refund delay from now: a re-rolled set may come many blocks later
+        let refund_height = n.rpc.height() + template.refund_delay;
         let mut r = Rostered {
             set_version: version,
             seats: seated.iter().map(|x| x.0.clone()).collect(),
@@ -6637,7 +6758,11 @@ fn responder(mut n: Node) -> i32 {
     let corrupt = flag("--bad-partial");
     let caller_id = a.caller.clone();
     let (set, r, my_seat) = loop {
-        let Some(r) = n.wait(secs(120), |env, _| {
+        // the roster comes once the joining window has closed (the template's window from the
+        // first acceptance, or longer on slow links) and the pool has reserved nonces: the window
+        // and then a reply's worth, never less
+        let roster_wait = Duration::from_secs(3 * a.template.joining_window as u64) + secs(120);
+        let Some(r) = n.wait(roster_wait, |env, _| {
             (env.sender == caller_id)
                 .then(|| Rostered::from_msg(&env.msg))
                 .flatten()
@@ -6747,7 +6872,9 @@ fn responder(mut n: Node) -> i32 {
 
     // ------------------------------------------------ incident confirmed, then evidence and ballot
     let cid = caller_id.clone();
-    let inc = n.wait(secs(120), |env, _| match &env.msg {
+    // the incident comes once the pool has co-signed it, which may take several sessions when a
+    // member stalls: waited for as long as a case may take, and over as soon as it comes
+    let inc = n.wait(secs(1800), |env, _| match &env.msg {
         Msg::Incident { case_id, txid } if *case_id == c && env.sender == cid => Some(txid.clone()),
         _ => None,
     });
@@ -7040,7 +7167,7 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
             false,
         );
         let cc = c.clone();
-        let signed = n.wait(secs(20), |env, _| match &env.msg {
+        let signed = n.wait(Duration::from_secs(bitaid_node::reply(20)), |env, _| match &env.msg {
             Msg::SeizureSig { case_id, txid, .. } if *case_id == cc && *txid == gid => Some(()),
             _ => None,
         });

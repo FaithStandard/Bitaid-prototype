@@ -50,7 +50,7 @@ for c in $(seq 1 $N); do
   BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --act I --claim I --others D --appeal --broadcast > $L/r3.$c.out 2>$L/r3.$c.log & RP="$!"
   BITAID_WALLET=r1 $BIN/bitaid-node --role responder --name r1-liar $COMMON --act D --claim I --others D --escalate --appeal --accept-delay-ms 300 > $L/r1.$c.out 2>$L/r1.$c.log & RP="$RP $!"
   sleep 2
-  BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window 6 --dispute-blocks ${DISPUTE_BLOCKS:-6} --alert-delay 4 --commit-blocks ${COMMIT_BLOCKS:-30} --reveal-blocks ${REVEAL_BLOCKS:-6} ${REVIEW_PCT:+--review-pct $REVIEW_PCT} > $L/caller.$c.out 2>$L/caller.$c.log
+  BITAID_WALLET=caller $BIN/bitaid-node --role caller --name caller $COMMON --window ${WINDOW:-6} --dispute-blocks ${DISPUTE_BLOCKS:-6} --alert-delay 4 --commit-blocks ${COMMIT_BLOCKS:-30} --reveal-blocks ${REVEAL_BLOCKS:-6} ${REVIEW_PCT:+--review-pct $REVIEW_PCT} > $L/caller.$c.out 2>$L/caller.$c.log
   for p in $RP; do wait $p; done
   grep -h "passed\|tier . verdict\|standing verdict\|forfeited\|distributed" $L/caller.$c.out $L/r1.$c.out $L/r3.$c.out $L/r1.$c.log $L/r3.$c.log 2>/dev/null | cut -c1-200 >> $L/cases.txt
 done

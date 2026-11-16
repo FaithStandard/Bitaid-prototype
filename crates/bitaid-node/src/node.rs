@@ -119,12 +119,16 @@ pub struct Node {
     parked: VecDeque<(String, Event, u32)>,
     /// checkpoints read: message id -> the roots it is listed under
     listed: HashMap<String, Vec<String>>,
+    /// checkpoint roots whose list this node has read
+    roots: std::collections::HashSet<String>,
     /// this node's own timed messages not yet anchored: id -> the chain height when sent
     own_timed: HashMap<String, u32>,
     /// ids this node has put in an anchor of its own, and the chain height when it did
     anchoring: HashMap<String, u32>,
     /// a pool member anchors checkpoints of what it holds: (its turn, of how many)
     pub anchorer: Option<(u32, u32)>,
+    /// messages held back by BITAID_LAG: (when they are let through, subscription, event)
+    lagged: VecDeque<(Instant, String, Event)>,
     /// an archivist keeps each case's open messages here, one signed event per line in
     /// `log-<case>`, each timed one after the checkpoint that anchors it: what `/log/<case>` serves
     pub log_dir: Option<std::path::PathBuf>,
@@ -433,9 +437,11 @@ impl Node {
             locked: VecDeque::new(),
             parked: VecDeque::new(),
             listed: HashMap::new(),
+            roots: Default::default(),
             own_timed: HashMap::new(),
             anchoring: HashMap::new(),
             anchorer: None,
+            lagged: VecDeque::new(),
             log_dir: None,
             cp_events: HashMap::new(),
             ids: Default::default(),
@@ -647,6 +653,7 @@ impl Node {
         if self.listed.len() > 400_000 {
             self.listed.clear();
         }
+        self.roots.insert(root.clone());
         for l in leaves {
             let v = self.listed.entry(l.clone()).or_default();
             if !v.contains(&root) && v.len() < 8 {
@@ -919,6 +926,30 @@ impl Node {
         }
     }
 
+    /// Anchors on the chain in blocks `from..=to` that this node cannot account for: a root that is
+    /// neither a checkpoint whose list it has read nor the id of a message it holds. Each may stand
+    /// for a message this node has not received yet; a step that turns on what was anchored in those
+    /// blocks (a verdict's finality: was it appealed?) waits until there are none.
+    pub fn unexplained_anchors(&self, from: u32, to: u32) -> usize {
+        let (roots, ids) = (&self.roots, &self.ids);
+        self.rpc.ledger(|l| {
+            l.anchors
+                .iter()
+                .filter(|(r, h)| *h >= from && *h <= to && !roots.contains(r) && !ids.contains(r))
+                .count()
+        })
+    }
+
+    /// Cases with a message of the named kind (an appeal, say) held here until a block anchors it:
+    /// received, but not yet counted.
+    pub fn parked_cases(&self, name: &str) -> std::collections::HashSet<String> {
+        self.parked
+            .iter()
+            .filter(|(_, e, _)| e.tag("t") == Some(name))
+            .filter_map(|(_, e, _)| e.tag("c").map(String::from))
+            .collect()
+    }
+
     /// Cases with a tier commitment on the chain (from BITAID_INDEX_FROM on, if set) that this node
     /// holds no message for.
     pub fn unread_cases(&self) -> Vec<String> {
@@ -983,7 +1014,20 @@ impl Node {
     }
 
     fn pull(&mut self, timeout: Duration) -> bool {
-        match self.client.next_event(timeout) {
+        // BITAID_LAG: what arrives is held back as a slow link would hold it
+        let got = match crate::lag() {
+            None if self.lagged.is_empty() => self.client.next_event(timeout),
+            lag => {
+                let due = |q: &VecDeque<(Instant, String, Event)>| q.iter().position(|x| x.0 <= Instant::now());
+                if due(&self.lagged).is_none() {
+                    if let Some((sub, e)) = self.client.next_event(timeout.min(Duration::from_millis(200))) {
+                        self.lagged.push_back((Instant::now() + lag.unwrap_or_default(), sub, e));
+                    }
+                }
+                due(&self.lagged).and_then(|i| self.lagged.remove(i)).map(|x| (x.1, x.2))
+            }
+        };
+        match got {
             Some((sub, e)) => {
                 match self.decode(&e) {
                     Some(env) => {
@@ -1070,9 +1114,10 @@ impl Node {
             if left.is_zero() {
                 break;
             }
-            match self.wait(left, &mut f) {
-                Some(t) => out.push(t),
-                None => break,
+            // in slices of two seconds, so a rule that depends on time (`enough` ending a wait some
+            // while after the first answer) is asked again even when nothing more arrives
+            if let Some(t) = self.wait(left.min(Duration::from_secs(2)), &mut f) {
+                out.push(t);
             }
         }
         out

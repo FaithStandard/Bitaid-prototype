@@ -740,6 +740,16 @@ pub fn reserve_nonces(
     }
     let mut got: std::collections::BTreeSet<u16> = Default::default();
     for attempt in 0..4 {
+        // nobody has reserved these: an index may be held for another case, so others are drawn
+        if attempt > 0 && got.is_empty() {
+            idx.clear();
+            while idx.len() < 3 {
+                let j = rand::random::<u32>() % size;
+                if !idx.contains(&j) {
+                    idx.push(j);
+                }
+            }
+        }
         n.send_case(
             case,
             &view.identities(),
@@ -750,10 +760,12 @@ pub fn reserve_nonces(
             false,
         );
         let (c, v, want) = (case.to_string(), view.clone(), idx.clone());
+        let have = got.len();
+        let mut at_t: Option<Instant> = None;
         // members answer once a bonded acceptance reaches them and its bond is read from the chain:
         // over Tor, on a phone, that takes well over 20 s (public signet run, 2026-11-15)
         let acks = n.collect(
-            Duration::from_secs(crate::slow(20)),
+            Duration::from_secs(crate::reply(20)),
             |env, _| match &env.msg {
                 Msg::NonceAssignment {
                     case_id,
@@ -772,7 +784,14 @@ pub fn reserve_nonces(
                 }
                 _ => None,
             },
-            |a| a.len() >= v.members.len(),
+            // enough members end the wait; the rest get a few seconds more, never the whole limit
+            // (a member that will not answer must not cost the case the links' worst)
+            |a| {
+                if a.len() + have >= v.t && at_t.is_none() {
+                    at_t = Some(Instant::now());
+                }
+                a.len() + have >= v.members.len() || at_t.is_some_and(|t| t.elapsed() > Duration::from_secs(5))
+            },
         );
         got.extend(acks);
         let acks = got.clone();
@@ -788,7 +807,7 @@ pub fn reserve_nonces(
             ));
         }
         n.log(&format!(
-            "attempt {attempt}: only {} members reserved {idx:?} so far; asking again",
+            "attempt {attempt}: only {} members reserved {idx:?} so far; asking again (other indices if none)",
             acks.len()
         ));
     }
@@ -839,9 +858,9 @@ pub fn cosign_tries(
         );
         let (c, v, ex) = (case.to_string(), view.clone(), excluded.clone());
         let commits = n.collect(
-            // members over slow links replay the case before their first answer: a session waits
-            // 30 s, stretched with the chain's blocks (BITAID_TIME_SCALE) up to 2 minutes
-            Duration::from_secs(crate::slow(60).min(240) / 2),
+            // a session waits for t commitments and ends when it has them (`reply`: never less
+            // than the links' worst)
+            Duration::from_secs(crate::reply(30)),
             |env, _| match &env.msg {
                 Msg::PoolCommit {
                     case_id,
@@ -887,10 +906,12 @@ pub fn cosign_tries(
             false,
         );
         let (c, v, ch) = (case.to_string(), view.clone(), chosen.clone());
+        let t_sign = Instant::now();
+        let mut first_share: Option<Duration> = None;
         let shares = n.collect(
-            // the signing round: 6 s, or 30 s on a slow chain (TIME_SCALE above 1), where members are
-            // phones over Tor and a commitment taken but not signed within 6 s cost the whole session
-            Duration::from_secs(if crate::slow(60) > 60 { 30 } else { 6 }),
+            // the signing round ends when every chosen member has signed; one that does not within
+            // the reply time is excluded and the session run again without it
+            Duration::from_secs(crate::reply(6)),
             |env, _| match &env.msg {
                 Msg::PoolSigShare {
                     case_id,
@@ -908,7 +929,16 @@ pub fn cosign_tries(
                 }
                 _ => None,
             },
-            |got| got.len() >= ch.len(),
+            // a member that committed and will not sign must not cost the session the links' worst:
+            // once a share is in, the others get twice as long as it took, and at least a minute
+            // (they are on the same kind of link), then the session is run again without them
+            |got| {
+                if !got.is_empty() && first_share.is_none() {
+                    first_share = Some(t_sign.elapsed());
+                }
+                got.len() >= ch.len()
+                    || first_share.is_some_and(|f| t_sign.elapsed() > (f * 3).max(Duration::from_secs(60)))
+            },
         );
         if shares.len() < chosen.len() {
             for m in &chosen {

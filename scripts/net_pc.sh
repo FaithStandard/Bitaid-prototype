@@ -145,6 +145,8 @@ start)
   export BITAID_INDEX_FROM=${INDEX_FROM:-$(( $($CLI getblockcount) - 1 ))}
   # timed messages are anchored by a checkpoint every block on a test run
   export BITAID_CHECKPOINT_BLOCKS=${CHECKPOINT_BLOCKS:-1}
+# over Tor no wait on a reply is shorter than the links' worst (see lib.rs `reply`)
+export BITAID_REPLY_MIN=${REPLY_MIN:-900}
   X="--exit-after ${WAIT:-10800}"; P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   rm -f "$L"/*.log "$L"/*.out
   # bonded links: the Core demands a proof of stake from every peer; a proof names the address the
