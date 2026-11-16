@@ -2792,8 +2792,15 @@ fn escalate_tier(
         for _ in 0..num("--stuff", 0u32) {
             let fake: [u8; 32] = rand::random();
             let r = bitaid_node::ledger::post_record(&fake, 1, fee1.min(u32::MAX as u64) as u32, &me, lock);
-            if n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &r).is_ok() {
-                STUFFED.with(|x| x.borrow_mut().push(hex::encode(fake)));
+            // a posting counts only with its escrow as output 0, as for the real one: tried again
+            // when the wallet puts it elsewhere
+            for _ in 0..8 {
+                if let Ok(op) = n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &r) {
+                    if op.vout == 0 {
+                        STUFFED.with(|x| x.borrow_mut().push(hex::encode(fake)));
+                        break;
+                    }
+                }
             }
         }
         match n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &rec) {

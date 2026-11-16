@@ -740,6 +740,16 @@ pub fn reserve_nonces(
     }
     let mut got: std::collections::BTreeSet<u16> = Default::default();
     for attempt in 0..4 {
+        // nobody has reserved these: an index may be held for another case, so others are drawn
+        if attempt > 0 && got.is_empty() {
+            idx.clear();
+            while idx.len() < 3 {
+                let j = rand::random::<u32>() % size;
+                if !idx.contains(&j) {
+                    idx.push(j);
+                }
+            }
+        }
         n.send_case(
             case,
             &view.identities(),
@@ -797,7 +807,7 @@ pub fn reserve_nonces(
             ));
         }
         n.log(&format!(
-            "attempt {attempt}: only {} members reserved {idx:?} so far; asking again",
+            "attempt {attempt}: only {} members reserved {idx:?} so far; asking again (other indices if none)",
             acks.len()
         ));
     }
