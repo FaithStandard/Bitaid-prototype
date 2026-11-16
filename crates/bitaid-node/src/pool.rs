@@ -828,7 +828,7 @@ pub fn cosign(
     digest: &[u8; 32],
     first: u32,
 ) -> Result<([u8; 64], u32, Vec<u16>), String> {
-    cosign_tries(n, view, case, tx_hex, input, digest, first, 4)
+    cosign_tries(n, view, case, tx_hex, input, digest, first, 5)
 }
 
 /// `cosign` with at most `tries` sessions (one, to test a refusal at a given moment).
@@ -843,8 +843,16 @@ pub fn cosign_tries(
     first: u32,
     tries: u32,
 ) -> Result<([u8; 64], u32, Vec<u16>), String> {
+    // a member that committed and did not sign is left out of the next session only: kept out for
+    // good, two such members of four would leave fewer than t, though a member over Tor that misses
+    // one round may well sign the next (public signet run, 2026-11-16)
     let mut excluded: BTreeSet<u16> = BTreeSet::new();
     for session in first..first + tries {
+        if view.members.len() - excluded.len() < view.t {
+            excluded.clear();
+        }
+        let t_req = Instant::now();
+        let mut answered: BTreeMap<u16, Duration> = BTreeMap::new();
         n.send_case(
             case,
             &view.identities(),
@@ -872,9 +880,9 @@ pub fn cosign_tries(
                     && v.member_of(&env.sender) == Some(*member)
                     && !ex.contains(member) =>
                 {
-                    frost::round1::SigningCommitments::deserialize(&hex::decode(commitment).ok()?)
-                        .ok()
-                        .map(|x| (*member, x))
+                    let x = frost::round1::SigningCommitments::deserialize(&hex::decode(commitment).ok()?).ok()?;
+                    answered.entry(*member).or_insert(t_req.elapsed());
+                    Some((*member, x))
                 }
                 _ => None,
             },
@@ -882,7 +890,7 @@ pub fn cosign_tries(
         );
         if commits.len() < view.t {
             // members still busy (replaying the case, on a slow link) may answer the next session
-            if session + 1 < first + 4 {
+            if session + 1 < first + tries {
                 n.log(&format!(
                     "session {session}: only {} members committed; trying again",
                     commits.len()
@@ -907,7 +915,10 @@ pub fn cosign_tries(
         );
         let (c, v, ch) = (case.to_string(), view.clone(), chosen.clone());
         let t_sign = Instant::now();
-        let mut first_share: Option<Duration> = None;
+        // each chosen member has just shown how long its link takes, by committing: a share is
+        // waited for three times the slowest of those round trips, and at least a minute
+        let slowest = chosen.iter().filter_map(|m| answered.get(m)).max().copied().unwrap_or_default();
+        let limit = (slowest * 3).max(Duration::from_secs(60));
         let shares = n.collect(
             // the signing round ends when every chosen member has signed; one that does not within
             // the reply time is excluded and the session run again without it
@@ -929,16 +940,9 @@ pub fn cosign_tries(
                 }
                 _ => None,
             },
-            // a member that committed and will not sign must not cost the session the links' worst:
-            // once a share is in, the others get twice as long as it took, and at least a minute
-            // (they are on the same kind of link), then the session is run again without them
-            |got| {
-                if !got.is_empty() && first_share.is_none() {
-                    first_share = Some(t_sign.elapsed());
-                }
-                got.len() >= ch.len()
-                    || first_share.is_some_and(|f| t_sign.elapsed() > (f * 3).max(Duration::from_secs(60)))
-            },
+            // a member that committed and will not sign must not cost the session the links'
+            // worst: past the limit above, the session is run again without it
+            |got| got.len() >= ch.len() || t_sign.elapsed() > limit,
         );
         if shares.len() < chosen.len() {
             for m in &chosen {
