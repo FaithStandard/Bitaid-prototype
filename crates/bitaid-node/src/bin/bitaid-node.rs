@@ -2831,6 +2831,9 @@ fn escalate_tier(
             );
             let stuffed = STUFFED.with(|x| x.borrow().clone());
             if !stuffed.is_empty() {
+                // the invented cases' postings were made before the real one: on chain by now
+                n.rpc.confirm(&[]);
+                n.rpc.sync();
                 let tip = n.rpc.height();
                 let (on_chain, counted, backlog) = n.rpc.ledger(|l| {
                     let m = arb::market_at(l, &oxo, tip);
