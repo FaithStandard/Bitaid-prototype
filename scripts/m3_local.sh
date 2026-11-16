@@ -31,7 +31,9 @@ sleep 0.5
 # oracle pool: 4 members, threshold 3; member 3 stalls on co-signing, member 4 attests a different outcome
 for i in 1 2 3 4; do
   extra=""; [ $i = 3 ] && extra="--stall"; [ $i = 4 ] && extra="--liar"
-  BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $extra $R $RELAY --exit-after 120 2>m3logs/pool$i.log & PIDS="$PIDS $!"
+  # LAG4: pool member 4 on a far slower link than the rest (a phone over Tor running behind)
+  [ $i = 4 ] && [ -n "${LAG4:-}" ] && L4="BITAID_LAG=$LAG4" || L4=
+  env $L4 BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $extra $R $RELAY --exit-after 120 2>m3logs/pool$i.log & PIDS="$PIDS $!"
 done
 for a in 1 2; do
   BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist$a $R $RELAY --listen 127.0.0.1:748$a --exit-after 120 2>m3logs/archivist$a.log & PIDS="$PIDS $!"
