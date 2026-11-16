@@ -1,0 +1,56 @@
+Bitaid prototype: waits that fit Tor, tested under simulated Tor lag, local regtest, 2026-11-16
+
+Why: two public signet runs over Tor (2026-11-15) failed on waits tuned on a local machine (20 s for
+nonce reservations, 30 s for acceptances), though every party was answering.
+
+What changed:
+- one floor under every wait on a reply (BITAID_REPLY_MIN: 900 s on Tor runs); a wait still ends the moment the reply comes
+- the joining window counts from the first acceptance (Specification §5), at least three times that acceptance's delay
+- a stalling co-signer costs a session three times the honest members' answer time, not the floor
+- BITAID_LAG delays every received message (here 0.15-1.8 s, 1 in 20 by 13 s, with 3 s blocks: a spike spans about four blocks)
+- found under lag and fixed: rosters arriving out of order; refund heights judged against a moving tip; a member attesting while an appeal
+  was still unanchored or in flight; a tier's commitment refused when the next tier's appeal came first; a replacement seat's
+  commitment dropped when it came before its drawing; the caller's and responders' waits for nonces, roster, incident and outcome
+
+== under lag (BITAID_LAG=150-1800,5:13000, 3 s blocks, BITAID_REPLY_MIN=90)
+-- basic suite
+[caller] 13 passed, 0 failed
+[r1] 9 passed, 0 failed
+[r2] 9 passed, 0 failed
+[r3] 2 passed, 0 failed
+-- arbitration suite with a tier-2 appeal, two seat replacements and a stalling pool member
+[caller] 11 passed, 0 failed
+[r1-liar] 20 passed, 0 failed
+[r3] 8 passed, 0 failed
+[arb1] 13 passed, 0 failed
+
+== without lag
+-- arb_double
+[caller] 11 passed, 0 failed
+[r1-liar] 25 passed, 0 failed
+[r3] 11 passed, 0 failed
+-- arb_omit
+[caller] 11 passed, 0 failed
+[r1-liar] 15 passed, 0 failed
+[r3] 21 passed, 0 failed
+-- arb_standby
+[caller] 11 passed, 0 failed
+[r1-liar] 27 passed, 0 failed
+[r3] 8 passed, 0 failed
+-- arb_mis
+[caller] 11 passed, 0 failed
+[r1-liar] 26 passed, 0 failed
+[r3] 8 passed, 0 failed
+-- m3
+[caller] 13 passed, 0 failed
+[r1] 9 passed, 0 failed
+[r2] 9 passed, 0 failed
+[r3] 2 passed, 0 failed
+-- arbitration suite with queue stuffing and the hostile outsider
+[caller] 11 passed, 0 failed
+[r1-liar] 16 passed, 0 failed
+[r3] 21 passed, 0 failed
+[hostile] 5 passed, 0 failed
+-- ten cases, review at 100%: 443 passed, 0 failed across all nodes
+[PASS] audit the record read from the archivists' logs alone equals the record read from the links: 28 tiers, 25 arbitrators
+[audit] 1 passed, 0 failed

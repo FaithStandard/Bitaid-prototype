@@ -2695,6 +2695,7 @@ fn escrow_release_due(n: &Node, a: &Alerted, t: &Transaction, input: u32) -> Opt
 thread_local! {
     /// --stuff: the invented cases this party posted
     static STUFFED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static STUFFED_TX: std::cell::RefCell<Vec<bitcoin::Txid>> = const { std::cell::RefCell::new(Vec::new()) };
     /// an appeal of this party's came after the window closed: the case is final
     static CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// the escrow of a posting that stood down for another party's, to be let go after the hearing
@@ -2798,6 +2799,7 @@ fn escalate_tier(
                 if let Ok(op) = n.rpc.fund_with_record(&e0.tree(&oxo).script_pubkey(), e0.value, &r) {
                     if op.vout == 0 {
                         STUFFED.with(|x| x.borrow_mut().push(hex::encode(fake)));
+                        STUFFED_TX.with(|x| x.borrow_mut().push(op.txid));
                         break;
                     }
                 }
@@ -2838,15 +2840,26 @@ fn escalate_tier(
             );
             let stuffed = STUFFED.with(|x| x.borrow().clone());
             if !stuffed.is_empty() {
-                // the invented cases' postings were made before the real one: on chain by now
-                n.rpc.confirm(&[]);
-                n.rpc.sync();
+                // the invented cases' postings, confirmed (the case may have been taken up on
+                // another posting before this party's own and these were mined)
+                let stx = STUFFED_TX.with(|x| x.borrow().clone());
+                n.rpc.confirm(&stx);
+                // the ledger is read at most every two seconds: read until it holds the chain's tip
+                let want = n.rpc.height();
+                for _ in 0..30 {
+                    n.rpc.sync();
+                    if n.rpc.ledger(|l| l.tip()).is_some_and(|t| t >= want) {
+                        break;
+                    }
+                    n.collect(Duration::from_millis(700), |_, _| None::<()>, |_| false);
+                }
                 let tip = n.rpc.height();
-                let (on_chain, counted, backlog) = n.rpc.ledger(|l| {
+                let (on_chain, counted, backlog, recorded) = n.rpc.ledger(|l| {
                     let m = arb::market_at(l, &oxo, tip);
                     let on = l.postings.iter().filter(|p| stuffed.contains(&p.case) && arb::posting_valid(p, &oxo)).count();
+                    let rec = l.postings.iter().filter(|p| stuffed.contains(&p.case)).count();
                     let cn = stuffed.iter().filter(|c| m.is_active(c) || m.is_standby(c)).count();
-                    (on, cn, m.backlog())
+                    (on, cn, m.backlog(), rec)
                 });
                 n.check(
                     &format!(
@@ -2854,7 +2867,7 @@ fn escalate_tier(
                         stuffed.len()
                     ),
                     on_chain == stuffed.len() && counted == 0 && backlog <= 1,
-                    &format!("{on_chain} on chain, {counted} counted"),
+                    &format!("{on_chain} valid on chain of {recorded} recorded, {counted} counted"),
                 );
             }
             // another party's posting for the case came first on the chain: that party opens the
