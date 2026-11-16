@@ -846,11 +846,11 @@ pub fn cosign_tries(
     // a member that committed and did not sign is left out of the next session only: kept out for
     // good, two such members of four would leave fewer than t, though a member over Tor that misses
     // one round may well sign the next (public signet run, 2026-11-16)
-    let mut excluded: BTreeSet<u16> = BTreeSet::new();
+    let mut excluded_next: BTreeSet<u16> = BTreeSet::new();
     for session in first..first + tries {
-        if view.members.len() - excluded.len() < view.t {
-            excluded.clear();
-        }
+        // those who did not sign the last session sit this one out, and only this one
+        let excluded = std::mem::take(&mut excluded_next);
+        let mut left_out: BTreeSet<u16> = BTreeSet::new();
         let t_req = Instant::now();
         let mut answered: BTreeMap<u16, Duration> = BTreeMap::new();
         n.send_case(
@@ -950,9 +950,10 @@ pub fn cosign_tries(
                     n.log(&format!(
                         "pool member {m} committed but did not sign session {session}; replaced"
                     ));
-                    excluded.insert(*m);
+                    left_out.insert(*m);
                 }
             }
+            excluded_next = left_out;
             continue;
         }
         let sh: BTreeMap<frost::Identifier, _> =
