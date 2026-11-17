@@ -1484,6 +1484,12 @@ fn pool_member(mut n: Node) -> i32 {
                 };
                 let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, *tier);
                 let seen = offers.get(&key).cloned().unwrap_or_default();
+                // a seat whose offer (its payout script) this member has not read yet cannot be
+                // checked: the payment is looked at again, not set aside as paying nobody (an offer
+                // counts from its anchor, and its checkpoint list may reach a member late)
+                if seats.iter().any(|sid| !seen.contains_key(sid)) {
+                    later!();
+                }
                 // fees may be paid in several transactions (a replacement seat is paid on its own)
                 for sid in seats.clone() {
                     let ok = seen
@@ -1505,6 +1511,12 @@ fn pool_member(mut n: Node) -> i32 {
                     .all(|sid| fee_at.contains_key(&(case_id.clone(), *tier, sid.clone())))
                 {
                     fees_ok.insert(key);
+                } else {
+                    // not every seat's fee read as paid yet (this payment may be one of several, or
+                    // the chain or an offer not yet seen here): looked at again, so that a payment
+                    // read too early is not lost (public signet run, 2026-11-17: one member never
+                    // saw the tier-2 fees paid and could not attest the case)
+                    later!();
                 }
             }
             Msg::VerdictCommit {
@@ -2540,23 +2552,29 @@ fn wait_forfeits(
         return out;
     };
     let (cc, ww) = (c.to_string(), who.to_vec());
-    let got = n.collect(
-        secs(90),
-        |env, _| match &env.msg {
-            Msg::Forfeits {
-                case_id,
-                tier: t,
-                stake,
-                value,
-                sigs,
-                ..
-            } if *case_id == cc && *t == tier && ww.contains(&env.sender) => {
-                Some((env.sender.clone(), stake.clone(), *value, sigs.clone()))
-            }
-            _ => None,
-        },
-        |v| v.len() >= ww.len(),
-    );
+    let pick = |env: &wire::Envelope| match &env.msg {
+        Msg::Forfeits {
+            case_id,
+            tier: t,
+            stake,
+            value,
+            sigs,
+            ..
+        } if *case_id == cc && *t == tier && ww.contains(&env.sender) => {
+            Some((env.sender.clone(), stake.clone(), *value, sigs.clone()))
+        }
+        _ => None,
+    };
+    // seats send these as soon as they are seated: over slow links some arrive while this party
+    // is still busy with the drawing, so what has already come is read first (public signet run,
+    // 2026-11-17: all three came and this check, waiting only for new ones, saw none)
+    let mut got: Vec<_> = n.history.iter().filter_map(|e| pick(e)).collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    got.dedup_by(|a, b| a.0 == b.0);
+    if got.len() < ww.len() {
+        let have = got.len();
+        got.extend(n.collect(secs(90), |env, _| pick(env), |v| v.len() + have >= ww.len()));
+    }
     for (w, stake, value, sigs) in got {
         let Some(b) = offers.iter().find(|o| o.0 == w).map(|o| o.2.clone()) else {
             continue;
