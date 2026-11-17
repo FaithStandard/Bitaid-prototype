@@ -43,7 +43,7 @@ fi
 fund_small() {  # wallet, lump in BTC, number of fee coins
   m="\"$($CLI -rpcwallet=$1 getnewaddress)\":$2"
   for i in $(seq 1 $3); do m="$m,\"$($CLI -rpcwallet=$1 getnewaddress)\":0.00015"; done
-  $CLI -rpcwallet=$SRC sendmany "" "{$m}" >/dev/null || { echo "FUNDING_FAILED ($1)"; exit 1; }
+  $CLI -rpcwallet=$SRC -named sendmany amounts="{$m}" fee_rate=${FUND_RATE:-2} >/dev/null || { echo "FUNDING_FAILED ($1)"; exit 1; }
 }
 # until every test wallet's coins are confirmed (the next block can come from a template made before
 # the funding was sent, so one block is not enough)
@@ -71,7 +71,22 @@ EOT
   for i in $(seq 1 $n); do m="$m${m:+,}\"$($CLI -rpcwallet=$1 getnewaddress)\":0.00015"; done
   [ -z "$m" ] && { echo "$1: already funded"; return; }
   echo "$1: adding $add BTC and $n fee coins"
-  $CLI -rpcwallet=$SRC sendmany "" "{$m}" >/dev/null || { echo "FUNDING_FAILED ($1)"; exit 1; }
+  $CLI -rpcwallet=$SRC -named sendmany amounts="{$m}" fee_rate=${FUND_RATE:-2} >/dev/null || { echo "FUNDING_FAILED ($1)"; exit 1; }
+}
+# merges the faucet wallet's coins: reclaims return many small coins, and a funding transaction that
+# has to gather thousands of them pays more in fees than the wallet holds (2026-11-17). Batches of 400
+# of the smallest confirmed coins, each sent back to the wallet at 1 sat/vB.
+consolidate() {
+  for round in $(seq 1 30); do
+    ins=$($CLI -rpcwallet=$SRC listunspent 1 | python3 -c "
+import json,sys; u=sorted(json.load(sys.stdin), key=lambda x: x['amount'])
+print(len(u), json.dumps([{'txid':x['txid'],'vout':x['vout']} for x in u[:400]]))")
+    count=${ins%% *}; list=${ins#* }
+    echo "faucet wallet: $count coins"
+    [ "$count" -le 60 ] && return 0
+    $CLI -rpcwallet=$SRC -named sendall recipients="[\"$($CLI -rpcwallet=$SRC getnewaddress)\"]" inputs="$list" fee_rate=1 >/dev/null \
+      || { echo "CONSOLIDATE_FAILED"; return 1; }
+  done
 }
 WIN="/mnt/c/Users/alber/OneDrive/Documentos/Bitaid/10/v6/Files for Claude"
 L=${LOGDIR:-$WIN/pc_logs}; mkdir -p "$L"
@@ -99,6 +114,7 @@ start)
     $CLI loadwallet bitaid >/dev/null 2>&1; SRC=bitaid
     for w in w caller r1 r3 r4; do $CLI createwallet $w >/dev/null 2>&1 || $CLI loadwallet $w >/dev/null 2>&1; done
     echo "faucet wallet: $($CLI -rpcwallet=bitaid getbalance) signet BTC"
+    consolidate || exit 1
     # coins left in the test wallets by earlier runs count: each is only topped up to what it needs
     # the arbitrators' wallet scales with their number (ten: 0.015 in 12 coins and 25 fee coins)
     A=${ARBS:-10}
@@ -208,6 +224,11 @@ audit)
   ra=$(grep '^record' "$L/audit-links.out" | sort | sha256sum); rb=$(grep '^record' "$L/audit-archive.out" | sort | sha256sum)
   grep -h "PASS\|FAIL" "$L/audit-links.out" "$L/audit-archive.out"
   if [ "$ra" = "$rb" ] && grep -q '^record momentum' "$L/audit-archive.out"; then echo "AUDIT_PASS: the record read from the archive alone equals the record read from the links ($(grep -c '^record tier' "$L/audit-archive.out") tiers)"; else echo "AUDIT_FAIL: the two records differ"; fi | tee "$L/audit.out"
+  ;;
+consolidate)
+  # the faucet wallet's coins merged (run while no test runs; it needs START_bitaid_signet.bat)
+  $CLI loadwallet bitaid >/dev/null 2>&1; SRC=bitaid
+  consolidate && echo CONSOLIDATED
   ;;
 report)
   cat "$L"/hostile.out "$L"/audit.out 2>/dev/null
