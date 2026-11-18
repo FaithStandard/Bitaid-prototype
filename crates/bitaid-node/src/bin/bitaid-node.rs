@@ -5266,6 +5266,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut challenge_at: HashMap<(String, u32), u32> = HashMap::new();
     let idle = num("--exit-after", 3600u64);
     let mut last = Instant::now();
+    let mut fee_retry: Vec<(Instant, wire::Envelope, u32)> = Vec::new();
     loop {
         if last.elapsed() > secs(idle) {
             return 0;
@@ -5456,9 +5457,18 @@ fn arbitrator(mut n: Node) -> i32 {
                 }
             }
         }
-        let Some(env) = n.wait(secs(2), |env, _| Some(env.clone())) else {
-            continue;
+        // a fee payment not yet readable is looked at again (every 30 s, for up to two hours)
+        let (env, tries) = match fee_retry.iter().position(|x| x.0 <= Instant::now()) {
+            Some(i) => {
+                let x = fee_retry.remove(i);
+                (x.1, x.2)
+            }
+            None => match n.wait(secs(2), |env, _| Some(env.clone())) {
+                Some(e) => (e, 0),
+                None => continue,
+            },
         };
+        let env_again = matches!(env.msg, Msg::FeePaid { .. }).then(|| env.clone());
         last = Instant::now();
         let s = env.sender.clone();
         match env.msg {
@@ -5759,9 +5769,19 @@ fn arbitrator(mut n: Node) -> i32 {
                 let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
                 let got = n.rpc.paid_to(&txid, &payout);
                 if got < fee {
-                    n.log(&format!(
-                        "fee not received ({got} of {fee} sats); not ruling"
-                    ));
+                    // the payment may not be readable yet (announced as it is broadcast; public
+                    // signet run, 2026-11-18: every tier-2 seat read 0 sats and never ruled, though
+                    // it was paid): looked at again before giving up on it
+                    if tries < 240 {
+                        if let Some(e) = env_again {
+                            fee_retry.push((Instant::now() + Duration::from_secs(30), e, tries + 1));
+                        }
+                        if tries == 0 {
+                            n.log(&format!("fee not received yet ({got} of {fee} sats); looking again"));
+                        }
+                    } else {
+                        n.log(&format!("fee not received ({got} of {fee} sats); not ruling"));
+                    }
                     continue;
                 }
                 // review: fetch every recorder's evidence, decrypt it, read what the footage shows
