@@ -1416,7 +1416,12 @@ fn pool_member(mut n: Node) -> i32 {
                     bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
                 if block_ok && offers_ok && draw_ok {
                     panels.insert((case_id.clone(), *tier), seats.clone());
-                    lapse.remove(case_id);
+                    // the lapse clock starts again from the seating and runs until the panel's fees
+                    // are paid: a panel seated and never paid (whoever escalated withholding them)
+                    // must not hold the case open
+                    if let Some(l) = lapse.get_mut(case_id) {
+                        l.0 = Instant::now() + secs(num("--seat-wait", 300u64));
+                    }
                     n.log(&format!("tier {tier} panel of {} checked: block {height}, draw reproduced, bonds above twice the case value", seats.len()));
                 } else {
                     // not verifiable from what this member holds yet (an offer still on its way, a
@@ -1511,6 +1516,7 @@ fn pool_member(mut n: Node) -> i32 {
                     .all(|sid| fee_at.contains_key(&(case_id.clone(), *tier, sid.clone())))
                 {
                     fees_ok.insert(key);
+                    lapse.remove(case_id);
                 } else {
                     // not every seat's fee read as paid yet (this payment may be one of several, or
                     // the chain or an offer not yet seen here): looked at again, so that a payment
@@ -5266,6 +5272,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut challenge_at: HashMap<(String, u32), u32> = HashMap::new();
     let idle = num("--exit-after", 3600u64);
     let mut last = Instant::now();
+    let mut fee_retry: Vec<(Instant, wire::Envelope, u32)> = Vec::new();
     loop {
         if last.elapsed() > secs(idle) {
             return 0;
@@ -5456,9 +5463,18 @@ fn arbitrator(mut n: Node) -> i32 {
                 }
             }
         }
-        let Some(env) = n.wait(secs(2), |env, _| Some(env.clone())) else {
-            continue;
+        // a fee payment not yet readable is looked at again (every 30 s, for up to two hours)
+        let (env, tries) = match fee_retry.iter().position(|x| x.0 <= Instant::now()) {
+            Some(i) => {
+                let x = fee_retry.remove(i);
+                (x.1, x.2)
+            }
+            None => match n.wait(secs(2), |env, _| Some(env.clone())) {
+                Some(e) => (e, 0),
+                None => continue,
+            },
         };
+        let env_again = matches!(env.msg, Msg::FeePaid { .. }).then(|| env.clone());
         last = Instant::now();
         let s = env.sender.clone();
         match env.msg {
@@ -5759,9 +5775,19 @@ fn arbitrator(mut n: Node) -> i32 {
                 let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
                 let got = n.rpc.paid_to(&txid, &payout);
                 if got < fee {
-                    n.log(&format!(
-                        "fee not received ({got} of {fee} sats); not ruling"
-                    ));
+                    // the payment may not be readable yet (announced as it is broadcast; public
+                    // signet run, 2026-11-18: every tier-2 seat read 0 sats and never ruled, though
+                    // it was paid): looked at again before giving up on it
+                    if tries < 240 {
+                        if let Some(e) = env_again {
+                            fee_retry.push((Instant::now() + Duration::from_secs(30), e, tries + 1));
+                        }
+                        if tries == 0 {
+                            n.log(&format!("fee not received yet ({got} of {fee} sats); looking again"));
+                        }
+                    } else {
+                        n.log(&format!("fee not received ({got} of {fee} sats); not ruling"));
+                    }
                     continue;
                 }
                 // review: fetch every recorder's evidence, decrypt it, read what the footage shows

@@ -412,6 +412,14 @@ impl Rpc {
     /// default — before the first lookup) and looks `txid` up among their transactions.
     fn indexed(&self, txid: &str) -> Option<Value> {
         self.sync();
+        if let Some(v) = self.from_index(txid) {
+            return Some(v);
+        }
+        // a transaction confirmed since the last read: without a transaction index (the Windows
+        // signet node) it is found only in a block read, so the chain is read now, past the
+        // two-second rule (public signet run, 2026-11-18: seats paid a moment ago read 0 sats)
+        *self.synced.lock().unwrap() = None;
+        self.sync();
         self.from_index(txid)
     }
 
