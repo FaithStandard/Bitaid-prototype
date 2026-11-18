@@ -1416,7 +1416,12 @@ fn pool_member(mut n: Node) -> i32 {
                     bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
                 if block_ok && offers_ok && draw_ok {
                     panels.insert((case_id.clone(), *tier), seats.clone());
-                    lapse.remove(case_id);
+                    // the lapse clock starts again from the seating and runs until the panel's fees
+                    // are paid: a panel seated and never paid (whoever escalated withholding them)
+                    // must not hold the case open
+                    if let Some(l) = lapse.get_mut(case_id) {
+                        l.0 = Instant::now() + secs(num("--seat-wait", 300u64));
+                    }
                     n.log(&format!("tier {tier} panel of {} checked: block {height}, draw reproduced, bonds above twice the case value", seats.len()));
                 } else {
                     // not verifiable from what this member holds yet (an offer still on its way, a
@@ -1511,6 +1516,7 @@ fn pool_member(mut n: Node) -> i32 {
                     .all(|sid| fee_at.contains_key(&(case_id.clone(), *tier, sid.clone())))
                 {
                     fees_ok.insert(key);
+                    lapse.remove(case_id);
                 } else {
                     // not every seat's fee read as paid yet (this payment may be one of several, or
                     // the chain or an offer not yet seen here): looked at again, so that a payment
