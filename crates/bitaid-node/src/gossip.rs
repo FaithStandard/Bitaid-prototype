@@ -32,6 +32,12 @@ use std::time::{Duration, Instant};
 /// How long a Core keeps messages to replay to peers that connect later.
 pub const KEEP_SECS: u64 = 86_400;
 
+/// How long this Core holds messages: KEEP_SECS, or less for local tests (BITAID_STORE_SECS) that
+/// need a relay to have forgotten old messages, as a busy or day-old one has.
+fn store_secs() -> u64 {
+    std::env::var("BITAID_STORE_SECS").ok().and_then(|v| v.parse().ok()).map_or(KEEP_SECS, |v: u64| v.min(KEEP_SECS))
+}
+
 // Limits against a hostile peer. Anyone who knows a Core's onion address can connect and send
 // whatever it likes; none of this lets it run code (messages are parsed into fixed structures and
 // signatures checked), but without limits it could exhaust memory, threads or bandwidth.
@@ -324,7 +330,7 @@ impl Store {
         // messages past the replay window go, swept at most once a minute
         if t >= self.last_sweep + 60 {
             self.last_sweep = t;
-            let cutoff = t.saturating_sub(KEEP_SECS);
+            let cutoff = t.saturating_sub(store_secs());
             let old: Vec<String> = self
                 .items
                 .iter()

@@ -198,6 +198,18 @@ pub struct Member {
     pub cosign_key: MemberKey,
     pub batch: Batch,
     pub view: PoolView,
+    /// this member's setup announcements (hello, nonce commitments, ready), sent again from time to
+    /// time: relays keep a message a day at most and may evict a busy sender's oldest first, and a
+    /// node that joins later still has to find and check the pool
+    pub announced: Vec<Msg>,
+}
+
+impl Member {
+    pub fn reannounce(&self, n: &mut Node) {
+        for m in &self.announced {
+            send_pool(n, &self.cfg.name, m.clone());
+        }
+    }
 }
 
 fn collect_pool<T>(
@@ -255,16 +267,13 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)],
     );
     std::thread::sleep(Duration::from_millis(300));
-    send_pool(
-        n,
-        &name,
-        Msg::PoolHello {
-            pool: name.clone(),
-            member: me,
-            n: cfg.n,
-            t: cfg.t,
-        },
-    );
+    let hello_msg = Msg::PoolHello {
+        pool: name.clone(),
+        member: me,
+        n: cfg.n,
+        t: cfg.t,
+    };
+    send_pool(n, &name, hello_msg.clone());
     // the newest hello per member wins: a member that restarted (or a stale process left from an
     // earlier run) said hello under another identity, and only the newest one is still listening.
     // Once all are present, a short grace lets a newer hello replace an older one.
@@ -320,14 +329,11 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
     // ---- nonce batch
     let dealer = nonces::Dealer::new(me, cfg.batch, cfg.t);
     let mine_c = dealer.commitments(1);
-    send_pool(
-        n,
-        &name,
-        Msg::PoolNonceCommit {
-            pool: name.clone(),
-            commitments: serde_json::to_string(&mine_c).unwrap(),
-        },
-    );
+    let commit_msg = Msg::PoolNonceCommit {
+        pool: name.clone(),
+        commitments: serde_json::to_string(&mine_c).unwrap(),
+    };
+    send_pool(n, &name, commit_msg.clone());
     let mut bundle = vec![];
     for &to in &members {
         if to != me {
@@ -506,18 +512,15 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         hex::encode(key.public.serialize().unwrap()),
         hex::encode(cosign_key.public.serialize().unwrap())
     );
-    send_pool(
-        n,
-        &name,
-        Msg::PoolReady {
-            pool: name.clone(),
-            member: me,
-            key: format!("{}{}", hex::encode(key.xonly()), hex::encode(cosign_key.xonly())),
-            public: public_hex,
-            members: members.clone(),
-            qualified: qualified.iter().copied().collect(),
-        },
-    );
+    let ready_msg = Msg::PoolReady {
+        pool: name.clone(),
+        member: me,
+        key: format!("{}{}", hex::encode(key.xonly()), hex::encode(cosign_key.xonly())),
+        public: public_hex,
+        members: members.clone(),
+        qualified: qualified.iter().copied().collect(),
+    };
+    send_pool(n, &name, ready_msg.clone());
     n.log(&format!(
         "pool ready: {} nonces, qualified dealers {:?}",
         cfg.batch, qualified
@@ -537,6 +540,7 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         cosign_key,
         batch,
         view,
+        announced: vec![hello_msg, commit_msg, ready_msg],
     })
 }
 

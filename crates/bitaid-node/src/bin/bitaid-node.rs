@@ -450,9 +450,17 @@ fn pool_member(mut n: Node) -> i32 {
     let mut lapse: HashMap<String, (Instant, Option<(u32, String, u32)>, Option<u32>)> = HashMap::new();
     let idle = num("--exit-after", 900u64);
     let mut last = Instant::now();
+    // the setup again every hour (real time: the relays' day is real time), so a node joining
+    // later finds the pool even after its first announcements were dropped
+    let every = Duration::from_secs(num("--reannounce", std::env::var("BITAID_REANNOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3600u64)));
+    let mut announced = Instant::now();
     loop {
         if last.elapsed() > secs(idle) {
             return 0;
+        }
+        if announced.elapsed() >= every {
+            announced = Instant::now();
+            m.reannounce(&mut n);
         }
         let tip = n.tip();
         let dead: Vec<String> = deadlock_at
