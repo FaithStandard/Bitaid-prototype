@@ -202,6 +202,16 @@ pub enum Msg {
         registration: String,
         template: Template,
         pre_trigger: Hex32,
+        /// the commitment to the exact location (`case::place_commitment`), revealed only to
+        /// responders who accepted (Specification §13): the cell alone is broadcast
+        #[serde(default)]
+        place: String,
+    },
+    /// Caller to one responder whose acceptance it checked: the exact location the alert committed
+    /// to, sealed to that responder (latitude, longitude and the commitment's salt, as JSON)
+    Place {
+        case_id: Hex32,
+        sealed: String,
     },
     /// Responder app, at acceptance.
     Accept {
@@ -550,6 +560,9 @@ impl Msg {
             // (an appeal; a review stage's opening is only an announcement: the chain fixes its
             // draw block, and review tiers are numbered from 100)
             Msg::Escalate { tier, .. } => *tier >= 2 && *tier < 100,
+            // a seat's stake (§10.4): put up by its stake deadline, counted from the block that
+            // anchors it (a responder's and an entry bond's forfeitures, tier 0, are not timed)
+            Msg::Forfeits { tier, .. } => *tier >= 1 && *tier < 100,
             _ => false,
         }
     }
@@ -558,6 +571,7 @@ impl Msg {
             Msg::Announce { .. } => "announce",
             Msg::Registration { .. } => "registration",
             Msg::Alert { .. } => "alert",
+            Msg::Place { .. } => "place",
             Msg::Accept { .. } => "accept",
             Msg::NonceRequest { .. } => "nonce-request",
             Msg::NonceAssignment { .. } => "nonce-assignment",
@@ -616,6 +630,7 @@ impl Msg {
             | Msg::PoolReady { .. } => None,
             Msg::Alert { case_id, .. }
             | Msg::Accept { case_id, .. }
+            | Msg::Place { case_id, .. }
             | Msg::NonceRequest { case_id, .. }
             | Msg::NonceAssignment { case_id, .. }
             | Msg::Roster { case_id, .. }
@@ -711,7 +726,7 @@ pub fn verify(bytes: &[u8]) -> Result<Envelope, String> {
 
 /// Whether a message of this name may be timed (see `Msg::timed`), told from its tag before it is read.
 pub fn timed_name(t: &str) -> bool {
-    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate", "ballot-commit", "ballot-reveal"].contains(&t)
+    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate", "ballot-commit", "ballot-reveal", "forfeits"].contains(&t)
 }
 
 pub fn b64(b: &[u8]) -> String {

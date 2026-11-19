@@ -59,6 +59,10 @@ for i in $(seq 1 ${ARBS:-10}); do
   { [ $i -ge 21 ] && [ $i -le 24 ]; } && extra="$extra --review-leave"
   { [ $i = 25 ] || [ $i = 26 ]; } && extra="$extra --review-silent"
   [ -n "$STALL" ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-vote"
+  # UNSTAKED=1 (with ARBS=12): arb9 and arb10 offer for tier 2 and, once drawn, never put up their
+  # stake; each is replaced unpaid by a draw from the offers left (§10.4), arb11 and arb12 serve tier 2
+  [ -n "$UNSTAKED" ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-forfeits"
+  [ -n "$UNSTAKED" ] && { [ $i = 11 ] || [ $i = 12 ]; } && extra="--tiers 2"
   BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 600 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done
 sleep 2

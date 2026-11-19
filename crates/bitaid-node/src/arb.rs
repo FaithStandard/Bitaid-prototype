@@ -613,6 +613,8 @@ pub struct Tier {
     pub refund: Option<ScriptBuf>,
     /// seats that missed their commit deadline and were replaced
     pub forfeited: Vec<String>,
+    /// seats that put up no stake by their stake deadline and were replaced, never paid (§10.4)
+    pub unstaked: Vec<String>,
     /// review stages: seats that accepted (or took the seat by replacement), so owe a finding (§10.3)
     pub accepted: Vec<String>,
     /// the offers the draw was made from, as the Seated message lists them (replacements are drawn
@@ -650,6 +652,30 @@ pub fn verify_forfeits(
         && rpc.output_paying(&st.op.txid.to_string(), st.op.vout, &bond.tree(oracle).script_pubkey())
             == Some(value))
         .then_some(st)
+}
+
+/// Whether a seat's Forfeits are well formed, whatever the momentum they were made for: its case
+/// unit on chain under its bond's script, at least twice the case value, and every signature good
+/// for some largest step. A seat that sent these put up a stake; whether the stake is large enough
+/// for its momentum is checked before it is paid (`verify_forfeits`).
+#[allow(clippy::too_many_arguments)]
+pub fn stake_put_up(
+    bond: &Bond,
+    stake: &str,
+    value: u64,
+    sigs: &[String],
+    oracle: &XOnlyPublicKey,
+    fee: u64,
+    seizure: &ScriptBuf,
+    refund: &ScriptBuf,
+    case_value: u64,
+    rpc: &Rpc,
+) -> bool {
+    value >= 2 * case_value
+        && STEP_SET.iter().any(|m| {
+            steps_upto(*m).len() + 2 == sigs.len()
+                && verify_forfeits(bond, stake, value, sigs, oracle, fee, seizure, refund, *m, 0, rpc).is_some()
+        })
 }
 
 impl Tier {
@@ -988,6 +1014,8 @@ impl Replay {
                 &oracle,
                 anchor,
                 a.template.dispute_blocks,
+                rp.seizure_spk().as_ref(),
+                a.template.pots.iter().sum(),
             );
             rp.tiers.insert(k, t);
         }
@@ -1039,6 +1067,8 @@ impl Replay {
                 &oracle,
                 None,
                 a.template.dispute_blocks,
+                None,
+                0,
             );
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
@@ -2155,6 +2185,9 @@ fn read_tier(
     anchor: Option<u32>,
     // the escalation window, in blocks: commitments confirmed within it of the first compete
     contest: u32,
+    // the case's seizure output and value: a seat's stake is judged against them
+    seizure: Option<&ScriptBuf>,
+    case_value: u64,
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -2302,9 +2335,31 @@ fn read_tier(
             _ => None,
         })
     };
-    // a seat that missed its commit deadline, replaced by a draw from the offers left (§10.4); never
-    // before the deadline has passed
-    for e in mine {
+    // a seat that put up its stake by its stake deadline: a Forfeits message, anchored on chain
+    // before the deadline (the seat's draw block plus commit_blocks), whose stake is well formed
+    let staked_by = |t: &Tier, w: &str, deadline: u32| -> bool {
+        let (Some(refund), Some(spk), Some(off)) = (t.refund.as_ref(), seizure, t.offers.get(w)) else {
+            return false;
+        };
+        mine.iter().any(|e| match &e.msg {
+            Msg::Forfeits { tier, stake, value, sigs, .. } if *tier == k && e.sender == w && e.height < deadline => {
+                stake_put_up(off, stake, *value, sigs, oracle, seat_fee_k, spk, refund, case_value, rpc)
+            }
+            _ => false,
+        })
+    };
+    // a seat that missed its commit deadline, or put up no stake by its stake deadline, replaced by a
+    // draw from the offers left (§10.4); never before the deadline has passed. In the order of their
+    // draw blocks, so links that reorder the messages do not change the draws
+    let mut reseats: Vec<&&Envelope> = mine
+        .iter()
+        .filter(|e| matches!(&e.msg, Msg::Reseated { tier, .. } if *tier == k))
+        .collect();
+    reseats.sort_by_key(|e| match &e.msg {
+        Msg::Reseated { height, .. } => *height,
+        _ => 0,
+    });
+    for e in reseats {
         if let Msg::Reseated {
             tier,
             height,
@@ -2324,7 +2379,7 @@ fn read_tier(
             let left: Vec<String> = if from.is_empty() {
                 t.listed
                     .iter()
-                    .filter(|o| !t.seats.contains(o) && !t.forfeited.contains(o))
+                    .filter(|o| !t.seats.contains(o) && !t.forfeited.contains(o) && !t.unstaked.contains(o))
                     .cloned()
                     .collect()
             } else {
@@ -2352,8 +2407,28 @@ fn read_tier(
             // an arbitration seat is replaced only once its forfeiture is on the chain, and its
             // replacement is drawn from the block draw_blocks() after the one that confirmed it: the
             // escalator chooses neither whether nor from which block
+            // a seat with no stake by its deadline: the i-th of those due at the same deadline (in the
+            // order of their keys) is replaced from the block draw_blocks() + i after it, unpaid
+            let unstaked = from.is_empty() && !is_review && {
+                let due = |w: &String| t.seat_height.get(w).map(|h| h + commit_blocks);
+                match due(replaced) {
+                    Some(d) if !staked_by(&t, replaced, d) => {
+                        let mut same: Vec<&String> = t
+                            .seats
+                            .iter()
+                            .chain(t.unstaked.iter())
+                            .filter(|w| due(w) == Some(d) && !staked_by(&t, w, d))
+                            .collect();
+                        same.sort();
+                        same.dedup();
+                        let i = same.iter().position(|w| *w == replaced).unwrap_or(0) as u32;
+                        *height == d + crate::draw_blocks() + i
+                    }
+                    _ => false,
+                }
+            };
             let ok = if from.is_empty() && !is_review {
-                forfeited_at(&t, replaced).is_some_and(|hf| *height == hf + crate::draw_blocks())
+                unstaked || forfeited_at(&t, replaced).is_some_and(|hf| *height == hf + crate::draw_blocks())
             } else {
                 !vcommits.contains_key(replaced)
             };
@@ -2363,7 +2438,11 @@ fn read_tier(
                 && rpc.block_hash(*height).as_deref() == Some(block_hash.as_str())
             {
                 vcommits.remove(replaced);
-                t.forfeited.push(replaced.clone());
+                if unstaked {
+                    t.unstaked.push(replaced.clone());
+                } else {
+                    t.forfeited.push(replaced.clone());
+                }
                 t.seats[pos] = seat.clone();
                 t.seat_height.insert(seat.clone(), *height);
             }

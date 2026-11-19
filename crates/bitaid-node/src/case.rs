@@ -27,6 +27,8 @@ pub struct Alerted {
     pub case_id: [u8; 32],
     pub caller: String,
     pub cell: String,
+    /// the alert's commitment to its exact location (empty if it made none)
+    pub place: String,
     pub template: Template,
     pub funding: OutPoint,
     pub funding_value: u64,
@@ -48,6 +50,12 @@ pub fn pool_id(cosign: &str, attest: &str) -> String {
     format!("{cosign}{attest}")
 }
 
+/// The commitment an alert makes to its exact location: coordinates to six decimals (about 0.1 m)
+/// with a random salt, so the cell's few million possible points cannot be tried against it.
+pub fn place_commitment(case: &str, lat: f64, lon: f64, salt: &str) -> String {
+    hex::encode(tagged("Bitaid/place", format!("{case}|{lat:.6}|{lon:.6}|{salt}").as_bytes()))
+}
+
 impl Alerted {
     /// Checks an alert and the registration inside it. `chain_spk` is the funding output as the
     /// chain shows it (None if missing or spent).
@@ -62,6 +70,7 @@ impl Alerted {
             cell,
             registration,
             template,
+            place,
             ..
         } = msg
         else {
@@ -130,6 +139,7 @@ impl Alerted {
             case_id: h32(case_id).ok_or("case id")?,
             caller: sender.into(),
             cell: cell.clone(),
+            place: place.clone(),
             template: rt,
             funding: op,
             funding_value: v,

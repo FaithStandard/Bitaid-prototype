@@ -92,6 +92,14 @@ fn relay_host(url: &str) -> String {
     }
 }
 
+/// Great-circle distance in metres.
+fn metres(la1: f64, lo1: f64, la2: f64, lo2: f64) -> f64 {
+    let (p1, p2) = (la1.to_radians(), la2.to_radians());
+    let (dp, dl) = ((la2 - la1).to_radians(), (lo2 - lo1).to_radians());
+    let h = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
+    2.0 * 6_371_000.0 * h.sqrt().asin()
+}
+
 fn cell_of(lat: f64, lon: f64) -> h3o::CellIndex {
     h3o::LatLng::new(lat, lon)
         .expect("lat/lon")
@@ -1092,7 +1100,13 @@ fn pool_member(mut n: Node) -> i32 {
                     .then(|| {
                         let key = (case_id.clone(), 1u32);
                         let opener = esc.get(case_id).filter(|x| x.0 == 1).map(|x| &x.1);
-                        escrow_payout_due(&n, a, &t, *input, panels.get(&key), offers.get(&key), opener)
+                        // the seats whose stakes this member verified, from its own replay: the
+                        // poster's escrow pays no seat that has put up none (§10.4)
+                        let staked: Option<std::collections::HashSet<String>> = rosters.get(case_id).and_then(|r| {
+                            arb::Replay::build(&n.history, a, r, &n.rpc)
+                                .and_then(|rp| rp.tiers.get(&1).map(|t| t.forfeits.keys().cloned().collect()))
+                        });
+                        escrow_payout_due(&n, a, &t, *input, panels.get(&key), offers.get(&key), opener, staked.as_ref())
                     })
                     .flatten()
                 {
@@ -1463,7 +1477,7 @@ fn pool_member(mut n: Node) -> i32 {
                     .and_then(|rp| {
                         rp.tiers
                             .get(tier)
-                            .map(|t| t.forfeited.contains(replaced) && t.seats.contains(seat))
+                            .map(|t| (t.forfeited.contains(replaced) || t.unstaked.contains(replaced)) && t.seats.contains(seat))
                     })
                     .unwrap_or(false);
                 let key = (case_id.clone(), *tier);
@@ -1474,7 +1488,7 @@ fn pool_member(mut n: Node) -> i32 {
                         }
                         fees_ok.remove(&key);
                         n.log(&format!(
-                            "tier {tier}: {} replaced by {} (seat forfeit; replacement drawn)",
+                            "tier {tier}: {} replaced by {} (missed its stake or commit deadline; replacement drawn)",
                             bitaid_node::pre(&replaced, 8),
                             bitaid_node::pre(&seat, 8)
                         ));
@@ -2566,6 +2580,7 @@ fn wait_forfeits(
     height: u32,
     case_value: u64,
     opid: &str,
+    patience: Duration,
 ) -> HashMap<String, (arb::Bond, String)> {
     let mut out = HashMap::new();
     // each seat's momentum when seated decides how many steps it must have pre-signed (§10.4)
@@ -2593,9 +2608,9 @@ fn wait_forfeits(
     let mut got: Vec<_> = n.history.iter().filter_map(|e| pick(e)).collect();
     got.sort_by(|a, b| a.0.cmp(&b.0));
     got.dedup_by(|a, b| a.0 == b.0);
-    if got.len() < ww.len() {
+    if got.len() < ww.len() && !patience.is_zero() {
         let have = got.len();
-        got.extend(n.collect(secs(90), |env, _| pick(env), |v| v.len() + have >= ww.len()));
+        got.extend(n.collect(patience, |env, _| pick(env), |v| v.len() + have >= ww.len()));
     }
     for (w, stake, value, sigs) in got {
         let Some(b) = offers.iter().find(|o| o.0 == w).map(|o| o.2.clone()) else {
@@ -2609,6 +2624,124 @@ fn wait_forfeits(
         }
     }
     out
+}
+
+/// Before any seat is paid, every seat puts up its stake (§10.4): a case unit and its pre-signed
+/// forfeitures, anchored on chain within commit_blocks of the seat's draw block. A seat that has not
+/// by then is replaced, unpaid, by a draw from the offers left: the i-th of the seats due at the same
+/// deadline (in the order of their keys) from the block draw_blocks() + i after it, so the escalator
+/// chooses neither whether nor from which block. Repeats until every seat has a verified stake; None
+/// when the offers run out, or a seat's stake is put up but too small for its momentum (the tier
+/// then lapses unpaid).
+#[allow(clippy::too_many_arguments)]
+fn stake_or_replace(
+    n: &mut Node,
+    c: &str,
+    tier: u32,
+    seats: &mut [String],
+    seat_h: &mut HashMap<String, u32>,
+    listed: &[String],
+    out: &mut Vec<String>,
+    stakes: &mut HashMap<String, (arb::Bond, String)>,
+    offers: &[(String, bitcoin::ScriptBuf, arb::Bond)],
+    oxo: &bitcoin::XOnlyPublicKey,
+    fee: u64,
+    seizure: Option<&bitcoin::ScriptBuf>,
+    refund: &bitcoin::ScriptBuf,
+    case_value: u64,
+    opid: &str,
+    cb: u32,
+) -> Option<()> {
+    let spk = seizure?.clone();
+    let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
+    // a Forfeits message from `w`, anchored before `d`, with a well-formed stake (as every replay judges)
+    let put_up = |n: &Node, w: &str, d: u32| -> bool {
+        let Some(b) = offers.iter().find(|o| o.0 == w).map(|o| &o.2) else { return false };
+        n.history.iter().any(|e| match &e.msg {
+            Msg::Forfeits { case_id, tier: t, stake, value, sigs, .. }
+                if case_id == c && *t == tier && e.sender == w && e.height < d =>
+            {
+                arb::stake_put_up(b, stake, *value, sigs, oxo, fee, &spk, refund, case_value, &n.rpc)
+            }
+            _ => false,
+        })
+    };
+    loop {
+        // the stakes in so far, each verified against its seat's momentum when seated
+        let missing: Vec<String> = seats.iter().filter(|w| !stakes.contains_key(*w)).cloned().collect();
+        for w in &missing {
+            let h = seat_h.get(w).copied().unwrap_or(0);
+            let got = wait_forfeits(n, c, tier, std::slice::from_ref(w), offers, oxo, fee, Some(&spk), refund, h, case_value, opid, Duration::ZERO);
+            stakes.extend(got);
+        }
+        let missing: Vec<String> = seats.iter().filter(|w| !stakes.contains_key(*w)).cloned().collect();
+        if missing.is_empty() {
+            return Some(());
+        }
+        // until the earliest deadline among them is two blocks behind and every anchor before it is
+        // accounted for (a stake anchored in time may still be on its way here)
+        let d = missing.iter().map(|w| seat_h.get(w).copied().unwrap_or(0) + cb).min().unwrap_or(0);
+        let from = missing.iter().map(|w| seat_h.get(w).copied().unwrap_or(0)).min().unwrap_or(0);
+        let tip = n.rpc.height();
+        let settled = tip >= d + 2 && (n.unexplained_anchors(from, d.saturating_sub(1)) == 0 || tip >= d + 2 + 4 * grace);
+        if !settled {
+            if tip < d + 2 {
+                n.rpc.mine(1).ok();
+            }
+            n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
+            continue;
+        }
+        // the seats due at d with no stake put up in time: replaced, in the order of their keys
+        let mut late: Vec<String> = missing
+            .iter()
+            .filter(|w| seat_h.get(*w).copied().unwrap_or(0) + cb == d && !put_up(n, w, d))
+            .cloned()
+            .collect();
+        late.sort();
+        if late.is_empty() {
+            // put up in time but not verified for its momentum: not replaceable, not payable
+            n.check(
+                &format!("tier {tier}: every seat's stake large enough for its momentum"),
+                false,
+                &format!("{} put up a smaller one; the escalation lapses", missing.iter().map(|w| bitaid_node::pre(w, 8)).collect::<Vec<_>>().join(",")),
+            );
+            return None;
+        }
+        let key = n.case_keys[c];
+        for (i, old) in late.iter().enumerate() {
+            let hd = d + bitaid_node::draw_blocks() + i as u32;
+            let bh = draw_hash(n, hd);
+            let left: Vec<String> = listed.iter().filter(|o| !seats.contains(o) && !out.contains(o)).cloned().collect();
+            let Some(new) = arb::draw(&bh, c, tier, &left, 1).pop() else {
+                n.check(&format!("tier {tier}: an offer left to replace the unstaked seat"), false, "none; the escalation lapses");
+                return None;
+            };
+            let pos = seats.iter().position(|x| x == old)?;
+            seats[pos] = new.clone();
+            out.push(old.clone());
+            seat_h.insert(new.clone(), hd);
+            n.send_case(
+                c,
+                std::slice::from_ref(&new),
+                Msg::Reseated {
+                    case_id: c.to_string(),
+                    tier,
+                    height: hd,
+                    block_hash: bh,
+                    replaced: old.clone(),
+                    seat: new.clone(),
+                    sealed_key: hex::encode(wire::seal(&n.keys, &wire::xonly(&new).unwrap(), c.as_bytes(), &key)),
+                    from: vec![],
+                },
+                false,
+            );
+            n.check(
+                &format!("tier {tier}: seat {} put up no stake by block {d}; replaced, unpaid, by {} drawn from block {hd}", bitaid_node::pre(old, 8), bitaid_node::pre(&new, 8)),
+                true,
+                "",
+            );
+        }
+    }
 }
 
 /// The fee market at `height`, read from the chain (§10.6).
@@ -2667,6 +2800,7 @@ fn escrow_payout_due(
     // who opened tier 1, as this member read it from the chain: only that party's posting pays the
     // panel (another party's posting for the same case is let go, never paid out a second time)
     opener: Option<&String>,
+    staked: Option<&std::collections::HashSet<String>>,
 ) -> Option<([u8; 32], String)> {
     if input != 0 || t.input.len() != 1 {
         return None;
@@ -2683,6 +2817,9 @@ fn escrow_payout_due(
         return None;
     }
     let (seats, seen) = (seats?, seen?);
+    if !seats.iter().all(|w| staked.is_some_and(|k| k.contains(w))) {
+        return None;
+    }
     let fee = arb::seat_fee(a.template.arb_fee, 1);
     if p.fee < fee || seats.len() != arb::panel_size(1) {
         return None;
@@ -3082,31 +3219,19 @@ fn escalate_tier(
             false,
         );
     }
-    let got = if review {
-        Default::default()
-    } else {
-        wait_forfeits(
-            n,
-            &c,
-            tier,
-            &seats,
-            &offers,
-            &oxo,
-            fee,
-            seizure.as_ref(),
-            &refund_spk,
-            h,
-            value,
-            &case::pool_id(&a.oracle_key, &a.attest_key)
-        )
-    };
+    // seats replaced for missing a deadline (stake or commit): never drawn again for this tier
+    let mut forfeited: Vec<String> = vec![];
+    let cb = a.template.commit_blocks;
     if !review {
+        // every seat's stake before any seat is paid; a seat without one by its deadline is replaced
+        let mut seat_h: HashMap<String, u32> = seats.iter().map(|x| (x.clone(), h)).collect();
+        let opid = case::pool_id(&a.oracle_key, &a.attest_key);
+        stake_or_replace(n, &c, tier, &mut seats, &mut seat_h, &ids, &mut forfeited, &mut stakes, &offers, &oxo, fee, seizure.as_ref(), &refund_spk, value, &opid, cb)?;
         n.check(
         &format!("tier {tier}: every seat committed a case unit of at least twice the case value ({} sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture", 2 * value),
-        got.len() == seats.len(),
-        &format!("{} of {}", got.len(), seats.len()),
+        seats.iter().all(|w| stakes.contains_key(w)),
+        &format!("{} of {}", seats.iter().filter(|w| stakes.contains_key(*w)).count(), seats.len()),
     );
-        stakes.extend(got);
         // each seat paid its fee directly by whoever escalated (§10.6, §11.11)
         let pay: Vec<(bitcoin::ScriptBuf, u64)> = seats
             .iter()
@@ -3181,9 +3306,7 @@ fn escalate_tier(
     let mut committed_by: std::collections::HashSet<String> = Default::default();
     // each seat's first commitment, to check its reveal against before listing it
     let mut commit_of: HashMap<String, String> = HashMap::new();
-    let mut forfeited: Vec<String> = vec![];
     let mut session = 400u32;
-    let cb = a.template.commit_blocks;
     loop {
         let (cc, ss) = (c.clone(), seats.clone());
         // until the earliest deadline among the seats that have not committed
@@ -3373,21 +3496,11 @@ fn escalate_tier(
                 },
                 false,
             );
-            let got = wait_forfeits(
-                n,
-                &c,
-                tier,
-                std::slice::from_ref(&new),
-                &offers,
-                &oxo,
-                fee,
-                seizure.as_ref(),
-                &refund_spk,
-                h,
-                value,
-            &case::pool_id(&a.oracle_key, &a.attest_key)
-            );
-            stakes.extend(got);
+            // its stake before it is paid; replaced in turn, unpaid, if it puts up none in time
+            let mut seat_h: HashMap<String, u32> = HashMap::from([(new.clone(), h)]);
+            let opid = case::pool_id(&a.oracle_key, &a.attest_key);
+            stake_or_replace(n, &c, tier, &mut seats, &mut seat_h, &ids, &mut forfeited, &mut stakes, &offers, &oxo, fee, seizure.as_ref(), &refund_spk, value, &opid, cb)?;
+            let new = seats[pos].clone();
             let spk = offers.iter().find(|o| o.0 == new).unwrap().1.clone();
             match n.rpc.pay_many(&[(spk, fee)]) {
                 Ok(txid) => {
@@ -6380,12 +6493,15 @@ fn caller(mut n: Node) -> i32 {
         vec![Filter::kinds(&[kind::CASE]).tag('c', std::slice::from_ref(&case_hex))],
     );
     std::thread::sleep(Duration::from_millis(300));
+    // the exact location stays with the caller; the alert broadcasts its cell and a commitment to it
+    let salt = hex::encode(rand::random::<[u8; 16]>());
     let alert = Msg::Alert {
         case_id: case_hex.clone(),
         cell: cell.clone(),
         registration: b64(&reg_bytes),
         template: template.clone(),
         pre_trigger: hex::encode([0u8; 32]),
+        place: case::place_commitment(&case_hex, lat, lon, &salt),
     };
     let alert_t = Instant::now();
     n.send(
@@ -6477,6 +6593,12 @@ fn caller(mut n: Node) -> i32 {
             end = Instant::now() + window.max(alert_t.elapsed() * 3);
         }
         n.log(&format!("accepted by {} (bond {})", bitaid_node::pre(&who, 8), bitaid_node::pre(&bond, 12)));
+        // the exact location, at once and to this responder only: it accepted and its bond is on chain
+        if let Some(to) = wire::xonly(&who) {
+            let pt = serde_json::json!({"lat": format!("{lat:.6}"), "lon": format!("{lon:.6}"), "salt": salt}).to_string();
+            let sealed = hex::encode(wire::seal(&n.keys, &to, format!("{c}/place").as_bytes(), pt.as_bytes()));
+            n.send_case(&c, std::slice::from_ref(&who), Msg::Place { case_id: c.clone(), sealed }, false);
+        }
         accepts.push((who, p, spk));
     }
     n.check(
@@ -6832,6 +6954,8 @@ fn responder(mut n: Node) -> i32 {
     };
     n.send_case(&c, std::slice::from_ref(&a.caller), acc, false);
     n.log("ACCEPT sent");
+    let accept_t = Instant::now();
+    let mut place_at: Option<Duration> = None;
 
     // ------------------------------------------------ rosters until a set completes with me in it
     let corrupt = flag("--bad-partial");
@@ -6842,6 +6966,10 @@ fn responder(mut n: Node) -> i32 {
         // and then a reply's worth, never less
         let roster_wait = Duration::from_secs(3 * a.template.joining_window as u64) + secs(120);
         let Some(r) = n.wait(roster_wait, |env, _| {
+            // the exact location comes on its own, before the roster: noted when it arrives
+            if env.sender == caller_id && place_at.is_none() && matches!(env.msg, Msg::Place { .. }) {
+                place_at = Some(accept_t.elapsed());
+            }
             (env.sender == caller_id)
                 .then(|| Rostered::from_msg(&env.msg))
                 .flatten()
@@ -6948,6 +7076,41 @@ fn responder(mut n: Node) -> i32 {
         set.verify_all(),
         &format!("{} payouts", set.len()),
     );
+    // the exact location (Specification §13): sealed to me by the caller once it checked my
+    // acceptance, and the one the alert committed to
+    if !a.place.is_empty() {
+        let find = |n: &Node| {
+            n.history.iter().find_map(|e| match &e.msg {
+                Msg::Place { case_id, sealed } if *case_id == c && e.sender == a.caller => Some(sealed.clone()),
+                _ => None,
+            })
+        };
+        if find(&n).is_none() {
+            n.wait(secs(60), |env, _| matches!(&env.msg, Msg::Place { .. }).then_some(()));
+        }
+        let got = find(&n).and_then(|sealed| {
+            let pt = wire::unseal(&n.keys, &wire::xonly(&a.caller)?, format!("{c}/place").as_bytes(), &hex::decode(sealed).ok()?)?;
+            let v: serde_json::Value = serde_json::from_slice(&pt).ok()?;
+            let (la, lo) = (v["lat"].as_str()?.parse::<f64>().ok()?, v["lon"].as_str()?.parse::<f64>().ok()?);
+            Some((la, lo, v["salt"].as_str()?.to_string()))
+        });
+        let ok = got.as_ref().is_some_and(|(la, lo, salt)| {
+            case::place_commitment(&c, *la, *lo, salt) == a.place && cell_of(*la, *lo).to_string() == a.cell
+        });
+        let detail = match (&got, place_at) {
+            (Some((la, lo, _)), at) => format!(
+                "{:.0} m from here{}",
+                metres(lat, lon, *la, *lo),
+                at.map(|d| format!(", {:.1} s after accepting", d.as_secs_f64())).unwrap_or_default()
+            ),
+            (None, _) => "none received".into(),
+        };
+        n.check(
+            "exact location: sealed to me after I accepted, the one the alert committed to, inside its cell",
+            ok,
+            &detail,
+        );
+    }
 
     // ------------------------------------------------ incident confirmed, then evidence and ballot
     let cid = caller_id.clone();
