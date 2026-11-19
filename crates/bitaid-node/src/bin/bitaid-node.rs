@@ -6956,6 +6956,7 @@ fn responder(mut n: Node) -> i32 {
     n.log("ACCEPT sent");
     let accept_t = Instant::now();
     let mut place_at: Option<Duration> = None;
+    let mut place_sealed: Option<String> = None;
 
     // ------------------------------------------------ rosters until a set completes with me in it
     let corrupt = flag("--bad-partial");
@@ -6967,8 +6968,11 @@ fn responder(mut n: Node) -> i32 {
         let roster_wait = Duration::from_secs(3 * a.template.joining_window as u64) + secs(120);
         let Some(r) = n.wait(roster_wait, |env, _| {
             // the exact location comes on its own, before the roster: noted when it arrives
-            if env.sender == caller_id && place_at.is_none() && matches!(env.msg, Msg::Place { .. }) {
-                place_at = Some(accept_t.elapsed());
+            if let Msg::Place { case_id, sealed } = &env.msg {
+                if env.sender == caller_id && *case_id == c && place_sealed.is_none() {
+                    place_at = Some(accept_t.elapsed());
+                    place_sealed = Some(sealed.clone());
+                }
             }
             (env.sender == caller_id)
                 .then(|| Rostered::from_msg(&env.msg))
@@ -7079,16 +7083,13 @@ fn responder(mut n: Node) -> i32 {
     // the exact location (Specification §13): sealed to me by the caller once it checked my
     // acceptance, and the one the alert committed to
     if !a.place.is_empty() {
-        let find = |n: &Node| {
-            n.history.iter().find_map(|e| match &e.msg {
-                Msg::Place { case_id, sealed } if *case_id == c && e.sender == a.caller => Some(sealed.clone()),
+        if place_sealed.is_none() {
+            place_sealed = n.wait(secs(60), |env, _| match &env.msg {
+                Msg::Place { case_id, sealed } if *case_id == c && env.sender == a.caller => Some(sealed.clone()),
                 _ => None,
-            })
-        };
-        if find(&n).is_none() {
-            n.wait(secs(60), |env, _| matches!(&env.msg, Msg::Place { .. }).then_some(()));
+            });
         }
-        let got = find(&n).and_then(|sealed| {
+        let got = place_sealed.clone().and_then(|sealed| {
             let pt = wire::unseal(&n.keys, &wire::xonly(&a.caller)?, format!("{c}/place").as_bytes(), &hex::decode(sealed).ok()?)?;
             let v: serde_json::Value = serde_json::from_slice(&pt).ok()?;
             let (la, lo) = (v["lat"].as_str()?.parse::<f64>().ok()?, v["lon"].as_str()?.parse::<f64>().ok()?);
