@@ -95,7 +95,14 @@
 - The two arb1 failures are the escalator's own checks, not the protocol: it waited too short for the attestation
   and asked for the loser-pays forfeiture before the pool had committed. Fixed (attest-wait: the escalator waits the
   dispute window plus the finality hold; and keeps a tier's first-anchored escalator).
-- The audit (PC_19), started 15 h after the pool's setup, had not found the pool 1.5 h later. Most likely the
-  relay had evicted the setup: it forgets a message after a day and drops a busy sender's oldest messages first
-  (the pool members co-signed for 15 h). Fixed: pool
-  members announce their setup again every hour (reannounce; local test with a relay that forgets after 120 s).
+- The audit (PC_19) failed, for two reasons, neither in the record itself:
+  AUDIT_FAIL: the two records differ
+  audit-links: 4 records, 2 tiers replayed, 9 arbitrators — 1 case(s) unread
+  audit-archive: 4 records, 0 tiers replayed, 0 arbitrators, from the archivists' logs alone: 0 cases, 0 messages
+  1. The hostile outsider's two forged tier records for the real case are on the chain, and no panel's message
+     explains them, so the case counted as unread forever. Fixed: a record for a tier whose commitment is held,
+     or of a case whose log was read and does not explain it, is one no panel made; the audit counts them apart.
+  2. The audit from the archive knew of no archivist: the archivist announced itself once, 15 h earlier, and
+     the relay had dropped it (it forgets after a day and evicts a busy sender's oldest messages first). Fixed:
+     archivists and pool members announce themselves again every hour.
+  The record read from the links (tiers 1 and 2, momentum of the 9 arbitrators who sat) is the expected one.

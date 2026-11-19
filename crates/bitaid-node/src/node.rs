@@ -140,6 +140,15 @@ pub struct Node {
     arch_ids: std::collections::HashSet<String>,
     /// transactions this node holds a tier commitment message for
     committed: std::collections::HashSet<String>,
+    /// the (case, tier) of each tier commitment message held: another record on the chain for the
+    /// same tier is one no panel made (anyone can write a record)
+    tiers_read: std::collections::HashSet<(String, u32)>,
+    /// cases whose log some archivist served here, with the tip then: a record of theirs already
+    /// three blocks deep then and still unexplained is one no panel made
+    fetched: HashMap<String, u32>,
+    /// the cases the archivists list, when last asked, and the tip then: a case none of them held
+    /// has no log to read for the records that were three blocks deep
+    archive_list: Option<(std::collections::HashSet<String>, u32)>,
     /// archivists known (announced, or BITAID_ARCHIVES): where a case's log is fetched from
     pub archives: Vec<String>,
     /// whether this node reads past tiers it holds no messages for from the archivists (those whose
@@ -447,6 +456,9 @@ impl Node {
             ids: Default::default(),
             arch_ids: Default::default(),
             committed: Default::default(),
+            tiers_read: Default::default(),
+            fetched: Default::default(),
+            archive_list: None,
             archives: std::env::var("BITAID_ARCHIVES")
                 .map(|v| v.split(',').filter(|x| !x.is_empty()).map(String::from).collect())
                 .unwrap_or_default(),
@@ -511,8 +523,9 @@ impl Node {
     ) -> String {
         let name = msg.name();
         let timed = msg.timed();
-        if let Msg::TierCommitted { txid, .. } = &msg {
+        if let Msg::TierCommitted { txid, case_id, tier, .. } = &msg {
             self.committed.insert(txid.clone());
+            self.tiers_read.insert((case_id.to_string(), *tier));
         }
         let h = self.height();
         let bytes = wire::sign(&self.keys, h, msg);
@@ -781,8 +794,9 @@ impl Node {
                     self.archives.push(url.clone());
                 }
             }
-            Msg::TierCommitted { txid, .. } => {
+            Msg::TierCommitted { txid, case_id, tier, .. } => {
                 self.committed.insert(txid.clone());
+                self.tiers_read.insert((case_id.to_string(), *tier));
             }
             _ => {}
         }
@@ -890,10 +904,15 @@ impl Node {
         }
         // only what some archivist holds is asked for (one request each for their lists)
         let mut held: std::collections::HashSet<String> = Default::default();
+        let mut answered = false;
         for url in &self.archives {
             if let Ok(b) = crate::blossom::fetch_log(url, "") {
+                answered = true;
                 held.extend(String::from_utf8_lossy(&b).lines().map(String::from));
             }
+        }
+        if answered {
+            self.archive_list = Some((held.clone(), tip));
         }
         cases.retain(|c| held.contains(c));
         if cases.is_empty() {
@@ -919,6 +938,7 @@ impl Node {
                 }
             }
             if got > 0 {
+                self.fetched.insert(c.clone(), tip);
                 self.from_archive.0 += 1;
                 self.from_archive.1 += got;
                 self.log(&format!("case {}: {got} message(s) read from the archive", crate::pre(&c, 8)));
@@ -954,18 +974,40 @@ impl Node {
     /// holds no message for.
     pub fn unread_cases(&self) -> Vec<String> {
         let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-        let committed = &self.committed;
         let mut cases: Vec<String> = self.rpc.ledger(|l| {
             l.tiers
                 .iter()
                 // (three blocks deep: the links get their chance first)
-                .filter(|t| t.height >= from && t.height + 3 <= l.tip().unwrap_or(0) && !committed.contains(&t.txid.to_string()))
+                .filter(|t| t.height >= from && t.height + 3 <= l.tip().unwrap_or(0))
+                .filter(|t| !self.no_panel(&t.txid.to_string(), &t.case, t.tier, t.height))
                 .map(|t| t.case.clone())
                 .collect()
         });
         cases.sort();
         cases.dedup();
         cases
+    }
+
+    /// Whether a tier record needs no reading: a panel's commitment this node holds, or one no
+    /// panel made: another record for a tier whose commitment is held, a record of a case whose
+    /// log was read, or of a case no archivist holds and no link brought.
+    fn no_panel(&self, txid: &str, case: &str, tier: u32, height: u32) -> bool {
+        self.committed.contains(txid)
+            || self.tiers_read.contains(&(case.to_string(), tier))
+            || self.fetched.get(case).is_some_and(|at| height + 3 <= *at)
+            || self.archive_list.as_ref().is_some_and(|(h, at)| height + 3 <= *at && !h.contains(case) && !self.tiers_read.iter().any(|(c, _)| c == case))
+    }
+
+    /// Tier records on the chain (from BITAID_INDEX_FROM on) that no panel made, as far as this
+    /// node can tell: anyone can write one, and none of them counts.
+    pub fn records_no_panel(&self) -> usize {
+        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        self.rpc.ledger(|l| {
+            l.tiers
+                .iter()
+                .filter(|t| t.height >= from && !self.committed.contains(&t.txid.to_string()) && self.no_panel(&t.txid.to_string(), &t.case, t.tier, t.height))
+                .count()
+        })
     }
 
     /// Drops the oldest tenth of the history that belongs to no kept case. If kept cases alone

@@ -1789,7 +1789,15 @@ fn archivist(mut n: Node) -> i32 {
     let mut settled: std::collections::HashSet<String> = Default::default();
     let mut looked: HashMap<String, Instant> = HashMap::new();
     let mut first_seen: HashMap<String, Instant> = HashMap::new();
+    // announced again every hour, as the pool's setup is: relays forget, and a node joining later
+    // must still learn where the logs are
+    let every = Duration::from_secs(num("--reannounce", std::env::var("BITAID_REANNOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3600u64)));
+    let mut announced = Instant::now();
     loop {
+        if announced.elapsed() >= every {
+            announced = Instant::now();
+            announce(&mut n, "archivist", &me, &url);
+        }
         if last.elapsed() > secs(idle) {
             n.log(&format!(
                 "stored {}, refused {}",
@@ -5133,7 +5141,8 @@ fn audit(mut n: Node) -> i32 {
     println!("record suspended {}", off.iter().map(|x| bitaid_node::pre(x, 8).to_string()).collect::<Vec<_>>().join(","));
     n.check(
         &format!(
-            "every tier commitment on the chain since block {from} is read ({on_chain} records, {} tiers replayed, {} arbitrators){}",
+            "every tier commitment on the chain since block {from} is read ({on_chain} records, {} no panel made, {} tiers replayed, {} arbitrators){}",
+            n.records_no_panel(),
             logs.len(),
             who.len(),
             if links { " from this node's links".to_string() } else { format!(" from the archivists' logs alone: {} cases, {} messages", n.from_archive.0, n.from_archive.1) }

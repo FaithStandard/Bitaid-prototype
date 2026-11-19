@@ -106,9 +106,22 @@ done
 sleep 20
 grep -h "review\|FAIL" $L/archivist.out
 grep -h "review\|unit of\|FAIL" $L/arb*.out | sort | uniq -c | tee arb_release.txt
+# AUDIT=1: two fresh nodes read every arbitrator's record, one from its links, one from the chain and
+# the archivist's logs alone; the two must agree (with HOSTILE, past the outsider's tier records)
+if [ -n "$AUDIT" ]; then
+  BITAID_WALLET=w $BIN/bitaid-node --role audit --name audit-links $P --links > $L/audit-links.out 2>$L/audit-links.log
+  BITAID_WALLET=w $BIN/bitaid-node --role audit --name audit-archive $P > $L/audit-archive.out 2>$L/audit-archive.log
+  ra=$(grep '^record' $L/audit-links.out | sort | sha256sum); rb=$(grep '^record' $L/audit-archive.out | sort | sha256sum)
+  if [ "$ra" = "$rb" ] && grep -q '^record momentum' $L/audit-archive.out && ! grep -q FAIL $L/audit-links.out $L/audit-archive.out; then
+    { echo "[PASS] audit the record read from the archivist's logs alone equals the record read from the links"; echo "[audit] 1 passed, 0 failed"; } > $L/audit.out
+  else
+    { echo "[FAIL] audit the record read from the archivist's logs differs from the record read from the links, or a case went unread"; echo "[audit] 0 passed, 1 failed"; } > $L/audit.out
+  fi
+  grep -h "PASS\|FAIL" $L/audit-links.out $L/audit-archive.out
+fi
 kill $PIDS 2>/dev/null
 [ "$CHALLENGE" = bad ] && CHALLENGER=4
 [ -n "$CHALLENGE" ] && for i in $(seq 1 150); do grep -q "passed" $L/arb${CHALLENGER:-1}.out 2>/dev/null && break; sleep 2; done
 [ -n "$HOSTILE" ] && { for i in $(seq 1 60); do grep -q "passed" $L/hostile.out 2>/dev/null && break; sleep 2; done; kill $HP 2>/dev/null; }
-cat $L/caller.out $L/r1.out $L/r3.out $L/arb${CHALLENGER:-1}.out $([ -n "$HOSTILE" ] && echo $L/hostile.out) | tee arb_result.txt
+cat $L/caller.out $L/r1.out $L/r3.out $L/arb${CHALLENGER:-1}.out $([ -n "$HOSTILE" ] && echo $L/hostile.out) $([ -n "$AUDIT" ] && echo $L/audit.out) | tee arb_result.txt
 grep -h "FAIL" $L/*.out >/dev/null && exit 1 || exit 0
