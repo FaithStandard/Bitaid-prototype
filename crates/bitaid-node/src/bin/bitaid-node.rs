@@ -5272,6 +5272,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut challenge_at: HashMap<(String, u32), u32> = HashMap::new();
     let idle = num("--exit-after", 3600u64);
     let mut last = Instant::now();
+    let mut esc_height: HashMap<(String, u32), u32> = HashMap::new();
     let mut fee_retry: Vec<(Instant, wire::Envelope, u32)> = Vec::new();
     loop {
         if last.elapsed() > secs(idle) {
@@ -5535,6 +5536,18 @@ fn arbitrator(mut n: Node) -> i32 {
                     if first.is_some_and(|f| f != s) {
                         continue;
                     }
+                }
+                // a tier above the first has one escalator: the escalation anchored first (two
+                // parties may appeal the same verdict; lagged run without a transaction index,
+                // 2026-11-19: the second overwrote the first here and the first's seating, the one
+                // the pool follows, was then ignored, so the seat never ruled)
+                if tier >= 2 && !arb::is_review(tier) {
+                    if let Some(h0) = esc_height.get(&(case_id.clone(), tier)) {
+                        if *h0 <= env.height {
+                            continue;
+                        }
+                    }
+                    esc_height.insert((case_id.clone(), tier), env.height);
                 }
                 escalator.insert((case_id.clone(), tier), s);
                 if arb::is_review(tier) {
