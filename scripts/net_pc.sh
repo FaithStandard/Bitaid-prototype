@@ -218,6 +218,8 @@ audit)
   # two nodes that saw nothing of the run read every arbitrator's record: one from its links, one from
   # the chain and the archivist's logs alone. Run while the PC side is still up; INDEX_FROM as printed.
   export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_INDEX_FROM=${INDEX_FROM:-$(cat "$L/index_from.txt")} BITAID_CHECKPOINT_BLOCKS=${CHECKPOINT_BLOCKS:-1}
+  # the archivist announces its onion address: this machine's own, read locally, any other through Tor
+  export BITAID_SELF_ONION=$(cat "$L/onion.txt" 2>/dev/null); [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
   P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
   BITAID_WALLET=w target/release/bitaid-node --role audit --name audit-links $P --links >"$L/audit-links.out" 2>"$L/audit-links.log"
   BITAID_WALLET=w target/release/bitaid-node --role audit --name audit-archive $P >"$L/audit-archive.out" 2>"$L/audit-archive.log"
