@@ -5329,7 +5329,12 @@ fn arbitrator(mut n: Node) -> i32 {
             let cc = c.clone();
             let t = view.t;
             let mut who = std::collections::HashSet::new();
-            let until = n.tip() + a.template.dispute_blocks + 6;
+            // the pool attests once the window has closed and every anchor up to its close is
+            // accounted for, which may take four times the checkpoint grace (public signet run,
+            // 2026-11-19: the outcome was attested after this party had stopped waiting, and its
+            // loser-pays request, sent too early, was refused)
+            let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
+            let until = n.tip() + a.template.dispute_blocks + 4 * grace + 12;
             let got = n.collect_until(
                 until,
                 secs(86_400),
