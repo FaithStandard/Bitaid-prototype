@@ -6966,10 +6966,11 @@ fn responder(mut n: Node) -> i32 {
         // first acceptance, or longer on slow links) and the pool has reserved nonces: the window
         // and then a reply's worth, never less
         let roster_wait = Duration::from_secs(3 * a.template.joining_window as u64) + secs(120);
-        let Some(r) = n.wait(roster_wait, |env, _| {
-            // the exact location comes on its own, before the roster: noted when it arrives
+        let Some(r) = n.wait(roster_wait, |env, e| {
+            // the exact location comes on its own, before the roster: noted when it arrives (each
+            // responder's is sealed to it alone, and every responder on the case sees them all)
             if let Msg::Place { case_id, sealed } = &env.msg {
-                if env.sender == caller_id && *case_id == c && place_sealed.is_none() {
+                if env.sender == caller_id && *case_id == c && e.tag("p") == Some(me.as_str()) && place_sealed.is_none() {
                     place_at = Some(accept_t.elapsed());
                     place_sealed = Some(sealed.clone());
                 }
@@ -7084,8 +7085,8 @@ fn responder(mut n: Node) -> i32 {
     // acceptance, and the one the alert committed to
     if !a.place.is_empty() {
         if place_sealed.is_none() {
-            place_sealed = n.wait(secs(60), |env, _| match &env.msg {
-                Msg::Place { case_id, sealed } if *case_id == c && env.sender == a.caller => Some(sealed.clone()),
+            place_sealed = n.wait(secs(60), |env, e| match &env.msg {
+                Msg::Place { case_id, sealed } if *case_id == c && env.sender == a.caller && e.tag("p") == Some(me.as_str()) => Some(sealed.clone()),
                 _ => None,
             });
         }
