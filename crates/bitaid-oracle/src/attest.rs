@@ -71,14 +71,25 @@ pub fn combine(
 ) -> Result<Scalar, &'static str> {
     // one share per member, all on the same nonce index: a member that sends its share twice (or
     // a share on another index) cannot make the interpolation fail (review finding)
-    let mut seen = std::collections::BTreeSet::new();
-    let index = shares.iter().find(|s| &s.message == m).map(|s| s.index);
-    let valid: Vec<&Share> = shares
-        .iter()
-        .filter(|s| &s.message == m && Some(s.index) == index && verify(pool, batch, s))
-        .filter(|s| seen.insert(s.member))
-        .take(t)
-        .collect();
+    // the index is chosen among shares that verify, never from the first share seen: a forged share
+    // on another index must not shut out the honest ones (review finding)
+    let good: Vec<&Share> = shares.iter().filter(|s| &s.message == m && s.index < batch.r.len() && verify(pool, batch, s)).collect();
+    let indices: std::collections::BTreeSet<usize> = good.iter().map(|s| s.index).collect();
+    let mut valid: Vec<&Share> = vec![];
+    for index in indices {
+        let mut seen = std::collections::BTreeSet::new();
+        let v: Vec<&Share> = good
+            .iter()
+            .copied()
+            .filter(|s| s.index == index)
+            .filter(|s| seen.insert(s.member))
+            .take(t)
+            .collect();
+        if v.len() >= t {
+            valid = v;
+            break;
+        }
+    }
     if valid.len() < t {
         return Err("fewer than t valid shares");
     }

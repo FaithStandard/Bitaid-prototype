@@ -386,6 +386,7 @@ fn pool_member(mut n: Node) -> i32 {
     let mut assigned: HashMap<String, Vec<u32>> = HashMap::new();
     let mut taken: HashMap<u32, String> = HashMap::new();
     let mut digests: HashMap<(String, u32), [u8; 32]> = HashMap::new();
+    let mut session_commits: HashMap<(String, u32), String> = HashMap::new();
     let mut sessions: HashMap<(String, u32), frost_secp256k1_tr::round1::SigningNonces> =
         HashMap::new();
     let mut commits: HashMap<String, BTreeMap<String, String>> = HashMap::new();
@@ -1216,8 +1217,29 @@ fn pool_member(mut n: Node) -> i32 {
                     continue;
                 };
                 approved.insert((case_id.clone(), t.compute_txid(), *input), (d, n.tip()));
-                digests.insert((case_id.clone(), *session), d);
+                // a session's nonces are made once: a request repeated (by anyone: requests are
+                // public) gets the same commitment again, never fresh nonces that would void the
+                // package the first requester builds; one for another transaction is refused
+                // (review finding: echoing a request stalled every co-signature)
+                let key = (case_id.clone(), *session);
+                if let Some(prev) = digests.get(&key) {
+                    if *prev != d {
+                        n.log("co-signature refused: this session is already for another transaction");
+                        continue;
+                    }
+                    if let Some(commitment) = session_commits.get(&key).cloned() {
+                        n.send_case(
+                            case_id,
+                            std::slice::from_ref(&s),
+                            Msg::PoolCommit { case_id: case_id.clone(), session: *session, member: me, commitment },
+                            false,
+                        );
+                    }
+                    continue;
+                }
+                digests.insert(key.clone(), d);
                 let (nonces, commitment) = m.commit();
+                session_commits.insert(key, commitment.clone());
                 sessions.insert((case_id.clone(), *session), nonces);
                 n.send_case(
                     case_id,
@@ -2129,10 +2151,16 @@ fn sign_set(
             }
             _ => None,
         },
-        |v| v.len() >= nsig,
+        // one message per signer counts: a signer sending several cannot fill the round in
+        // another's place (review finding: a duplicate flood framed an honest signer as silent)
+        |v| v.iter().map(|x| x.0).collect::<std::collections::HashSet<_>>().len() >= nsig,
     );
     let mut all_nonces: Vec<Option<Vec<PubNonce>>> = vec![None; nsig];
     for (i, pn) in got {
+        // two different nonce sets from one signer: the signer is at fault, signed by itself
+        if all_nonces[i].as_ref().is_some_and(|x| *x != pn) {
+            return Err(format!("signer {i}: two different nonce sets"));
+        }
         all_nonces[i] = Some(pn);
     }
     let all_nonces: Vec<Vec<PubNonce>> = all_nonces
@@ -2146,6 +2174,14 @@ fn sign_set(
         n.log("sending corrupted partial signatures (test)");
     }
     let mine: Vec<String> = parts.iter().map(|p| hex::encode(p.serialize())).collect();
+    let view = |ns: &[Vec<PubNonce>]| {
+        let mut b = vec![];
+        for x in ns.iter().flatten() {
+            b.extend(x.serialize());
+        }
+        { use bitcoin::hashes::Hash as _; hex::encode(bitcoin::hashes::sha256::Hash::hash(&b).to_byte_array()) }
+    };
+    let my_view = view(&all_nonces);
     n.send_case(
         &c,
         &[],
@@ -2154,6 +2190,7 @@ fn sign_set(
             set_version: v,
             signer: my_index as u8,
             partials: mine,
+            seen: my_view.clone(),
         },
         true,
     );
@@ -2166,6 +2203,7 @@ fn sign_set(
                 set_version,
                 signer,
                 partials,
+                seen,
             } if *case_id == c
                 && *set_version == v
                 && p2.get(*signer as usize) == Some(&env.sender) =>
@@ -2174,14 +2212,45 @@ fn sign_set(
                     .iter()
                     .map(|h| MaybeScalar::from_slice(&hex::decode(h).ok()?).ok())
                     .collect();
-                Some((*signer as usize, ps?))
+                Some((*signer as usize, ps?, seen.clone()))
             }
             _ => None,
         },
-        |v| v.len() >= nsig,
+        |v| v.iter().map(|x| x.0).collect::<std::collections::HashSet<_>>().len() >= nsig,
     );
+    // a signer that signed with other nonces than mine: someone sent different nonces to different
+    // parties. Every nonce message is signed and reaches every party, so the one who sent two is
+    // found in the log, and blamed; never the signer who was misled (review finding)
+    if got.iter().any(|x| !x.2.is_empty() && x.2 != my_view) {
+        let until = Instant::now() + secs(60);
+        loop {
+            let mut sets: HashMap<usize, Vec<String>> = HashMap::new();
+            for e in &n.history {
+                if let Msg::SigNonces { case_id, set_version, signer, nonces } = &e.msg {
+                    if *case_id == c && *set_version == v && p2.get(*signer as usize) == Some(&e.sender) {
+                        let s = sets.entry(*signer as usize).or_default();
+                        let k = nonces.concat();
+                        if !s.contains(&k) {
+                            s.push(k);
+                        }
+                    }
+                }
+            }
+            if let Some((i, _)) = sets.iter().find(|x| x.1.len() > 1) {
+                return Err(format!("signer {i}: two different nonce sets"));
+            }
+            if Instant::now() >= until {
+                return Err("signers saw different nonces; no one's second set has arrived".into());
+            }
+            n.collect(Duration::from_secs(2), |_, _| None::<()>, |_| false);
+        }
+    }
+    let got: Vec<(usize, Vec<PartialSignature>)> = got.into_iter().map(|x| (x.0, x.1)).collect();
     let mut all_parts: Vec<Option<Vec<PartialSignature>>> = vec![None; nsig];
     for (i, p) in got {
+        if all_parts[i].as_ref().is_some_and(|x| *x != p) {
+            return Err(format!("signer {i}: two different partial signature sets"));
+        }
         all_parts[i] = Some(p);
     }
     let all_parts: Vec<Vec<PartialSignature>> = all_parts

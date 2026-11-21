@@ -77,8 +77,12 @@ pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView>
     );
     let nm = name.to_string();
     let end = Instant::now() + timeout;
-    let mut hello: BTreeMap<u16, (String, u16)> = BTreeMap::new(); // member -> (identity, t)
-    let mut ready: BTreeMap<u16, (String, String, Vec<u16>, Vec<u16>)> = BTreeMap::new();
+    // every announcement kept, from whoever sent it: anyone can send one, so none may displace
+    // another, and a stranger's cannot void the pool (review finding: one spoofed hello blinded
+    // discovery for every node joining after)
+    let mut hello: BTreeMap<(u16, String), u16> = BTreeMap::new(); // (member, identity) -> t
+    // ready by (member, identity) -> (key|public with every member's identity, members, qualified)
+    let mut ready: BTreeMap<(u16, String), (String, Vec<u16>, Vec<u16>)> = BTreeMap::new();
     let mut commits: BTreeMap<String, Commitments> = BTreeMap::new(); // by sender identity
     loop {
         let left = end.saturating_duration_since(Instant::now());
@@ -97,7 +101,7 @@ pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView>
         })?;
         match env.msg {
             Msg::PoolHello { member, t, .. } => {
-                hello.insert(member, (env.sender.clone(), t));
+                hello.insert((member, env.sender.clone()), t);
             }
             Msg::PoolReady {
                 member,
@@ -105,17 +109,15 @@ pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView>
                 public,
                 members,
                 qualified,
+                ids,
                 ..
             } => {
-                ready.insert(
-                    member,
-                    (
-                        env.sender.clone(),
-                        format!("{key}|{public}"),
-                        members,
-                        qualified,
-                    ),
-                );
+                // a ready counts only from the identity it itself names for its member: a copy sent
+                // by anyone else is ignored, and a ready naming other identities is another pool
+                let own = members.iter().position(|m| *m == member).and_then(|i| ids.get(i));
+                if own == Some(&env.sender) {
+                    ready.insert((member, env.sender.clone()), (format!("{key}|{public}|{}", ids.join(",")), members, qualified));
+                }
             }
             Msg::PoolNonceCommit { commitments, .. } => {
                 if let Ok(c) = serde_json::from_str::<Commitments>(&commitments) {
@@ -124,24 +126,36 @@ pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView>
             }
             _ => {}
         }
-        let Some((_, first, members, qualified)) = ready.values().next().cloned() else {
-            continue;
-        };
-        if ready.len() < members.len() {
-            continue;
+        // a pool is complete when, for one agreed key, member list and dealer set, every member
+        // has said ready with the identity it said hello with, each member a different identity
+        let mut found: Vec<(String, Vec<u16>, Vec<u16>, BTreeMap<u16, String>, u16)> = vec![];
+        let views: BTreeSet<(String, Vec<u16>, Vec<u16>)> = ready.values().cloned().collect();
+        for (kp, members, qualified) in views {
+            let mut ids: BTreeMap<u16, String> = BTreeMap::new();
+            let mut t0 = None;
+            for m in &members {
+                let who: Vec<&String> = ready
+                    .iter()
+                    .filter(|((rm, id), v)| rm == m && v.0 == kp && v.1 == members && v.2 == qualified && hello.contains_key(&(*m, (*id).clone())))
+                    .map(|((_, id), _)| id)
+                    .collect();
+                if who.len() == 1 {
+                    ids.insert(*m, who[0].clone());
+                    t0 = t0.or(hello.get(&(*m, who[0].clone())).copied());
+                }
+            }
+            let distinct: BTreeSet<&String> = ids.values().collect();
+            if ids.len() == members.len() && distinct.len() == members.len() && !members.is_empty() {
+                found.push((kp, members, qualified, ids, t0.unwrap_or(0)));
+            }
         }
-        // every member ready, from the identity it said hello with, agreeing on key, public data and dealers
-        let agree = ready.iter().all(|(m, (id, kp, ms, q))| {
-            *kp == first
-                && *ms == members
-                && *q == qualified
-                && hello.get(m).map(|h| &h.0) == Some(id)
-        });
-        if !agree {
-            n.log("pool setup: members disagree; not using this pool");
+        if found.len() > 1 {
+            n.log("pool setup: two complete pools under one name; not choosing between them");
             return None;
         }
-        let ids: BTreeMap<u16, String> = members.iter().map(|m| (*m, hello[m].0.clone())).collect();
+        let Some((first, members, qualified, ids, t)) = found.pop() else {
+            continue;
+        };
         // a dealer's commitments count only if published by that dealer's own identity
         let by_dealer: BTreeMap<u16, Commitments> = commits
             .iter()
@@ -164,7 +178,7 @@ pub fn discover(n: &mut Node, name: &str, timeout: Duration) -> Option<PoolView>
         };
         let (public, cosign) = (pk(1)?, pk(2)?);
         let batch = nonces::public_view(&members, &by_dealer, &q);
-        let t = hello[&members[0]].1 as usize;
+        let t = t as usize;
         return Some(PoolView {
             name: name.into(),
             t,
@@ -519,6 +533,7 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         public: public_hex,
         members: members.clone(),
         qualified: qualified.iter().copied().collect(),
+        ids: members.iter().map(|m| hellos[m].clone()).collect(),
     };
     send_pool(n, &name, ready_msg.clone());
     n.log(&format!(

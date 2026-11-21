@@ -281,6 +281,10 @@ pub enum Msg {
         set_version: u32,
         signer: u8,
         partials: Vec<String>,
+        /// a hash of the nonces this signer signed with, every signer's in order: views that differ
+        /// mean a signer sent different nonces to different parties, and the log shows which
+        #[serde(default)]
+        seen: String,
     },
     /// Caller asks the pool to co-sign the incident transaction once the set is complete: a FROST
     /// session per request; a member that commits but does not sign is replaced in the next session.
@@ -364,6 +368,10 @@ pub enum Msg {
         public: String,
         members: Vec<u16>,
         qualified: Vec<u16>,
+        /// every member's identity, in the order of `members`, as this member ran the setup with
+        /// them: a ready counts only from the identity it names for its own member
+        #[serde(default)]
+        ids: Vec<String>,
     },
     /// Caller, once the set is complete and the incident transaction confirmed.
     Incident {
