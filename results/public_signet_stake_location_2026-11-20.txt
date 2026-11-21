@@ -1,0 +1,96 @@
+# Public signet run, 2026-11-20/21: stake before pay, exact location sealed to accepted responders
+# Caller on the phone, responder r1 on the tablet, PC roles over Tor. TIME_SCALE=30 SAT_SCALE=100, INDEX_FROM=331687.
+# The PC restarted before the audit could run; the previous run's audit passed (public_signet_anchored_audit_2026-11-19.txt).
+
+## caller (phone): 13 passed, 0 failed
+[caller  302.15s] PASS oracle pool found and checked: 4 members, threshold 3, 60 nonces — 4d0639eb01f0c156
+[caller  741.73s] PASS registration: funding output (no key path) and template committed — ecfddd2a436785d161dfb1d987ec21bf9f0d336e9ee527d63af919838dcba195:1
+[caller  742.55s] ALERT case 23d97247 in H3 cell 886d75db27fffff
+[caller  744.06s] accepted by 854a3ec0 (bond 7cc0896ed1d1)
+[caller  745.35s] accepted by 71d27994 (bond 70bf7720968e)
+[caller  786.51s] accepted by 753859a7 (bond 5f197596e047)
+[caller  864.06s] PASS 3 responder(s) accepted within the joining window, bonds checked on chain — first after 2.03 s
+[caller 2384.55s] PASS signer 2 caught sending an invalid partial signature; its seat is given up and the set re-signed — signer 2: invalid partial signature on message 0
+[caller 2996.99s] PASS pre-signed set v1 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
+[caller 3506.41s] PASS pool co-signed the incident (FROST, 3 of 4 members) — 2 session(s), signers [1, 4, 3], 509.42 s
+[caller 3509.86s] PASS incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
+[caller 4061.89s] time from alert to a funded, fully pre-signed incident: 3319.86 s
+[caller 4064.18s] PASS evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 2.25 s
+[caller 38956.10s] PASS 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[caller 39020.21s] PASS deposit: "returned" completed by the attestation and broadcast
+[caller 39024.93s] PASS reward: "paid (7, 3)" completed by the attestation and broadcast
+[caller 39029.92s] PASS bounty: "split (7, 3)" completed by the attestation and broadcast
+[caller 40365.32s] PASS all 3 pots settled on chain by the attested outcome (3 payouts confirmed) — deposit: returned; reward: paid (7, 3); bounty: split (7, 3)
+
+## responder r1 (tablet): 17 passed, 0 failed
+[r1  794.44s] PASS alert 23d97247 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r1 3130.40s] PASS pre-signed set v1 verified (seat 1) — 39 payouts
+[r1 3130.40s] PASS exact location: sealed to me after I accepted, the one the alert committed to, inside its cell — 109 m from here, 921.8 s after accepting
+[r1 4081.58s] PASS incident transaction on chain: every pot output exists — 6bb0e77e701b9a3fc585a8c4853a5aea6f094ff4ff06f7308f9a615bf0d1282b
+[r1 4089.16s] PASS evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 7.56 s
+[r1 8660.74s] PASS attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
+[r1 9064.12s] PASS tier 1: posted on the fee market at 330 sats a seat, the panel's fees locked in escrow; taken up at block 331698 — ca621b221d274ead
+[r1 11290.72s] PASS tier 1: 3 of 3 offering arbitrators drawn from block 331704, case disclosed only to them — 2214.7 s after escalating
+[r1 15976.90s] PASS tier 1: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[r1 16501.22s] PASS tier 1: 3 × 330 sats paid to the seats — 0344de0f577289f5
+[r1 17106.86s] PASS tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 0720d175970dba57f7875989ccf764f4943200ebdcea3ddbb9fed47f49b74879
+[r1 17106.86s] PASS tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 8030.8 s from escalation
+[r1 17106.86s] standing verdict after tier 1: D,I — upholds my claim
+[r1 18612.00s] tier 2 opened by another party; following it
+[r1 26520.23s] standing verdict after tier 2: I,D — against my claim
+[r1 39283.38s] PASS 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[r1 39285.33s] PASS deposit: "returned" completed by the attestation and broadcast — already broadcast by another party
+[r1 39287.30s] PASS reward: "paid (7, 3)" completed by the attestation and broadcast — already broadcast by another party
+[r1 39289.02s] PASS bounty: "split (7, 3)" completed by the attestation and broadcast — already broadcast by another party
+[r1 40432.02s] PASS my shares arrived at my payout address — 2700 sats
+chain reorganised from block 331766: reading it again
+
+## PC side
+### arb1
+[PASS] arb1-pc dissented on tier 1 and no party appealed: buying the re-roll to tier 2 on a party's terms
+[PASS] arb1-pc tier 2: 7 of 9 offering arbitrators drawn from block 331731, case disclosed only to them — 4959.4 s after escalating
+[PASS] arb1-pc tier 2: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 7 of 7
+[PASS] arb1-pc tier 2: 7 × 412 sats paid to the seats — c9f691eeef157360
+[PASS] arb1-pc tier 2: 7 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — d8554dd6995e517c8ecea1b9fccfdebd2a9bb37d5be4448cae1ea8b0426b1857
+[PASS] arb1-pc tier 2: two-thirds verdict (6 of 7); 1 dissenter(s) owe 4.0× the fee each, settled against the final ruling — 8113.2 s from escalation
+[PASS] arb1-pc tier 2: the larger panel agreed with the dissent — I,D
+[PASS] arb1-pc the pool attested the final outcome — 3 members
+[PASS] arb1-pc attendee 753859a7: the loser pays, one tier-1 panel fee (990 sats) forfeited from its bond into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 97cbf11ca12e7ca3 (pool members [2, 1, 4])
+[PASS] arb1-pc tier 1 arbitrator 25f05fbe: 4.0× the 330-sat fee (1320 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — cde57eb8c19b9c48 (pool members [1, 2, 4])
+[PASS] arb1-pc tier 1 arbitrator bc73ff9c: 4.0× the 330-sat fee (1320 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — a22da2a207cc232e (pool members [1, 2, 4])
+[PASS] arb1-pc tier 2 arbitrator bc73ff9c: 4.0× the 412-sat fee (1648 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 55ecffef8f561659 (pool members [2, 1, 4])
+[PASS] arb1-pc seizure distribution signed by 1 of 1 archivist(s) after their own replay
+[PASS] arb1-pc seizure output distributed (§12) by the pool and the archivists: 5278 sats to a vindicated dissenter — faee60bbce54dcfb
+[arb1-pc] 14 passed, 0 failed
+[PASS] arb1-pc case 23d97247: review draw at block 331743 (40% for a split final panel): passed over
+[PASS] arb1-pc tier 1 unit of 20000 sats released under the bond's script by the pool's co-signature — dd778a855718136d (pool members [2, 1, 4])
+### r3
+[PASS] r3-pc alert 23d97247 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r3-pc pre-signed set v1 verified (seat 0) — 39 payouts
+[PASS] r3-pc exact location: sealed to me after I accepted, the one the alert committed to, inside its cell — 164 m from here, 1.2 s after accepting
+[PASS] r3-pc incident transaction on chain: every pot output exists — 6bb0e77e701b9a3fc585a8c4853a5aea6f094ff4ff06f7308f9a615bf0d1282b
+[PASS] r3-pc evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.00 s
+[PASS] r3-pc 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[PASS] r3-pc deposit: "returned" completes with the attestation
+[PASS] r3-pc reward: "paid (7, 3)" completes with the attestation
+[PASS] r3-pc bounty: "split (7, 3)" completes with the attestation
+[PASS] r3-pc my shares arrived at my payout address — 6300 sats
+[r3-pc] 10 passed, 0 failed
+### r4
+[PASS] r4-pc-cheat alert 23d97247 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r4-pc-cheat dropped from the set after sending a bad partial signature (expected for this test)
+[r4-pc-cheat] 2 passed, 0 failed
+### hostile
+[PASS] hostile-pc an outsider's records were all accepted by the chain: a posting for a real case, an incident record and a posting for an invented one, two tier records no panel made
+[PASS] hostile-pc the invented case: its incident record, on a transaction the pool never signed, is not read, and its posting holds no place in the queue
+[PASS] hostile-pc the real case was heard by a panel of its parties' drawing, the outsider's posting, offer and announcement notwithstanding
+[PASS] hostile-pc once heard, the case holds no place in the queue: the outsider's posting keeps no slot
+[PASS] hostile-pc the outsider's escrow paid nobody: it sits unspent until its lock
+[hostile-pc] 5 passed, 0 failed
+
+## Reading
+- Every role passed. The tier-1 panel staked before it was paid (stake before pay, §10.4); tier 2 ruled with
+  the dissent, fines went to the seizure output and 5,278 sats to the vindicated dissenter.
+- Exact location: the PC responder had it 1.2 s after accepting. The tablet noted it 921.8 s after accepting:
+  it had arrived in seconds but sat unread while the responder confirmed the roster with the pool. Fixed after
+  this run: the node notes the sealed location the moment it arrives (0.8-3.2 s under simulated Tor lag).
