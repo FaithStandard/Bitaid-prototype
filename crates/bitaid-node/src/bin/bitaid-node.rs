@@ -6955,8 +6955,6 @@ fn responder(mut n: Node) -> i32 {
     n.send_case(&c, std::slice::from_ref(&a.caller), acc, false);
     n.log("ACCEPT sent");
     let accept_t = Instant::now();
-    let mut place_at: Option<Duration> = None;
-    let mut place_sealed: Option<String> = None;
 
     // ------------------------------------------------ rosters until a set completes with me in it
     let corrupt = flag("--bad-partial");
@@ -6966,15 +6964,7 @@ fn responder(mut n: Node) -> i32 {
         // first acceptance, or longer on slow links) and the pool has reserved nonces: the window
         // and then a reply's worth, never less
         let roster_wait = Duration::from_secs(3 * a.template.joining_window as u64) + secs(120);
-        let Some(r) = n.wait(roster_wait, |env, e| {
-            // the exact location comes on its own, before the roster: noted when it arrives (each
-            // responder's is sealed to it alone, and every responder on the case sees them all)
-            if let Msg::Place { case_id, sealed } = &env.msg {
-                if env.sender == caller_id && *case_id == c && e.tag("p") == Some(me.as_str()) && place_sealed.is_none() {
-                    place_at = Some(accept_t.elapsed());
-                    place_sealed = Some(sealed.clone());
-                }
-            }
+        let Some(r) = n.wait(roster_wait, |env, _| {
             (env.sender == caller_id)
                 .then(|| Rostered::from_msg(&env.msg))
                 .flatten()
@@ -7084,12 +7074,15 @@ fn responder(mut n: Node) -> i32 {
     // the exact location (Specification §13): sealed to me by the caller once it checked my
     // acceptance, and the one the alert committed to
     if !a.place.is_empty() {
-        if place_sealed.is_none() {
-            place_sealed = n.wait(secs(60), |env, e| match &env.msg {
-                Msg::Place { case_id, sealed } if *case_id == c && env.sender == a.caller && e.tag("p") == Some(me.as_str()) => Some(sealed.clone()),
-                _ => None,
-            });
+        // noted by the node the moment it arrived (each responder's is sealed to it alone, and
+        // every responder on the case sees them all)
+        let from_caller = |n: &Node| n.places.get(&c).filter(|p| p.0 == a.caller).map(|p| (p.1.clone(), p.2));
+        let until = Instant::now() + secs(60);
+        while from_caller(&n).is_none() && Instant::now() < until {
+            n.collect(Duration::from_secs(2), |_, _| None::<()>, |_| false);
         }
+        let place_sealed = from_caller(&n).map(|p| p.0);
+        let place_at = from_caller(&n).map(|p| p.1.saturating_duration_since(accept_t));
         let got = place_sealed.clone().and_then(|sealed| {
             let pt = wire::unseal(&n.keys, &wire::xonly(&a.caller)?, format!("{c}/place").as_bytes(), &hex::decode(sealed).ok()?)?;
             let v: serde_json::Value = serde_json::from_slice(&pt).ok()?;

@@ -107,6 +107,9 @@ pub struct Node {
     pub case_keys: HashMap<String, [u8; 32]>,
     /// verified messages not yet asked for
     backlog: VecDeque<(Envelope, Event)>,
+    /// The exact location of each case, sealed to this node, as it arrived: noted the moment it is
+    /// received, whatever the node is busy with (a responder must be able to set out at once)
+    pub places: HashMap<String, (String, String, Instant)>,
     /// every verified message this node has read, in arrival order: replayed by `arb::Replay`
     pub history: Vec<Envelope>,
     /// subscriptions whose messages only go to the history (read by replays), never to the mailbox
@@ -440,6 +443,7 @@ impl Node {
             rpc,
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
+            places: HashMap::new(),
             history: vec![],
             observer: None,
             history_only: Default::default(),
@@ -1111,6 +1115,11 @@ impl Node {
     /// case are dropped, so a flood of well-formed messages nobody acts on cannot grow it without end,
     /// nor push out the messages of the cases this node is working on.
     fn push_backlog(&mut self, env: Envelope, e: Event) {
+        if let Msg::Place { case_id, sealed } = &env.msg {
+            if e.tag("p") == Some(self.me().as_str()) && !self.places.contains_key(case_id.as_str()) {
+                self.places.insert(case_id.to_string(), (env.sender.clone(), sealed.clone(), Instant::now()));
+            }
+        }
         self.backlog.push_back((env, e));
         let kept = &self.kept;
         trim(&mut self.backlog, MAX_BACKLOG, |x| x.0.msg.case_id().is_some_and(|c| kept.contains_key(c)));
