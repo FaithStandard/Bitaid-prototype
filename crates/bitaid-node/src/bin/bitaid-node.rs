@@ -426,7 +426,12 @@ fn pool_member(mut n: Node) -> i32 {
     // review or a spent bond may have changed what the case calls for
     let mut approved: HashMap<(String, bitcoin::Txid, u32), ([u8; 32], u32)> = HashMap::new();
     let mut due_arb_at: HashMap<String, u32> = HashMap::new();
+    // the tip when each case was ruled final here
+    let mut ruled_at: HashMap<String, u32> = HashMap::new();
     const REUSE_BLOCKS: u32 = 6;
+    // how long after a ruling its forfeitures keep the bonds they spend busy, unless all confirm
+    // sooner: a day of blocks, ample to co-sign and confirm them
+    const TAKE_BLOCKS: u32 = 144;
     let mut later_due: HashMap<
         String,
         (
@@ -679,6 +684,7 @@ fn pool_member(mut n: Node) -> i32 {
                         due_arb.insert(c.clone(), list);
                         due_arb_at.insert(c.clone(), n.tip());
                     }
+                    ruled_at.entry(c.clone()).or_insert(n.tip());
                     done.insert(c);
                 }
                 Decision::Escalate(why) => {
@@ -939,7 +945,14 @@ fn pool_member(mut n: Node) -> i32 {
                     accepted.iter().any(|(other, m)| {
                         other != case_id
                             && cosigned.contains(other)
-                            && !done.contains(other)
+                            // open until ruled, and after that until every forfeiture the ruling
+                            // calls for is taken: a forfeiture of that case spends this very output
+                            // (review finding: a bond reused between a ruling and its forfeiture)
+                            && (!done.contains(other)
+                                || (ruled_at.get(other).is_some_and(|h| n.tip() <= h + TAKE_BLOCKS)
+                                    && due_arb.get(other).is_some_and(|l| {
+                                        l.iter().any(|x| n.rpc.confirmations(&x.0) == 0)
+                                    })))
                             && m.values().any(|x| x.bond == mine_b)
                     })
                 });
@@ -1384,7 +1397,9 @@ fn pool_member(mut n: Node) -> i32 {
                         // the entry bond's floor, as the escalator checks it: the case itself is covered
                         // by the seat's case unit (review finding D-13)
                         && u.value.to_sat() >= bitaid_node::sats(ARB_BOND_FLOOR)
-                        && *bond_fallback >= n.rpc.height() + fallback_blocks() / 2)
+                        // judged at the offer's anchored height, so every member and the escalator
+                        // read it the same whenever the offer reaches them
+                        && *bond_fallback >= env.height + fallback_blocks() / 2)
                     .then_some(())
                 })()
                 .is_some();
@@ -3127,9 +3142,12 @@ fn escalate_tier(
         let ok = (|| {
             let b = arb::Bond::from_offer(&offer)?;
             let u = n.rpc.utxo(&b.op)?;
+            // and its fallback far enough ahead of the offer, as every member checks (review finding:
+            // an offer the members refuse stalled the draw)
             (u.script_pubkey == b.tree(&oxo).script_pubkey()
                 && u.value.to_sat() == b.value
-                && b.value >= bitaid_node::sats(ARB_BOND_FLOOR))
+                && b.value >= bitaid_node::sats(ARB_BOND_FLOOR)
+                && b.fallback >= oh + fallback_blocks() / 2)
                 .then_some(b)
         })();
         match ok {

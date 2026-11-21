@@ -344,7 +344,11 @@ pub fn holding_move(
     let (t, _) = holding_tree(oracle, holders, cold)?;
     // what the case is owed to its seizure output; any remainder back under the bond's script
     let outs = match keep {
-        Some((due, back)) if due < value => vec![(due, seizure.clone()), (value - due, back)],
+        // a remainder too small to relay goes with the seizure; a due too small to relay is not
+        // taken (review finding: a sub-dust output made the move unrelayable, and the bond went
+        // back to its owner when the hold ran out)
+        Some((due, back)) if due < bitaid_core::payouts::DUST => vec![(value, back)],
+        Some((due, back)) if due + bitaid_core::payouts::DUST <= value => vec![(due, seizure.clone()), (value - due, back)],
         _ => vec![(value, seizure.clone())],
     };
     let tx = txbuild::payout(
@@ -1678,6 +1682,23 @@ impl Replay {
                 Some(m) => m.0 += v,
                 None => merged.push((v, s)),
             }
+        }
+        // the whole input goes out: the anchor's zero-value output allows no fee at all, and no
+        // output may be too small to relay. Shares below the dust limit, and what integer division
+        // leaves over, go to the largest share (review finding: either made the distribution
+        // unrelayable, and the seizure stranded)
+        let total: u64 = pens.iter().map(|p| p.amount).sum();
+        let mut spare = total.saturating_sub(merged.iter().map(|m| m.0).sum::<u64>());
+        merged.retain(|m| {
+            if m.0 < bitaid_core::payouts::DUST {
+                spare += m.0;
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(big) = merged.iter_mut().max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1))) {
+            big.0 += spare;
         }
         let mut output: Vec<TxOut> = merged
             .iter()
