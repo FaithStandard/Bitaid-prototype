@@ -116,9 +116,32 @@ fn main() {
     rep.check("Seizure output: oracle + 3 of 5 archivists pay reviewers, panel, retention and the excess to the harmed party", r.is_ok(), &reasons(&r));
     rpc.mine(1);
 
-    // ---------------------------------------------------------------- fallback
+    // ---------------------------------------------------------------- the pool's fallback
+    // archivists gone: after the lock the oracle pool alone pays the seizure out, by its replay
     let sop2 = forfeit_once(&mut rep, "A second forfeiture into a fresh seizure output");
-    let mut back = txbuild::payout(sop2, &[(sv, harmed_spk.clone())]);
+    let mut pool = txbuild::payout(sop2, &[(sv, harmed_spk.clone())]);
+    pool.input[0].sequence = Sequence(LOCK);
+    let pl = &seiz.scripts[seizure_leaf::POOL];
+    let dp = txbuild::scriptspend_digest(&pool, 0, &prev, pl);
+    pool.input[0].witness = Witness::from_slice(&[
+        oracle.cosign(&dp).to_vec(),
+        pl.to_bytes(),
+        seiz.control(seizure_leaf::POOL).serialize(),
+    ]);
+    let early = rpc.package(&pool);
+    rep.check(
+        "Fallback: the oracle pool alone is refused before the timelock",
+        early.is_err() && reasons(&early).contains("non-BIP68-final"),
+        &reasons(&early),
+    );
+    rpc.mine(LOCK);
+    let late = rpc.package(&pool);
+    rep.check("Fallback: archivists gone a year — the oracle pool alone pays out the seizure output", late.is_ok(), &reasons(&late));
+    rpc.mine(1);
+
+    // ---------------------------------------------------------------- the parties' last resort
+    let sop3 = forfeit_once(&mut rep, "A third forfeiture into a fresh seizure output");
+    let mut back = txbuild::payout(sop3, &[(sv, harmed_spk.clone())]);
     back.input[0].sequence = Sequence(LOCK);
     let fl = &seiz.scripts[seizure_leaf::FALLBACK];
     let db = txbuild::scriptspend_digest(&back, 0, &prev, fl);
@@ -127,15 +150,23 @@ fn main() {
         fl.to_bytes(),
         seiz.control(seizure_leaf::FALLBACK).serialize(),
     ]);
+    rpc.mine(LOCK);
     let early = rpc.package(&back);
     rep.check(
-        "Fallback: the harmed party alone is refused before the timelock",
-        early.is_err() && reasons(&early).contains("non-BIP68-final"),
+        "Fallback: the parties are refused when only the pool's timelock has passed",
+        early.is_err() && reasons(&early).contains("script-verify"),
         &reasons(&early),
     );
+    back.input[0].sequence = Sequence(2 * LOCK);
+    let db = txbuild::scriptspend_digest(&back, 0, &prev, fl);
+    back.input[0].witness = Witness::from_slice(&[
+        sign_bip340(&harmed, &db).to_vec(),
+        fl.to_bytes(),
+        seiz.control(seizure_leaf::FALLBACK).serialize(),
+    ]);
     rpc.mine(LOCK);
     let late = rpc.package(&back);
-    rep.check("Fallback: no distribution signed in time — the harmed party alone takes the seizure output", late.is_ok(), &reasons(&late));
+    rep.check("Fallback: pool and archivists both gone — the parties take the seizure output last", late.is_ok(), &reasons(&late));
     rpc.mine(1);
 
     println!("{} passed, {} failed", rep.0, rep.1);

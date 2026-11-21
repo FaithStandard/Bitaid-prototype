@@ -134,14 +134,19 @@ pub fn bond_with<C: Verification>(
 pub mod seizure_leaf {
     /// k of the case's archivists + the oracle pool: the distribution of Specification §12.
     pub const DISTRIBUTE: usize = 0;
-    /// The harmed parties' key alone after the relative timelock (one year).
+    /// The case's parties' key, the last resort: after the longest relative timelock a script can
+    /// state (65,535 blocks, about fifteen months), and never before the pool's.
     pub const FALLBACK: usize = 1;
+    /// The oracle pool alone after the relative timelock (one year): if the case's archivists are
+    /// gone, the pool pays out the seizure by its replay of the case, so no party, the penalized
+    /// one included, holds a veto over it.
+    pub const POOL: usize = 2;
 }
 
 /// A case's seizure output (Specification §12, Appendix B.1): seized money that cannot be paid
 /// directly when the forfeiture is pre-signed waits here. Spending it needs two independent groups —
-/// a threshold of the case's archivists and the oracle pool — or, after `relative_lock`, the harmed
-/// parties' (aggregate) key alone.
+/// a threshold of the case's archivists and the oracle pool — or, after `relative_lock`, the oracle
+/// pool alone, or, last, after twice that (at most 65,535 blocks), the parties' (aggregate) key.
 pub fn seizure<C: Verification>(
     secp: &Secp256k1<C>,
     archivists: &KeyPolicy,
@@ -154,7 +159,8 @@ pub fn seizure<C: Verification>(
         nums(),
         vec![
             policy_and(archivists, oracle),
-            after_relative(relative_lock, harmed),
+            after_relative(relative_lock.saturating_mul(2).min(0xffff), harmed),
+            after_relative(relative_lock, oracle),
         ],
     )
 }
