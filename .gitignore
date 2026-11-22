@@ -11,3 +11,4 @@ multilogs/
 arblogs/
 arb_release.txt
 arb_result.txt
+sim/*_results.json
