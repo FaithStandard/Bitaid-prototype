@@ -1,0 +1,80 @@
+{
+ "a_queue_gt_0 | trickle": {
+  "seats_opened": 52,
+  "total_fees_btc": 1.7472,
+  "total_fees_in_t1_panels": 2912.0,
+  "fee_path_x_fee0": {
+   "w0": 1.0,
+   "w4": 1.0,
+   "w13": 1.0,
+   "w26": 1.0,
+   "w51": 1.0,
+   "peak": 1.0
+  }
+ },
+ "a_queue_gt_0 | unfillable": {
+  "seats_opened": 52,
+  "total_fees_btc": 0.0,
+  "total_fees_in_t1_panels": 0.0,
+  "fee_path_x_fee0": {
+   "w0": 1.0,
+   "w4": 1.0,
+   "w13": 1.0,
+   "w26": 1.0,
+   "w51": 1.0,
+   "peak": 1.0
+  }
+ },
+ "a_queue_gt_0 | flood": {
+  "seats_opened": 52,
+  "total_fees_btc": 5.6622,
+  "total_fees_in_t1_panels": 9437.0,
+  "fee_path_x_fee0": {
+   "w0": 1.0,
+   "w4": 1.13,
+   "w13": 1.15,
+   "w26": 1.15,
+   "w51": 1.15,
+   "peak": 1.15
+  }
+ },
+ "b_backlog_gt_T | trickle": {
+  "seats_opened": 0,
+  "total_fees_btc": 1.7472,
+  "total_fees_in_t1_panels": 2912.0,
+  "fee_path_x_fee0": {
+   "w0": 1.0,
+   "w4": 1.0,
+   "w13": 1.0,
+   "w26": 1.0,
+   "w51": 1.0,
+   "peak": 1.0
+  }
+ },
+ "b_backlog_gt_T | unfillable": {
+  "seats_opened": 0,
+  "total_fees_btc": 0.0,
+  "total_fees_in_t1_panels": 0.0,
+  "fee_path_x_fee0": {
+   "w0": 1.0,
+   "w4": 1.0,
+   "w13": 1.0,
+   "w26": 1.0,
+   "w51": 1.0,
+   "peak": 1.0
+  }
+ },
+ "b_backlog_gt_T | flood": {
+  "seats_opened": 52,
+  "total_fees_btc": 5.6622,
+  "total_fees_in_t1_panels": 9437.0,
+  "fee_path_x_fee0": {
+   "w0": 1.0,
+   "w4": 1.13,
+   "w13": 1.15,
+   "w26": 1.15,
+   "w51": 1.15,
+   "peak": 1.15
+  }
+ }
+}

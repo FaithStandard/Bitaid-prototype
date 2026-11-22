@@ -571,6 +571,9 @@ impl Msg {
             // a seat's stake (§10.4): put up by its stake deadline, counted from the block that
             // anchors it (a responder's and an entry bond's forfeitures, tier 0, are not timed)
             Msg::Forfeits { tier, .. } => *tier >= 1 && *tier < 100,
+            // an appeal's draw (§10.4): any party or dissenter who appealed may publish it, and the
+            // first anchored counts, so a party that opens an appeal and stalls is overtaken
+            Msg::Seated { tier, .. } => *tier >= 2 && *tier < 100,
             _ => false,
         }
     }
@@ -734,7 +737,7 @@ pub fn verify(bytes: &[u8]) -> Result<Envelope, String> {
 
 /// Whether a message of this name may be timed (see `Msg::timed`), told from its tag before it is read.
 pub fn timed_name(t: &str) -> bool {
-    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate", "ballot-commit", "ballot-reveal", "forfeits"].contains(&t)
+    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate", "ballot-commit", "ballot-reveal", "forfeits", "seated"].contains(&t)
 }
 
 pub fn b64(b: &[u8]) -> String {

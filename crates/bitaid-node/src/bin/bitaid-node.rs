@@ -450,6 +450,8 @@ fn pool_member(mut n: Node) -> i32 {
     let mut fee_at: HashMap<(String, u32, String), u32> = HashMap::new();
     // the height at which this member saw a tier's last commit: the reveal deadline runs from there
     let mut all_committed_at: HashMap<(String, u32), u32> = HashMap::new();
+    // who may carry each tier: its opener and every party or dissenter who appealed it too
+    let mut carriers: HashMap<(String, u32), std::collections::HashSet<String>> = HashMap::new();
     let mut last_commit_h: HashMap<(String, u32), u32> = HashMap::new();
     let mut deadlock_at: HashMap<String, u32> = HashMap::new();
     let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
@@ -1334,9 +1336,29 @@ fn pool_member(mut n: Node) -> i32 {
                     }
                     continue;
                 }
+                // a further appeal of a tier already opened: its sender may carry the tier, publishing
+                // the draw if the opener does not (review finding: a winner opened the appeal and
+                // stalled it). Its lapse clock starts again for the newcomer
+                if *tier == cur && cur >= 2 && !done.contains(case_id) {
+                    let ok = party
+                        || arb::Replay::build(&n.history, a, r, &n.rpc).is_some_and(|rp| arb::may_appeal(&rp, *tier, &s));
+                    // the tier's draw block runs from its earliest anchored appeal, whichever reached
+                    // this member first
+                    if ok && esc.get(case_id).is_some_and(|x| env.height < x.2) {
+                        esc.insert(case_id.clone(), (*tier, s.clone(), env.height));
+                    }
+                    if ok && carriers.entry((case_id.clone(), *tier)).or_default().insert(s.clone()) {
+                        if let Some(l) = lapse.get_mut(case_id) {
+                            l.0 = Instant::now() + secs(num("--seat-wait", 300u64)) + secs(bitaid_node::slow(600));
+                        }
+                        n.log(&format!("case {}: {} may carry tier {tier} too", bitaid_node::pre(&case_id, 8), bitaid_node::pre(&s, 8)));
+                    }
+                    continue;
+                }
                 if *tier != cur + 1 || !(party || challenger) || done.contains(case_id) {
                     continue;
                 }
+                carriers.entry((case_id.clone(), *tier)).or_default().insert(s.clone());
                 if challenger {
                     n.log(&format!(
                         "case {}: a dissenter of the tier below opens tier {tier}",
@@ -1455,7 +1477,12 @@ fn pool_member(mut n: Node) -> i32 {
                 if *tier > t {
                     later!();
                 }
-                if *tier != t || by != s {
+                // the draw from the opener, or from any party or dissenter who appealed the tier too
+                if *tier != t || (by != s && !carriers.get(&(case_id.clone(), *tier)).is_some_and(|c| c.contains(&s))) {
+                    continue;
+                }
+                // one draw counts; another of the same tier (the same seats, by the rule) adds nothing
+                if panels.contains_key(&(case_id.clone(), *tier)) {
                     continue;
                 }
                 let seen = offers
@@ -2974,6 +3001,11 @@ thread_local! {
     static CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// the escrow of a posting that stood down for another party's, to be let go after the hearing
     static STOOD_DOWN: std::cell::RefCell<Option<arb::Bond>> = const { std::cell::RefCell::new(None) };
+    /// an escalation this node already sent and saw anchored in time (a dissenter's carrying appeal):
+    /// `escalate_tier` counts from it instead of sending a new one, which might anchor too late
+    static SENT_ESC: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// this node carried a tier another appellant opened and never drew
+    static CARRIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A party whose posting stood down asks the pool to let its escrow go, once the case holds no place
@@ -3098,7 +3130,11 @@ fn escalate_tier(
     n.refresh_height();
     // (tier 1 is announced only once the chain shows this party's posting opens the case)
     let esc_msg = Msg::Escalate { case_id: c.clone(), tier, reason: reason.into(), post: post.clone() };
-    let esc_id = if escrow.is_none() { n.send_case(&c, &[], esc_msg.clone(), false) } else { String::new() };
+    let esc_id = if escrow.is_none() {
+        SENT_ESC.with(|x| x.borrow_mut().take()).unwrap_or_else(|| n.send_case(&c, &[], esc_msg.clone(), false))
+    } else {
+        String::new()
+    };
     let h_esc = match &escrow {
         Some(e) => {
             n.rpc.mine(1).ok();
@@ -3178,23 +3214,74 @@ fn escalate_tier(
         CLOSED.with(|x| x.set(true));
         return None;
     }
+    // an appeal someone else anchored first: its draw block is the tier's, and its opener draws.
+    // This party waits for that draw, and carries the tier itself only if none comes (review
+    // finding: the winner below could open the appeal and never draw it)
+    let mut h_esc = h_esc;
+    if tier >= 2 && !review {
+        let me = n.me();
+        let first = n
+            .history
+            .iter()
+            .filter(|e| matches!(&e.msg, Msg::Escalate { case_id, tier: t, .. } if *case_id == c && *t == tier))
+            .map(|e| (e.height, e.sender.clone()))
+            .min();
+        if let Some((h1, who)) = first.filter(|f| f.1 != me && f.0 <= h_esc) {
+            h_esc = h1;
+            let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
+            let until = h1 + bitaid_node::draw_blocks() + bitaid_node::draw_depth() + 2 * grace + 2;
+            n.log(&format!("tier {tier}: {} appealed first; waiting for its draw until block {until}", bitaid_node::pre(&who, 8)));
+            let drawn = |n: &Node| {
+                n.history.iter().any(|e| matches!(&e.msg, Msg::Seated { case_id, tier: t, .. } if *case_id == c && *t == tier))
+            };
+            let cap = Instant::now() + secs(bitaid_node::slow(7200));
+            while !drawn(n) && n.tip() < until && Instant::now() < cap {
+                n.rpc.mine(1).ok();
+                n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
+            }
+            if drawn(n) {
+                n.log(&format!("tier {tier}: drawn by another appellant; following it"));
+                let end = n.tip() + a.template.dispute_blocks + a.template.commit_blocks + 4 * grace;
+                return watch_tier(n, a, tier, end).flatten();
+            }
+            CARRIED.with(|x| x.set(true));
+            n.check(
+                &format!("tier {tier}: the first appellant never drew it; this party carries the tier from its draw block"),
+                true,
+                &format!("block {}", h1 + bitaid_node::draw_blocks()),
+            );
+        }
+    }
     let draw_h = h_esc + bitaid_node::draw_blocks();
     n.log(&format!("ESCALATE tier {tier} ({size} seats): {reason}; drawn from block {draw_h}"));
     let t0 = Instant::now();
     // blind taking: offers name only a bond and a payout address
     let mut offers: Vec<(String, bitcoin::ScriptBuf, arb::Bond)> = vec![];
     let cap = Instant::now() + secs(bitaid_node::slow(3600));
+    // the offers already read first (a party carrying a tier late finds them there), then live ones
+    let mut queued: std::collections::VecDeque<(String, Msg, u32)> = n
+        .history
+        .iter()
+        .filter(|e| matches!(&e.msg, Msg::SeatOffer { case_id, tier: t, .. } if *case_id == c && *t == tier))
+        .map(|e| (e.sender.clone(), e.msg.clone(), e.height))
+        .collect();
     while Instant::now() < cap {
-        if n.tip() >= draw_h {
-            break;
-        }
-        let cc = c.clone();
-        let Some((who, offer, oh)) = n.wait(Duration::from_secs(2), |env, _| match &env.msg {
-            Msg::SeatOffer {
-                case_id, tier: t, ..
-            } if *case_id == cc && *t == tier => Some((env.sender.clone(), env.msg.clone(), env.height)),
-            _ => None,
-        }) else {
+        let item = match queued.pop_front() {
+            Some(x) => Some(x),
+            None => {
+                if n.tip() >= draw_h {
+                    break;
+                }
+                let cc = c.clone();
+                n.wait(Duration::from_secs(2), |env, _| match &env.msg {
+                    Msg::SeatOffer {
+                        case_id, tier: t, ..
+                    } if *case_id == cc && *t == tier => Some((env.sender.clone(), env.msg.clone(), env.height)),
+                    _ => None,
+                })
+            }
+        };
+        let Some((who, offer, oh)) = item else {
             continue;
         };
         // stated at least two blocks before the draw, as every member checks (no lower bound: an offer
@@ -5473,6 +5560,7 @@ fn arbitrator(mut n: Node) -> i32 {
     let mut rosters: HashMap<String, Rostered> = HashMap::new();
     let mut evidence: HashMap<String, Vec<EvidenceItem>> = HashMap::new();
     let mut escalator: HashMap<(String, u32), String> = HashMap::new();
+    let mut appellants: HashMap<(String, u32), std::collections::HashSet<String>> = HashMap::new();
     let mut seated: HashMap<(String, u32), Vec<String>> = HashMap::new();
     let mut commits: HashMap<(String, u32), std::collections::BTreeSet<String>> = HashMap::new();
     let mut reveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
@@ -5500,6 +5588,10 @@ fn arbitrator(mut n: Node) -> i32 {
     let pool_ids: std::collections::HashSet<String> = view.ids.values().cloned().collect();
     // --challenge: tiers this arbitrator dissented on, and when it challenges if no party appeals
     let mut challenge_at: HashMap<(String, u32), u32> = HashMap::new();
+    // tiers a party opened that this dissenter also appealed, so that it can carry them if the opener
+    // never draws (the winner below may open the appeal only to stall it): the escalation's id, and
+    // the block by which the opener's draw must be seen
+    let mut carry_at: HashMap<(String, u32), (String, u32)> = HashMap::new();
     let idle = num("--exit-after", 3600u64);
     let mut last = Instant::now();
     let mut esc_height: HashMap<(String, u32), u32> = HashMap::new();
@@ -5514,13 +5606,82 @@ fn arbitrator(mut n: Node) -> i32 {
             .filter(|(_, h)| tip >= **h)
             .map(|(k, _)| k.clone())
             .collect();
+        // a tier a party opened and this dissenter appealed too: drawn by then, nothing to do; not
+        // drawn, this dissenter carries it from the opener's draw block
+        let tip_c = if carry_at.is_empty() { 0 } else { n.tip() };
+        let carry: Vec<(String, u32)> = carry_at
+            .iter()
+            .filter(|(_, (_, h))| tip_c >= *h)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for (c, tier) in carry {
+            let (id, _) = carry_at.remove(&(c.clone(), tier)).unwrap();
+            let drawn = n.history.iter().any(|e| matches!(&e.msg, Msg::Seated { case_id, tier: t, .. } if *case_id == c && *t == tier));
+            if drawn {
+                n.log(&format!("tier {tier}: drawn by the party that opened it; following it as a seat or not at all"));
+                continue;
+            }
+            let (Some(a), Some(r)) = (alerts.get(&c).cloned(), rosters.get(&c).cloned()) else {
+                continue;
+            };
+            SENT_ESC.with(|x| *x.borrow_mut() = Some(id));
+            CARRIED.with(|x| x.set(false));
+            let v = escalate_tier(&mut n, &a, &view, tier, "dissenter carrying the appeal");
+            let carried = CARRIED.with(|x| x.get());
+            n.check(
+                &format!("tier {tier}: the party that opened it never drew it; carried by this dissenter"),
+                carried,
+                &v.as_ref().map(verdict_classes).unwrap_or("no verdict".into()),
+            );
+            if !carried {
+                continue;
+            }
+            // as for a dissenter's re-roll: once the pool has attested the final outcome, collect the
+            // seizure output as the party that paid for the deciding tier
+            let cc = c.clone();
+            let t = view.t;
+            let mut who = std::collections::HashSet::new();
+            let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
+            let until = n.tip() + a.template.dispute_blocks + 4 * grace + 12;
+            let got = n.collect_until(
+                until,
+                secs(86_400),
+                |env, _| match &env.msg {
+                    Msg::AttestShare { case_id, .. } if *case_id == cc && who.insert(env.sender.clone()) => Some(()),
+                    _ => None,
+                },
+                |v| v.len() >= t,
+            );
+            n.check("the pool attested the final outcome", got.len() >= t, &format!("{} members", got.len()));
+            collect_seizure(&mut n, &a, &r, &view);
+            n.summary();
+        }
         for (c, tier) in due {
             challenge_at.remove(&(c.clone(), tier));
             if escalator.contains_key(&(c.clone(), tier + 1)) {
+                // a party opened the next tier: appeal it too, so that it is carried if that party
+                // never draws it. One anchored message; the opener's draw, if it comes, is followed
+                let id = n.send_case(
+                    &c,
+                    &[],
+                    Msg::Escalate { case_id: c.clone(), tier: tier + 1, reason: "dissenter carrying the appeal".into(), post: String::new() },
+                    false,
+                );
+                let opened = n
+                    .history
+                    .iter()
+                    .filter(|e| matches!(&e.msg, Msg::Escalate { case_id, tier: t, .. } if *case_id == c && *t == tier + 1))
+                    .map(|e| e.height)
+                    .filter(|h| *h > 0)
+                    .min()
+                    .unwrap_or(tip);
+                let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
+                let until = opened + bitaid_node::draw_blocks() + bitaid_node::draw_depth() + 2 * grace + 2;
                 n.log(&format!(
-                    "tier {} opened by a party; no challenge needed",
+                    "tier {} opened by a party; appealing it too, to carry it if it is not drawn by block {until}",
                     tier + 1
                 ));
+                carry_at.insert((c.clone(), tier + 1), (id, until));
                 continue;
             }
             let (Some(a), Some(r)) = (alerts.get(&c).cloned(), rosters.get(&c).cloned()) else {
@@ -5772,6 +5933,8 @@ fn arbitrator(mut n: Node) -> i32 {
                 // 2026-11-19: the second overwrote the first here and the first's seating, the one
                 // the pool follows, was then ignored, so the seat never ruled)
                 if tier >= 2 && !arb::is_review(tier) {
+                    // every appellant may carry the tier: the draw that counts may come from any
+                    appellants.entry((case_id.clone(), tier)).or_default().insert(s.clone());
                     if let Some(h0) = esc_height.get(&(case_id.clone(), tier)) {
                         if *h0 <= env.height {
                             continue;
@@ -5836,7 +5999,15 @@ fn arbitrator(mut n: Node) -> i32 {
                 height,
                 ..
             } => {
-                if escalator.get(&(case_id.clone(), tier)) != Some(&s) {
+                // an appeal's draw counts from any appellant, the first one anchored (it reaches this
+                // node only once anchored), and its publisher carries the tier from then on
+                let key = (case_id.clone(), tier);
+                if tier >= 2 && !arb::is_review(tier) && appellants.get(&key).is_some_and(|x| x.contains(&s)) {
+                    if seated.contains_key(&key) {
+                        continue;
+                    }
+                    escalator.insert(key, s.clone());
+                } else if escalator.get(&key) != Some(&s) {
                     continue;
                 }
                 let refund = bitcoin::ScriptBuf::from_hex(&refund_spk).unwrap_or_default();
@@ -7322,6 +7493,18 @@ fn responder(mut n: Node) -> i32 {
                     verdict = escalate_tier(&mut n, &a, &view, tier, "appeal");
                     continue;
                 }
+                // --stall-appeal (a test): the party the verdict favours opens the appeal itself,
+                // for the price of one record, and never draws it, so that the loser's appeal would be
+                // shut out if one appellant could hold a tier alone
+                if mine_ok && flag("--stall-appeal") && tier < max_tier {
+                    let id = n.send_case(&c, &[], Msg::Escalate { case_id: c.clone(), tier: tier + 1, reason: "stall".into(), post: String::new() }, false);
+                    let h = n.wait_anchored(&id, secs(bitaid_node::slow(1800)));
+                    n.check(
+                        &format!("opened tier {} myself, as the party the verdict favours, and will not draw it (expected for this test)", tier + 1),
+                        h.is_some(),
+                        &h.map(|h| format!("anchored at block {h}")).unwrap_or_default(),
+                    );
+                }
                 // another party may appeal within the window; follow it if so
                 let until = n.tip() + a.template.dispute_blocks + 1;
                 match watch_tier(&mut n, &a, tier + 1, until) {
@@ -7483,10 +7666,19 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
     if flag("--greedy") {
         let mut greedy = dist.clone();
         let total: u64 = greedy.output.iter().map(|o| o.value.to_sat()).sum();
+        // all to one party the log does not pay it all to (when the log itself pays one party
+        // everything, as after a unanimous panel overturned on appeal, another party is the greedy one)
+        let top = dist.output.iter().max_by_key(|o| o.value).map(|o| o.script_pubkey.clone());
+        let grab = r
+            .payout_spks
+            .iter()
+            .find(|s| dist.output.len() > 2 || Some((*s).clone()) != top)
+            .unwrap_or(&r.payout_spks[0])
+            .clone();
         greedy.output = vec![
             bitcoin::TxOut {
                 value: bitcoin::Amount::from_sat(total),
-                script_pubkey: r.payout_spks[0].clone(),
+                script_pubkey: grab,
             },
             bitcoin::TxOut {
                 value: bitcoin::Amount::ZERO,

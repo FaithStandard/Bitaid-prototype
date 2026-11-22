@@ -40,6 +40,9 @@ for i in $(seq 1 ${ARBS:-10}); do
   # CAPTURE=1: a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
   # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
   if [ -n "$CAPTURE" ]; then case $i in 1) extra="--tiers 1,2";; 4|8) extra="--corrupt --tiers 1";; *) extra="--tiers 2";; esac; fi
+  # BLOC=1 (with CAPTURE): arb1 joins the corrupt pair on tier 1, so the captured verdict is unanimous;
+  # the wronged party's appeal overturns it and its tier-2 fees come back from the bloc's forfeitures
+  [ -n "$BLOC" ] && [ -n "$CAPTURE" ] && [ $i = 1 ] && extra="--corrupt --tiers 1"
   # CHALLENGE=1: no party appeals; arb1, the honest dissenter, buys the re-roll and opens tier 2 itself
   [ -n "$CHALLENGE" ] && [ $i = 1 ] && extra="$extra --challenge"
   # (the challenger cannot sit on the tier it opens, so the corrupt pair also serve tier 2: 6 honest of 8)
@@ -75,6 +78,9 @@ R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
 # NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
 [ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
+# STALLAPPEAL=1 (with CAPTURE and CHALLENGE): r1-liar, favoured by the captured tier 1, opens tier 2
+# itself and never draws it; the dissenter, appealing too, must carry the tier from its draw block
+[ -n "$STALLAPPEAL" ] && R1APPEAL="$R1APPEAL --stall-appeal"
 # OMIT=1: r1-liar, escalating, posts a tier commitment that leaves one seat's reveal out; the commitment
 # counting every reveal stands all the same (§10.4)
 [ -n "$OMIT" ] && R1APPEAL="$R1APPEAL --omit-reveal"

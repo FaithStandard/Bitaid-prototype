@@ -558,7 +558,7 @@ impl Node {
             // offers anchored up to two blocks before it, and two periods would come too late, so
             // one anchorer could keep it out of the draw (review finding)
             let p = crate::checkpoint_blocks();
-            let wait = if name == "seat-offer" { p + 2 } else { 2 * p + 2 };
+            let wait = if name == "seat-offer" || name == "seated" { p + 2 } else { 2 * p + 2 };
             self.own_timed.insert(e.id.clone(), (self.rpc.height(), wait));
         }
         e.id
@@ -942,8 +942,15 @@ impl Node {
                     if self.ids.contains(&e.id) || !e.verify() {
                         continue;
                     }
-                    if self.decode(&e).is_some() {
-                        self.arch_ids.insert(e.id.clone());
+                    if let Some(env) = self.decode(&e) {
+                        // older than any relay keeps: no link will bring it, so whoever works the case
+                        // gets it from here (review finding: a node rejoining after a day lost the
+                        // case's alert and roster); a younger one waits for its link, as before
+                        if e.created_at.saturating_add(crate::gossip::KEEP_SECS) < crate::nostr::now() {
+                            self.push_backlog(env, e.clone());
+                        } else {
+                            self.arch_ids.insert(e.id.clone());
+                        }
                         got += 1;
                     }
                 }
@@ -994,6 +1001,22 @@ impl Node {
                 .map(|t| t.case.clone())
                 .collect()
         });
+        // and cases whose incident is on the chain but of which this node holds nothing: a node that
+        // joins, or rejoins, after the relays have let the case's first messages go reads it from
+        // the archive (only nodes following cases ask: pool members, arbitrators, auditors)
+        let known: std::collections::HashSet<String> = self.history.iter().filter_map(|e| e.msg.case_id().map(|c| c.to_string())).collect();
+        let fresh: Vec<String> = self.rpc.ledger(|l| {
+            l.incidents
+                .iter()
+                .filter(|i| i.height >= from && i.height + 3 <= l.tip().unwrap_or(0) && !known.contains(&i.case))
+                // nothing to read where no archivist holds the case (an incident record anyone may
+                // write for a case that never was), or where its log was read already
+                .filter(|i| !self.fetched.contains_key(&i.case))
+                .filter(|i| !self.archive_list.as_ref().is_some_and(|(h, at)| i.height + 3 <= *at && !h.contains(&i.case)))
+                .map(|i| i.case.clone())
+                .collect()
+        });
+        cases.extend(fresh);
         cases.sort();
         cases.dedup();
         cases

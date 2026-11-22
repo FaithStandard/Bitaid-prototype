@@ -955,32 +955,39 @@ impl Replay {
             } else {
                 u32::MAX
             };
-            for e in &mine {
-                let Msg::Escalate { tier, .. } = &e.msg else {
-                    continue;
-                };
-                if *tier != k || e.height > close {
-                    continue;
-                }
+            // every party or dissenter who appealed within the window may carry the tier: the first
+            // to appeal fixes its draw block, and the first draw anchored counts, from whichever of
+            // them published it (review finding: the winner below opened the appeal for the price of
+            // one record and never drew it, and the loser's own appeal was ignored)
+            let mut carriers: Vec<(String, bool)> = vec![];
+            let mut first_h: Option<u32> = None;
+            let mut esc: Vec<&&Envelope> = mine
+                .iter()
+                .filter(|e| matches!(&e.msg, Msg::Escalate { tier, .. } if *tier == k) && e.height <= close)
+                .collect();
+            esc.sort_by(|x, y| (x.height, &x.sender).cmp(&(y.height, &y.sender)));
+            for e in esc {
                 let s = &e.sender;
-                if rp.parties.iter().any(|p| &p.0 == s) {
-                    opener = Some((s.clone(), false));
-                    break;
-                }
-                let Some(pt) = prev.as_ref() else {
-                    continue;
+                let challenger = if rp.parties.iter().any(|p| &p.0 == s) {
+                    false
+                } else {
+                    let dissent = prev.as_ref().and_then(|pt| {
+                        let pv = pt.verdict()?;
+                        Some(pt.reveals.iter().any(|(x, v)| x == s && verdict_key(v) != verdict_key(&pv)))
+                    });
+                    if dissent != Some(true) {
+                        continue;
+                    }
+                    true
                 };
-                let Some(pv) = pt.verdict() else {
+                if carriers.iter().any(|c| &c.0 == s) {
                     continue;
-                };
-                if pt
-                    .reveals
-                    .iter()
-                    .any(|(x, v)| x == s && verdict_key(v) != verdict_key(&pv))
-                {
-                    opener = Some((s.clone(), true));
-                    break;
                 }
+                if opener.is_none() {
+                    opener = Some((s.clone(), challenger));
+                    first_h = Some(e.height);
+                }
+                carriers.push((s.clone(), challenger));
             }
             // tier 1 is opened on the chain, not in the log: by the party whose posting for the case
             // came first in the chain's order, at the height the market took the case up (§10.6)
@@ -1004,19 +1011,23 @@ impl Replay {
             let Some((escalator, challenger)) = opener else {
                 break;
             };
+            if k == 1 {
+                carriers = vec![(escalator.clone(), challenger)];
+            }
             let t = read_tier(
                 &mine,
                 &case,
                 k,
                 &escalator,
                 challenger,
+                &carriers,
                 rp.base_fee,
                 rpc,
                 None,
                 None,
                 a.template.commit_blocks,
                 &oracle,
-                anchor,
+                anchor.or(first_h),
                 a.template.dispute_blocks,
                 rp.seizure_spk().as_ref(),
                 a.template.pots.iter().sum(),
@@ -1063,6 +1074,7 @@ impl Replay {
                 k,
                 conv,
                 false,
+                &[(conv.to_string(), false)],
                 rp.base_fee,
                 rpc,
                 Some(&reg),
@@ -1505,7 +1517,7 @@ impl Replay {
     /// The seizure output's distribution (§12) over the penalties' outputs. No restitution is due when
     /// an appeal corrected a verdict before it paid out, so: half to the vindicated dissenters; then the
     /// appeal subsidy of §10.4, refunding a re-roll's fees to whoever paid them when the verdict it
-    /// re-rolled was contested (none after a unanimous panel); the excess to the party that paid for the
+    /// re-rolled was contested, or, after a unanimous panel, when the re-roll overturned it; the excess to the party that paid for the
     /// tier that overturned a verdict, or, if none was overturned, to the case's archivists.
     pub fn distribution(&self, pens: &[Penalty]) -> Option<(Transaction, Vec<TxOut>)> {
         let spk = self.seizure_spk()?;
@@ -1588,7 +1600,15 @@ impl Replay {
             (None, true)
         };
         for (k, t) in &self.tiers {
-            if *k < 2 || !t.fee_paid || left == 0 || !before(*k).1 {
+            if *k < 2 || !t.fee_paid || left == 0 {
+                continue;
+            }
+            // after a unanimous panel the appeal is refunded only if it overturned that panel's
+            // verdict: a bloc holding every seat then pays for its own correction, so a wronged party
+            // appeals at no cost (review E2g: the bloc profits while appeals are left to the loser's
+            // purse)
+            let (prior, split) = before(*k);
+            if !split && prior.map(|v| verdict_key(&v) == fk).unwrap_or(true) {
                 continue;
             }
             // a dissenter's fees are refunded only if the larger panel agreed with it
@@ -2195,6 +2215,9 @@ fn read_tier(
     k: u32,
     escalator: &str,
     challenger: bool,
+    // who may publish the tier's draw: the escalator, and for an appeal every party or dissenter who
+    // appealed in time (with whether it is a dissenter); the first draw anchored counts
+    carriers: &[(String, bool)],
     base_fee: u64,
     rpc: &Rpc,
     registry: Option<&HashMap<String, Bond>>,
@@ -2245,7 +2268,15 @@ fn read_tier(
             _ => {}
         }
     }
-    for e in mine {
+    // the draws published, earliest anchored first (ties by sender): the first valid one counts, and
+    // its publisher carries the tier, paying its seats and taking any refund
+    let mut drawn: Vec<&&Envelope> = mine
+        .iter()
+        .filter(|e| matches!(&e.msg, Msg::Seated { tier, .. } if *tier == k) && carriers.iter().any(|c| c.0 == e.sender))
+        .collect();
+    drawn.sort_by(|x, y| (x.height, &x.sender).cmp(&(y.height, &y.sender)));
+    let mut carrier: Option<(String, bool)> = None;
+    for e in drawn {
         if let Msg::Seated {
             tier,
             height,
@@ -2255,7 +2286,7 @@ fn read_tier(
             ..
         } = &e.msg
         {
-            if *tier != k || e.sender != escalator || !t.seats.is_empty() {
+            if *tier != k || !t.seats.is_empty() {
                 continue;
             }
             // a tier's draw block is draw_blocks() after its escalation, as live members check it (D-1);
@@ -2283,6 +2314,7 @@ fn read_tier(
             {
                 t.seats = seats.clone();
                 t.listed = offers.clone();
+                carrier = carriers.iter().find(|c| c.0 == e.sender).cloned();
                 for x in seats {
                     t.seat_height.insert(x.clone(), *height);
                 }
@@ -2292,6 +2324,11 @@ fn read_tier(
             }
         }
     }
+    // whoever published the draw that counts carries the tier from here: its fees, its replacements
+    let carried = carrier.unwrap_or((escalator.to_string(), challenger));
+    t.escalator = carried.0.clone();
+    t.challenger = carried.1;
+    let escalator: &str = &carried.0;
     // each seat's deadline runs from the block confirming its fee, as live members judge it (§10.4)
     let fee_amt = if payer.is_some() {
         base_fee
@@ -2813,6 +2850,15 @@ pub struct TierLog {
     pub review: bool,
     /// a confirmed review: from this height the case stands on this verdict
     pub overturn: Option<Ballot>,
+}
+
+/// Whether `who` may appeal tier `k-1` into tier `k`, and so carry tier `k`: a party to the case, or an
+/// arbitrator of tier `k-1` whose revealed verdict differs from that tier's (a dissenter, §10.4).
+pub fn may_appeal(rp: &Replay, k: u32, who: &str) -> bool {
+    rp.parties.iter().any(|p| p.0 == who)
+        || rp.tiers.get(&(k - 1)).is_some_and(|pt| {
+            pt.verdict().is_some_and(|pv| pt.reveals.iter().any(|(x, v)| x == who && verdict_key(v) != verdict_key(&pv)))
+        })
 }
 
 /// Whether an escalation to tier `k` anchored at `h` came after the escalation window of the tier
