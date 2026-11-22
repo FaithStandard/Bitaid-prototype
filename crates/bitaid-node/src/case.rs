@@ -324,6 +324,15 @@ pub fn parties_key(a: &Alerted, r: &Rostered) -> bitcoin::XOnlyPublicKey {
     bitcoin::XOnlyPublicKey::from_slice(&p.serialize_xonly()).expect("x-only")
 }
 
+/// The parties' keys one by one (x-only), for the seizure output's pool leaf: the pool with a
+/// majority of them (§12, B.1).
+pub fn party_keys(a: &Alerted, r: &Rostered) -> Vec<bitcoin::XOnlyPublicKey> {
+    signers(a, r)
+        .iter()
+        .filter_map(|p| bitcoin::XOnlyPublicKey::from_slice(&p.serialize_xonly()).ok())
+        .collect()
+}
+
 pub fn pot_spk(a: &Alerted, r: &Rostered) -> ScriptBuf {
     bitaid_core::musig::pot_script_pubkey(&bitaid_core::musig::taproot_ctx(&signers(a, r)))
 }

@@ -137,21 +137,24 @@ pub mod seizure_leaf {
     /// The case's parties' key, the last resort: after the longest relative timelock a script can
     /// state (65,535 blocks, about fifteen months), and never before the pool's.
     pub const FALLBACK: usize = 1;
-    /// The oracle pool alone after the relative timelock (one year): if the case's archivists are
-    /// gone, the pool pays out the seizure by its replay of the case, so no party, the penalized
-    /// one included, holds a veto over it.
+    /// The oracle pool with a majority of the case's parties, after the relative timelock (one
+    /// year): if the case's archivists are gone, the pool pays out the seizure by its replay of the
+    /// case, so no single party, the penalized one included, holds a veto over it; and the pool never
+    /// spends alone, so even a captured majority of it cannot pay the seizure to itself.
     pub const POOL: usize = 2;
 }
 
 /// A case's seizure output (Specification §12, Appendix B.1): seized money that cannot be paid
 /// directly when the forfeiture is pre-signed waits here. Spending it needs two independent groups —
 /// a threshold of the case's archivists and the oracle pool — or, after `relative_lock`, the oracle
-/// pool alone, or, last, after twice that (at most 65,535 blocks), the parties' (aggregate) key.
+/// pool with a majority of the case's parties (`parties`), or, last, after twice that (at most
+/// 65,535 blocks), the parties' (aggregate) key.
 pub fn seizure<C: Verification>(
     secp: &Secp256k1<C>,
     archivists: &KeyPolicy,
     oracle: &XOnlyPublicKey,
     harmed: &XOnlyPublicKey,
+    parties: &KeyPolicy,
     relative_lock: u32,
 ) -> ScriptTree {
     ScriptTree::new(
@@ -160,7 +163,7 @@ pub fn seizure<C: Verification>(
         vec![
             policy_and(archivists, oracle),
             after_relative(relative_lock.saturating_mul(2).min(0xffff), harmed),
-            after_relative(relative_lock, oracle),
+            crate::scripts::after_relative_script(relative_lock, &policy_and(parties, oracle)),
         ],
     )
 }

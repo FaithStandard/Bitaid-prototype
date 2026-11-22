@@ -264,6 +264,7 @@ pub fn seizure_tree(
     archivists: &[String],
     oracle: &XOnlyPublicKey,
     parties: &XOnlyPublicKey,
+    party_keys: &[XOnlyPublicKey],
 ) -> Option<(ScriptTree, KeyPolicy)> {
     let mut ks: Vec<XOnlyPublicKey> = archivists.iter().filter_map(|a| wire::xonly(a)).collect();
     ks.sort();
@@ -273,9 +274,17 @@ pub fn seizure_tree(
     }
     let pol = KeyPolicy::of(ks.len() / 2 + 1, ks);
     let secp = Secp256k1::verification_only();
-    // after the lock, the case's parties together (their aggregate key), never one archivist
+    // after the lock, the pool with a majority of the parties; last, the parties together (their
+    // aggregate key), never one archivist, and never the pool alone
+    let mut pk: Vec<XOnlyPublicKey> = party_keys.to_vec();
+    pk.sort();
+    pk.dedup();
+    if pk.is_empty() {
+        pk.push(*parties);
+    }
+    let pp = KeyPolicy::of(pk.len() / 2 + 1, pk);
     Some((
-        outputs::seizure(&secp, &pol, oracle, parties, SEIZURE_LOCK),
+        outputs::seizure(&secp, &pol, oracle, parties, &pp, SEIZURE_LOCK),
         pol,
     ))
 }
@@ -742,6 +751,8 @@ pub struct Replay {
     pub archivists: Vec<String>,
     /// the case's parties' aggregate key: the seizure output's fallback
     pub parties_key: XOnlyPublicKey,
+    /// the parties' keys one by one (the seizure output's pool leaf)
+    pub party_keys: Vec<XOnlyPublicKey>,
     /// the parties: caller and seats, with the seats' payout scripts
     pub parties: Vec<(String, Option<ScriptBuf>)>,
     pub tiers: BTreeMap<u32, Tier>,
@@ -876,6 +887,7 @@ impl Replay {
             oracle,
             archivists: r.archivists.clone(),
             parties_key: crate::case::parties_key(a, r),
+            party_keys: crate::case::party_keys(a, r),
             parties,
             tiers: BTreeMap::new(),
             reviews: BTreeMap::new(),
@@ -1148,7 +1160,7 @@ impl Replay {
     }
 
     pub fn seizure_spk(&self) -> Option<ScriptBuf> {
-        seizure_tree(&self.archivists, &self.oracle, &self.parties_key).map(|t| t.0.script_pubkey())
+        seizure_tree(&self.archivists, &self.oracle, &self.parties_key, &self.party_keys).map(|t| t.0.script_pubkey())
     }
 
     /// The review draw of a closed case (§10.3): the block whose hash seeds it, and whether it selected
@@ -2161,7 +2173,7 @@ impl Replay {
         prev: &[TxOut],
         i: usize,
     ) -> Option<[u8; 32]> {
-        let (t, _) = seizure_tree(&self.archivists, &self.oracle, &self.parties_key)?;
+        let (t, _) = seizure_tree(&self.archivists, &self.oracle, &self.parties_key, &self.party_keys)?;
         Some(txbuild::scriptspend_digest(
             tx,
             i,
@@ -2178,7 +2190,7 @@ impl Replay {
         osig: &[u8; 64],
         arch: &HashMap<XOnlyPublicKey, Vec<u8>>,
     ) -> Option<()> {
-        let (t, pol) = seizure_tree(&self.archivists, &self.oracle, &self.parties_key)?;
+        let (t, pol) = seizure_tree(&self.archivists, &self.oracle, &self.parties_key, &self.party_keys)?;
         let mut items: Vec<Vec<u8>> = vec![osig.to_vec()];
         if pol.devices.len() == 1 {
             items.push(arch.get(&pol.devices[0])?.clone());

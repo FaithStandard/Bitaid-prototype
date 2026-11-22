@@ -1091,7 +1091,7 @@ fn pool_member(mut n: Node) -> i32 {
                         continue;
                     }
                     // every seat has pre-signed its loser-pays forfeiture (§9) before the pots exist
-                    let seizure = arb::seizure_tree(&r.archivists, &wire::xonly(&a.oracle_key).unwrap(), &case::parties_key(a, r))
+                    let seizure = arb::seizure_tree(&r.archivists, &wire::xonly(&a.oracle_key).unwrap(), &case::parties_key(a, r), &case::party_keys(a, r))
                         .map(|t| t.0.script_pubkey());
                     let fee = arb::loser_fee(a);
                     let acc_map = accepted.get(case_id).cloned().unwrap_or_default();
@@ -3426,7 +3426,7 @@ fn escalate_tier(
     let fee = bitaid_node::arb::seat_fee(a.template.arb_fee, tier);
     let r_last = arb::pinned_roster(&n.history, a, &n.rpc);
     let seizure = r_last.as_ref().and_then(|r| {
-        arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r)).map(|t| t.0.script_pubkey())
+        arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r), &case::party_keys(a, r)).map(|t| t.0.script_pubkey())
     });
     let mut stakes: HashMap<String, (arb::Bond, String)> = HashMap::new();
     // per seat, the height its commit deadline counts from: the block that confirmed its fee (a
@@ -4160,7 +4160,7 @@ fn take_seat(
         fallback: k.bf,
         payout: k.payout.clone(),
     };
-    let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r)) else {
+    let Some((st, _)) = arb::seizure_tree(&r.archivists, &oxo, &case::parties_key(a, r), &case::party_keys(a, r)) else {
         n.log("case names no archivists; no seizure output to forfeit to");
         return None;
     };
@@ -7356,7 +7356,7 @@ fn responder(mut n: Node) -> i32 {
                 payout: payout.clone(),
             };
             if let Some((st, _)) =
-                arb::seizure_tree(&r.archivists, &wire::xonly(&okey).unwrap(), &case::parties_key(&a, &r))
+                arb::seizure_tree(&r.archivists, &wire::xonly(&okey).unwrap(), &case::parties_key(&a, &r), &case::party_keys(&a, &r))
             {
                 // and, apart from it, the forfeitures a panel's fault finding takes (§11.8): a quarter
                 // of the bond for a lapse, the whole for misconduct

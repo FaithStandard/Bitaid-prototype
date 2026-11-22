@@ -4,7 +4,8 @@
 //! harmed party directly and everything else to the case's seizure output. The seizure output is then
 //! distributed only by the oracle pool together with a majority of the case's archivists: neither
 //! group alone, and not too few archivists, can move it. If no distribution is signed in time, the
-//! harmed party's key alone takes it after the relative timelock (one year in the protocol; 10 blocks here).
+//! oracle pool with a majority of the case's parties pays it out after the relative timelock (one year
+//! in the protocol; 10 blocks here), never the pool alone; last, after twice that, the parties' key.
 mod common;
 use bitaid_core::oracle::{random_scalar, sign_bip340, Oracle};
 use bitaid_core::outputs::{self, bond_leaf, seizure_leaf};
@@ -26,7 +27,9 @@ fn main() {
     let archivists: Vec<Scalar> = (0..5).map(|_| random_scalar()).collect();
     let apol = KeyPolicy::of(3, archivists.iter().map(xo).collect());
     let harmed = random_scalar();
-    let seiz = outputs::seizure(&secp, &apol, &ox, &xo(&harmed), LOCK);
+    let parties: Vec<Scalar> = (0..3).map(|_| random_scalar()).collect();
+    let ppol = KeyPolicy::of(2, parties.iter().map(xo).collect());
+    let seiz = outputs::seizure(&secp, &apol, &ox, &xo(&harmed), &ppol, LOCK);
     let harmed_spk = rpc.new_spk();
 
     // ---------------------------------------------------------------- an arbitrator's bond, forfeited
@@ -117,26 +120,55 @@ fn main() {
     rpc.mine(1);
 
     // ---------------------------------------------------------------- the pool's fallback
-    // archivists gone: after the lock the oracle pool alone pays the seizure out, by its replay
+    // archivists gone: after the lock the oracle pool pays the seizure out by its replay, with a
+    // majority of the case's parties, so neither one holdout party nor a captured pool alone decides
     let sop2 = forfeit_once(&mut rep, "A second forfeiture into a fresh seizure output");
     let mut pool = txbuild::payout(sop2, &[(sv, harmed_spk.clone())]);
     pool.input[0].sequence = Sequence(LOCK);
-    let pl = &seiz.scripts[seizure_leaf::POOL];
-    let dp = txbuild::scriptspend_digest(&pool, 0, &prev, pl);
-    pool.input[0].witness = Witness::from_slice(&[
-        oracle.cosign(&dp).to_vec(),
-        pl.to_bytes(),
-        seiz.control(seizure_leaf::POOL).serialize(),
-    ]);
+    let pl = seiz.scripts[seizure_leaf::POOL].clone();
+    let pctl = seiz.control(seizure_leaf::POOL).serialize();
+    let dp = txbuild::scriptspend_digest(&pool, 0, &prev, &pl);
+    let pwit = |orc: bool, signers: &[usize]| {
+        let mut items: Vec<Vec<u8>> = vec![if orc { oracle.cosign(&dp).to_vec() } else { vec![] }];
+        for i in (0..3).rev() {
+            items.push(if signers.contains(&i) { sign_bip340(&parties[i], &dp).to_vec() } else { vec![] });
+        }
+        items.push(pl.to_bytes());
+        items.push(pctl.clone());
+        Witness::from_slice(&items)
+    };
+    pool.input[0].witness = pwit(true, &[0, 2]);
     let early = rpc.package(&pool);
     rep.check(
-        "Fallback: the oracle pool alone is refused before the timelock",
+        "Fallback: the oracle pool with 2 of 3 parties is refused before the timelock",
         early.is_err() && reasons(&early).contains("non-BIP68-final"),
         &reasons(&early),
     );
     rpc.mine(LOCK);
+    pool.input[0].witness = pwit(true, &[]);
+    let r = rpc.package(&pool);
+    rep.check(
+        "Fallback: after the timelock the oracle pool alone is still refused (a captured pool cannot pay itself)",
+        r.is_err() && reasons(&r).contains("script-verify"),
+        &reasons(&r),
+    );
+    pool.input[0].witness = pwit(true, &[1]);
+    let r = rpc.package(&pool);
+    rep.check(
+        "Fallback: the oracle pool with 1 of 3 parties is refused",
+        r.is_err() && reasons(&r).contains("script-verify"),
+        &reasons(&r),
+    );
+    pool.input[0].witness = pwit(false, &[0, 1, 2]);
+    let r = rpc.package(&pool);
+    rep.check(
+        "Fallback: every party without the oracle pool is refused before the parties' own lock",
+        r.is_err() && reasons(&r).contains("script-verify"),
+        &reasons(&r),
+    );
+    pool.input[0].witness = pwit(true, &[0, 2]);
     let late = rpc.package(&pool);
-    rep.check("Fallback: archivists gone a year — the oracle pool alone pays out the seizure output", late.is_ok(), &reasons(&late));
+    rep.check("Fallback: archivists gone a year — the oracle pool with 2 of 3 parties pays out the seizure output (one holdout cannot stop it)", late.is_ok(), &reasons(&late));
     rpc.mine(1);
 
     // ---------------------------------------------------------------- the parties' last resort

@@ -92,6 +92,13 @@ pub fn after_relative(n: u32, x: &XOnlyPublicKey) -> ScriptBuf {
         .into_script()
 }
 
+/// `script` behind a relative timelock of `n` blocks: `<n> OP_CSV OP_DROP <script>`.
+pub fn after_relative_script(n: u32, script: &ScriptBuf) -> ScriptBuf {
+    let mut v = Builder::new().push_int(n as i64).push_opcode(OP_CSV).push_opcode(OP_DROP).into_script().into_bytes();
+    v.extend_from_slice(script.as_bytes());
+    ScriptBuf::from_bytes(v)
+}
+
 /// Pay-to-anchor output script (`OP_1 <0x4e73>`), for zero-fee version-3 transactions.
 pub fn p2a() -> ScriptBuf {
     ScriptBuf::from_bytes(vec![0x51, 0x02, 0x4e, 0x73])
