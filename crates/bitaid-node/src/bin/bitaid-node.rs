@@ -3959,6 +3959,25 @@ fn watch_tier(n: &mut Node, a: &Alerted, tier: u32, until: u32) -> Option<Option
         |v| v.iter().flatten().count() >= seats.len() || v.iter().any(|x| x.is_none()),
     );
     let votes: Vec<Ballot> = got.into_iter().flatten().collect();
+    // the tier is decided by its commitment on chain and the reveals it counts, as every pool member
+    // replays it, not by what this node's links happened to carry: a reveal missed live (a link down,
+    // a device asleep: the tablet in the 2026-11-22 public run read a tier with seven reveals as hung)
+    // is read from the archive, and the replay waits for the commitment before deciding
+    let cap = Instant::now() + secs(num("--verdict-wait", 600u64));
+    loop {
+        let decided = arb::pinned_roster(&n.history, a, &n.rpc)
+            .and_then(|r| arb::Replay::build(&n.history, a, &r, &n.rpc))
+            .and_then(|rp| rp.tiers.get(&tier).filter(|t| t.committed).map(|t| t.verdict()));
+        if let Some(v) = decided {
+            return Some(v);
+        }
+        if Instant::now() >= cap {
+            break;
+        }
+        n.sync_cases();
+        n.collect(Duration::from_secs(10), |_, _| None::<()>, |_| false);
+    }
+    n.log(&format!("tier {tier}: no commitment on chain by the end of the wait; deciding from the reveals received"));
     Some(bitaid_node::arb::supermajority(seats.len(), &votes))
 }
 
