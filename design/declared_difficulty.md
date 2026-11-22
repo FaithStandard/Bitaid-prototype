@@ -1,7 +1,7 @@
 # Design note: arbitrators declare a case's difficulty with their vote
 
-Status: idea (Albert, 2026-11-22). The self-declared form below was simulated (`sim/e2j_declared_difficulty.py`)
-and fails; the form that survives is difficulty judged by whoever overturns, at the end.
+Status: idea (Albert, 2026-11-22). Closed: both forms were simulated and fail (`sim/e2j_declared_difficulty.py`,
+`sim/e2k_overturn_difficulty.py`); see the last section for why, and what it teaches.
 
 ## Why it matters
 
@@ -81,3 +81,25 @@ which is the irreducible limit. To simulate before adoption: the bloc's net and 
 the overturning panel judging difficulty with noise; and whether a captured larger panel could
 label an honest panel's verdict "easy" to seize its units (that larger panel must already be
 captured to overturn, so the new harm is the size of the seizure, which needs bounding).
+
+## Simulated (E2k, 2026-11-22): difficulty judged by the overturning panel also fails
+
+- Against the bloc it only moves the defections: on easy cases the bloc now loses about 4V per
+  defection, so it defects on ordinary and hard cases instead and keeps +0.01 to +0.05 V, as before.
+- It ruins honest arbitrators. Honest panels are unanimously wrong, and then rated easy, on about
+  0.04% of cases at 95% accuracy and 0.25% at 85%. Each such case costs 2V, and V is about 5,000
+  times the seat fee for a 1 BTC case, so honest income of +0.2 fees a case turns into −3.5 (95%)
+  to −25 (85%). Capping the seizure at 0.5V still leaves it negative at V = 1 BTC.
+- (A captured tier 2 labelling an honest verdict easy matters less than the run shows: penalties
+  are taken only on the final ruling, the honest dissenters would re-roll to tier 3, and a 20% bloc
+  holds 10 of 15 there about 5 times in 100,000.)
+
+## What it teaches
+
+No penalty sized to the case value can be triggered by anything an honest panel does with a
+probability above about fee ÷ V (1 in 5,000 for a 1 BTC case at today's fee): honest income cannot
+absorb it. Case units are taken today only on a confirmed staged-review overturn, which requires many
+independent reviewers to agree, and that is why they are safe for the honest. The lever against a
+bloc is therefore the review's power, not new seizure triggers: see the requested comparison of
+review rules (pooled two thirds of 90, two of three stages, three stages at 60%), which trades some
+of the review's large safety margin for power.
