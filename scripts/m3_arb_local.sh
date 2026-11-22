@@ -40,6 +40,9 @@ for i in $(seq 1 ${ARBS:-10}); do
   # CAPTURE=1: a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
   # serve tier 1; arb1 and the six other honest arbitrators serve tier 2
   if [ -n "$CAPTURE" ]; then case $i in 1) extra="--tiers 1,2";; 4|8) extra="--corrupt --tiers 1";; *) extra="--tiers 2";; esac; fi
+  # BLOC=1 (with CAPTURE): arb1 joins the corrupt pair on tier 1, so the captured verdict is unanimous;
+  # the wronged party's appeal overturns it and its tier-2 fees come back from the bloc's forfeitures
+  [ -n "$BLOC" ] && [ -n "$CAPTURE" ] && [ $i = 1 ] && extra="--corrupt --tiers 1"
   # CHALLENGE=1: no party appeals; arb1, the honest dissenter, buys the re-roll and opens tier 2 itself
   [ -n "$CHALLENGE" ] && [ $i = 1 ] && extra="$extra --challenge"
   # (the challenger cannot sit on the tier it opens, so the corrupt pair also serve tier 2: 6 honest of 8)

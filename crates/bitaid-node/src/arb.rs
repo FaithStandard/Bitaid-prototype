@@ -1517,7 +1517,7 @@ impl Replay {
     /// The seizure output's distribution (§12) over the penalties' outputs. No restitution is due when
     /// an appeal corrected a verdict before it paid out, so: half to the vindicated dissenters; then the
     /// appeal subsidy of §10.4, refunding a re-roll's fees to whoever paid them when the verdict it
-    /// re-rolled was contested (none after a unanimous panel); the excess to the party that paid for the
+    /// re-rolled was contested, or, after a unanimous panel, when the re-roll overturned it; the excess to the party that paid for the
     /// tier that overturned a verdict, or, if none was overturned, to the case's archivists.
     pub fn distribution(&self, pens: &[Penalty]) -> Option<(Transaction, Vec<TxOut>)> {
         let spk = self.seizure_spk()?;
@@ -1600,7 +1600,15 @@ impl Replay {
             (None, true)
         };
         for (k, t) in &self.tiers {
-            if *k < 2 || !t.fee_paid || left == 0 || !before(*k).1 {
+            if *k < 2 || !t.fee_paid || left == 0 {
+                continue;
+            }
+            // after a unanimous panel the appeal is refunded only if it overturned that panel's
+            // verdict: a bloc holding every seat then pays for its own correction, so a wronged party
+            // appeals at no cost (review E2g: the bloc profits while appeals are left to the loser's
+            // purse)
+            let (prior, split) = before(*k);
+            if !split && prior.map(|v| verdict_key(&v) == fk).unwrap_or(true) {
                 continue;
             }
             // a dissenter's fees are refunded only if the larger panel agreed with it
