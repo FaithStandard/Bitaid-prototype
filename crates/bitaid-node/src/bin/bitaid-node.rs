@@ -7666,10 +7666,19 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
     if flag("--greedy") {
         let mut greedy = dist.clone();
         let total: u64 = greedy.output.iter().map(|o| o.value.to_sat()).sum();
+        // all to one party the log does not pay it all to (when the log itself pays one party
+        // everything, as after a unanimous panel overturned on appeal, another party is the greedy one)
+        let top = dist.output.iter().max_by_key(|o| o.value).map(|o| o.script_pubkey.clone());
+        let grab = r
+            .payout_spks
+            .iter()
+            .find(|s| dist.output.len() > 2 || Some((*s).clone()) != top)
+            .unwrap_or(&r.payout_spks[0])
+            .clone();
         greedy.output = vec![
             bitcoin::TxOut {
                 value: bitcoin::Amount::from_sat(total),
-                script_pubkey: r.payout_spks[0].clone(),
+                script_pubkey: grab,
             },
             bitcoin::TxOut {
                 value: bitcoin::Amount::ZERO,
