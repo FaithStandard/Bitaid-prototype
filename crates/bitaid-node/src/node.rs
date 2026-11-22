@@ -125,7 +125,9 @@ pub struct Node {
     /// checkpoint roots whose list this node has read
     roots: std::collections::HashSet<String>,
     /// this node's own timed messages not yet anchored: id -> the chain height when sent
-    own_timed: HashMap<String, u32>,
+    /// this node's own timed messages: the tip when sent, and how long it waits before anchoring
+    /// one the checkpoints left out
+    own_timed: HashMap<String, (u32, u32)>,
     /// ids this node has put in an anchor of its own, and the chain height when it did
     anchoring: HashMap<String, u32>,
     /// a pool member anchors checkpoints of what it holds: (its turn, of how many)
@@ -552,7 +554,12 @@ impl Node {
         self.client.publish(&e);
         self.last_sent = Instant::now();
         if timed {
-            self.own_timed.insert(e.id.clone(), self.rpc.height());
+            // a seat offer anchors itself as soon as one checkpoint has left it out: its draw counts
+            // offers anchored up to two blocks before it, and two periods would come too late, so
+            // one anchorer could keep it out of the draw (review finding)
+            let p = crate::checkpoint_blocks();
+            let wait = if name == "seat-offer" { p + 2 } else { 2 * p + 2 };
+            self.own_timed.insert(e.id.clone(), (self.rpc.height(), wait));
         }
         e.id
     }
@@ -635,8 +642,8 @@ impl Node {
             }
         }
         // this node's own, left out for two periods
-        for (id, at) in &self.own_timed {
-            if tip.saturating_sub(*at) >= 2 * period + 2 && !self.anchoring.contains_key(id) && !leaves.contains(id) {
+        for (id, (at, wait)) in &self.own_timed {
+            if tip.saturating_sub(*at) >= *wait && !self.anchoring.contains_key(id) && !leaves.contains(id) {
                 leaves.push(id.clone());
             }
         }
