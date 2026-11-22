@@ -63,6 +63,37 @@ prices its own stake and raises it while its slots stay full, so a lasting eclip
 without putting real stake at risk in cases. Eviction, if any, should pick among bare link stakes only,
 at random, never by idleness.
 
+### Slots by tier (proposed by Albert, 2026-11-22)
+
+A Core sorts incoming links by what their stake shows, and gives each tier its own share of the slots,
+so a crowd in one tier can never take the slots of another:
+
+| Tier | Stake proven | Example share of 64 slots |
+| --- | --- | --- |
+| Protocol | an output the protocol itself recognises: a responder's, arbitrator's or archivist's bond, a caller's funding output, a Core's relay stake | 48 |
+| Link | a bare link stake (20,000 sats today), nothing else | 12 |
+| Open | proof still pending (the 10 s window) | 4 |
+
+Within a tier, a full tier refuses newcomers or replaces one of its own links at random; it never
+reaches into another tier. A watcher who only wants to look in gets one of the few link slots, and a
+thousand watchers' stakes still fill only those few: the responders, callers and arbitrators keep
+theirs. To crowd the protocol tier, an attacker must post real bonds that the chain shows to be bonds,
+two links per bond, each bond at risk in cases if used, and at 0.1 BTC per arbitrator bond 24 of them
+cost 2.4 BTC per Core, multiplied by every Core the victims also link to.
+
+Why tiers and not ranking by stake size: if a larger stake could displace a smaller one, a rich
+attacker would push out the honest by outbidding them, which is the attack again, bought with capital
+that is returned. Size decides the tier, never the order inside it.
+
+Questions for the design:
+- Privacy: proving a link with a role's bond tells the Core which bond is behind that link, so it
+  learns which responder is listening through it (over Tor it still never learns where). A
+  responder's key could sign a link key for the epoch, with the bond's scoped key, so the Core learns
+  "a bonded responder" without the bond being reused in the clear; or the Core learns it and is bound
+  not to tell (weaker).
+- How a phone with no bond yet (a new caller before funding) enters: through the link tier, as today.
+- The shares, per Core, set by each Core within limits the specification gives.
+
 ## Questions for the design
 
 - Is Tor's defense enough, or should the Core's own handshake also carry a puzzle (for Cores reached
