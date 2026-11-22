@@ -1,7 +1,7 @@
 # Design note: arbitrators declare a case's difficulty with their vote
 
-Status: idea (Albert, 2026-11-22), weighed here; not designed or built. To be simulated before any
-specification change.
+Status: idea (Albert, 2026-11-22). The self-declared form below was simulated (`sim/e2j_declared_difficulty.py`)
+and fails; the form that survives is difficulty judged by whoever overturns, at the end.
 
 ## Why it matters
 
@@ -54,3 +54,30 @@ finds easy, has declared something no honest panel would. That divergence can we
   (E2g/E2h) and against honest error.
 - Interaction with the canon's *uncertain* flag, which is a difficulty statement fixed in advance by
   the canon rather than declared per case.
+
+## Simulated (E2j, 2026-11-22): the self-declared menu fails
+
+The independent reviewer found, and the run confirms, that "easy" is dominated: it pays the same as
+"ordinary" and costs the case units on any overturn. Honest arbitrators who use it with 70–80%
+rating accuracy lose their unit on about 1% of cases (−85 to −96 fees per case at V = 1 BTC); one
+who avoids it does fine. The bloc simply declares "ordinary" (or "hard" on hard cases) and keeps
+its +0.03 to +0.05 V. A menu helps against the bloc only if its best entry is worse for the bloc than
+today's rules, and "ordinary" *is* today's rules. Self-declaration is dropped.
+
+## What survives: difficulty judged by whoever overturns
+
+The divergence point above needs no self-declaration. When a unanimous verdict is overturned, the
+deciders of the overturn (the larger panel on appeal, the reviewers on review) say whether the
+question was hard. The panel overturned cannot choose that label.
+
+- Overturned and judged easy: three arbitrators unanimously wrong on an easy question. Honest panels
+  almost never do this (each errs about 1 time in 20 on an easy case at 95% accuracy, all three
+  together far more rarely), so it is treated as misconduct-level: the case units, not only fees.
+- Overturned and judged hard: an honest error, fee penalties as today.
+
+This targets exactly the hole of E2g/E2h: today an appeal overturn costs a bloc only fees. Against a
+bloc defecting on easy cases, appeals then cost it 2V per member; on hard cases nothing changes,
+which is the irreducible limit. To simulate before adoption: the bloc's net and honest income with
+the overturning panel judging difficulty with noise; and whether a captured larger panel could
+label an honest panel's verdict "easy" to seize its units (that larger panel must already be
+captured to overturn, so the new harm is the size of the seizure, which needs bounding).

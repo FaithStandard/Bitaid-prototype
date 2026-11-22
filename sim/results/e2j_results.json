@@ -1,0 +1,270 @@
+{
+ "bloc": {
+  "V=0.01 tgt=easy": {
+   "easy": {
+    "net_V": -5.6374,
+    "p_app": 0.946,
+    "p_rev": 0.002,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": -0.1896,
+    "p_app": 0.946,
+    "p_rev": 0.002,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": -0.094,
+    "p_app": 0.947,
+    "p_rev": 0.005,
+    "p_hard_flag": 0.001
+   }
+  },
+  "V=0.01 tgt=ordinary": {
+   "easy": {
+    "net_V": -5.5828,
+    "p_app": 0.94,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": -0.1696,
+    "p_app": 0.94,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": -0.0609,
+    "p_app": 0.94,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   }
+  },
+  "V=0.01 tgt=hard": {
+   "easy": {
+    "net_V": -5.6255,
+    "p_app": 0.946,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": -0.1771,
+    "p_app": 0.946,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": -0.0642,
+    "p_app": 0.945,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   }
+  },
+  "V=0.1 tgt=easy": {
+   "easy": {
+    "net_V": -5.6647,
+    "p_app": 0.947,
+    "p_rev": 0.005,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": -0.003,
+    "p_app": 0.947,
+    "p_rev": 0.005,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": -0.0182,
+    "p_app": 0.945,
+    "p_rev": 0.009,
+    "p_hard_flag": 0.001
+   }
+  },
+  "V=0.1 tgt=ordinary": {
+   "easy": {
+    "net_V": -5.5905,
+    "p_app": 0.94,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": 0.0293,
+    "p_app": 0.94,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": 0.0244,
+    "p_app": 0.94,
+    "p_rev": 0.004,
+    "p_hard_flag": 0.0
+   }
+  },
+  "V=0.1 tgt=hard": {
+   "easy": {
+    "net_V": -5.622,
+    "p_app": 0.945,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": 0.0265,
+    "p_app": 0.945,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": 0.0365,
+    "p_app": 0.945,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   }
+  },
+  "V=1.0 tgt=easy": {
+   "easy": {
+    "net_V": -5.6787,
+    "p_app": 0.945,
+    "p_rev": 0.009,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": -0.0092,
+    "p_app": 0.945,
+    "p_rev": 0.009,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": -0.0594,
+    "p_app": 0.946,
+    "p_rev": 0.016,
+    "p_hard_flag": 0.003
+   }
+  },
+  "V=1.0 tgt=ordinary": {
+   "easy": {
+    "net_V": -5.6031,
+    "p_app": 0.94,
+    "p_rev": 0.004,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": 0.0334,
+    "p_app": 0.94,
+    "p_rev": 0.004,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": 0.0037,
+    "p_app": 0.941,
+    "p_rev": 0.008,
+    "p_hard_flag": 0.0
+   }
+  },
+  "V=1.0 tgt=hard": {
+   "easy": {
+    "net_V": -5.6234,
+    "p_app": 0.945,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "ordinary": {
+    "net_V": 0.0455,
+    "p_app": 0.945,
+    "p_rev": 0.001,
+    "p_hard_flag": 0.0
+   },
+   "hard": {
+    "net_V": 0.0405,
+    "p_app": 0.946,
+    "p_rev": 0.002,
+    "p_hard_flag": 0.0
+   }
+  }
+ },
+ "honest": {
+  "V=0.01 rate_acc=0.7": {
+   "today": {
+    "profit_in_fees": 0.215,
+    "unit_loss_rate": 0.0
+   },
+   "use_easy": {
+    "profit_in_fees": -0.647,
+    "unit_loss_rate": 0.00965
+   },
+   "avoid_easy": {
+    "profit_in_fees": 0.28,
+    "unit_loss_rate": 0.0
+   }
+  },
+  "V=0.01 rate_acc=0.8": {
+   "today": {
+    "profit_in_fees": 0.215,
+    "unit_loss_rate": 0.0
+   },
+   "use_easy": {
+    "profit_in_fees": -0.541,
+    "unit_loss_rate": 0.00855
+   },
+   "avoid_easy": {
+    "profit_in_fees": 0.28,
+    "unit_loss_rate": 0.0
+   }
+  },
+  "V=0.1 rate_acc=0.7": {
+   "today": {
+    "profit_in_fees": 0.215,
+    "unit_loss_rate": 0.0
+   },
+   "use_easy": {
+    "profit_in_fees": -9.332,
+    "unit_loss_rate": 0.00965
+   },
+   "avoid_easy": {
+    "profit_in_fees": 0.28,
+    "unit_loss_rate": 0.0
+   }
+  },
+  "V=0.1 rate_acc=0.8": {
+   "today": {
+    "profit_in_fees": 0.215,
+    "unit_loss_rate": 0.0
+   },
+   "use_easy": {
+    "profit_in_fees": -8.236,
+    "unit_loss_rate": 0.00855
+   },
+   "avoid_easy": {
+    "profit_in_fees": 0.28,
+    "unit_loss_rate": 0.0
+   }
+  },
+  "V=1.0 rate_acc=0.7": {
+   "today": {
+    "profit_in_fees": 0.215,
+    "unit_loss_rate": 0.0
+   },
+   "use_easy": {
+    "profit_in_fees": -96.182,
+    "unit_loss_rate": 0.00965
+   },
+   "avoid_easy": {
+    "profit_in_fees": 0.28,
+    "unit_loss_rate": 0.0
+   }
+  },
+  "V=1.0 rate_acc=0.8": {
+   "today": {
+    "profit_in_fees": 0.215,
+    "unit_loss_rate": 0.0
+   },
+   "use_easy": {
+    "profit_in_fees": -85.186,
+    "unit_loss_rate": 0.00855
+   },
+   "avoid_easy": {
+    "profit_in_fees": 0.28,
+    "unit_loss_rate": 0.0
+   }
+  }
+ }
+}
