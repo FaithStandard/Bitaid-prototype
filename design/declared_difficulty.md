@@ -1,0 +1,56 @@
+# Design note: arbitrators declare a case's difficulty with their vote
+
+Status: idea (Albert, 2026-11-22), weighed here; not designed or built. To be simulated before any
+specification change.
+
+## Why it matters
+
+The staged review's power against a bloc depends heavily on how hard the case is
+(`sim/e2h_power_and_hist.py`): a 20% bloc's wrong verdict, drawn for review, is overturned about 86% of
+the time when reviewers are 95% accurate on an easy case, but only about 44% when case difficulty
+varies. A smart bloc defects where review is weakest. Today the protocol has one difficulty signal,
+the split itself (a split panel is reviewed at 40%, a unanimous one at 5–20%), and one per-predicate
+flag, the canon's *uncertain*, which adds nothing to momentum.
+
+## The idea
+
+Each arbitrator commits, with its vote and under the same commit-reveal, a coarse difficulty rating
+of the case: easy, ordinary, hard. The protocol uses it afterwards.
+
+## The danger: a self-rating used for anything that benefits the rater is gamed
+
+- If "hard" softens penalties, a bloc rates every bought verdict hard.
+- If "hard" only raises review, a bloc rates every bought verdict easy.
+
+So the rating works only as a **bet the rater places on itself**, each choice costing something:
+
+| Declared | Review of the verdict | If the verdict is later overturned (appeal or review) |
+| --- | --- | --- |
+| easy | the base rate | treated as more than an honest error: an easy case decided wrongly; the panel's case units are taken, not only the fee penalties |
+| ordinary | as today | as today |
+| hard | a higher rate | penalties softened (honest error on a hard question), but the verdict is checked more often |
+
+What this does to the bloc found in E2g/E2h:
+- It cannot declare its verdict easy without risking its units when an appeal overturns it, which
+  closes the hole where an appeal overturn costs a bloc only fees.
+- Declaring it hard draws more review. Review is weak only on cases that *are* hard, not on cases
+  *declared* hard: an easy case declared hard is reviewed by reviewers who find it easy, at full
+  power.
+- What remains is a bloc defecting on cases that genuinely are hard. That is indistinguishable from
+  honest error by any mechanism, and is the limit already stated.
+
+## A second use: divergence is evidence
+
+Reviewers rate difficulty too. A unanimous panel that declared a case hard, which every review stage
+finds easy, has declared something no honest panel would. That divergence can weigh in momentum, so
+"hard" stops being a free shelter.
+
+## Open questions
+
+- How well honest arbitrators rate difficulty. The categories must be coarse, and a mis-rating must
+  cost little when the verdict stands.
+- Whether the panel's rating is the median of its seats, or each seat's bet is its own.
+- The review rates and penalty changes per category: to be simulated against the bloc models
+  (E2g/E2h) and against honest error.
+- Interaction with the canon's *uncertain* flag, which is a difficulty statement fixed in advance by
+  the canon rather than declared per case.
