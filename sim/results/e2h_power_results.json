@@ -1,0 +1,226 @@
+{
+ "all_case_hist": {
+  "f=0.20 acc=0.85 V=0.01": {
+   "net_mean_V": -0.3775,
+   "p_caught_momentum": 0.0019,
+   "p_caught_review": 0.0005
+  },
+  "f=0.20 acc=0.85 V=0.1": {
+   "net_mean_V": -0.0043,
+   "p_caught_momentum": 0.0019,
+   "p_caught_review": 0.0005
+  },
+  "f=0.20 acc=0.85 V=1.0": {
+   "net_mean_V": 0.0275,
+   "p_caught_momentum": 0.0019,
+   "p_caught_review": 0.0013
+  },
+  "f=0.20 acc=0.95 V=0.01": {
+   "net_mean_V": -0.4954,
+   "p_caught_momentum": 0.0074,
+   "p_caught_review": 0.0019
+  },
+  "f=0.20 acc=0.95 V=0.1": {
+   "net_mean_V": -0.0583,
+   "p_caught_momentum": 0.0069,
+   "p_caught_review": 0.003
+  },
+  "f=0.20 acc=0.95 V=1.0": {
+   "net_mean_V": -0.0414,
+   "p_caught_momentum": 0.0077,
+   "p_caught_review": 0.0061
+  },
+  "f=0.33 acc=0.85 V=0.01": {
+   "net_mean_V": -0.3836,
+   "p_caught_momentum": 0.0,
+   "p_caught_review": 0.0
+  },
+  "f=0.33 acc=0.85 V=0.1": {
+   "net_mean_V": 0.0395,
+   "p_caught_momentum": 0.0,
+   "p_caught_review": 0.0
+  },
+  "f=0.33 acc=0.85 V=1.0": {
+   "net_mean_V": 0.0813,
+   "p_caught_momentum": 0.0001,
+   "p_caught_review": 0.0
+  },
+  "f=0.33 acc=0.95 V=0.01": {
+   "net_mean_V": -0.4394,
+   "p_caught_momentum": 0.0011,
+   "p_caught_review": 0.0001
+  },
+  "f=0.33 acc=0.95 V=0.1": {
+   "net_mean_V": 0.0265,
+   "p_caught_momentum": 0.0013,
+   "p_caught_review": 0.0001
+  },
+  "f=0.33 acc=0.95 V=1.0": {
+   "net_mean_V": 0.0708,
+   "p_caught_momentum": 0.0015,
+   "p_caught_review": 0.0002
+  }
+ },
+ "power_curve": {
+  "correlated_beta": {
+   "0.10": {
+    "0.80": {
+     "p_overturn": 0.2984,
+     "p_expel": 0.0029
+    },
+    "0.85": {
+     "p_overturn": 0.5145,
+     "p_expel": 0.022
+    },
+    "0.90": {
+     "p_overturn": 0.697,
+     "p_expel": 0.1021
+    },
+    "0.95": {
+     "p_overturn": 0.8123,
+     "p_expel": 0.2746
+    },
+    "0.97": {
+     "p_overturn": 0.8462,
+     "p_expel": 0.3617
+    },
+    "0.99": {
+     "p_overturn": 0.8781,
+     "p_expel": 0.461
+    }
+   },
+   "0.20": {
+    "0.80": {
+     "p_overturn": 0.0362,
+     "p_expel": 0.0
+    },
+    "0.85": {
+     "p_overturn": 0.1139,
+     "p_expel": 0.0002
+    },
+    "0.90": {
+     "p_overturn": 0.2566,
+     "p_expel": 0.0011
+    },
+    "0.95": {
+     "p_overturn": 0.4427,
+     "p_expel": 0.0112
+    },
+    "0.97": {
+     "p_overturn": 0.516,
+     "p_expel": 0.022
+    },
+    "0.99": {
+     "p_overturn": 0.5908,
+     "p_expel": 0.0423
+    }
+   },
+   "0.25": {
+    "0.80": {
+     "p_overturn": 0.0056,
+     "p_expel": 0.0
+    },
+    "0.85": {
+     "p_overturn": 0.0267,
+     "p_expel": 0.0
+    },
+    "0.90": {
+     "p_overturn": 0.0882,
+     "p_expel": 0.0001
+    },
+    "0.95": {
+     "p_overturn": 0.2088,
+     "p_expel": 0.0007
+    },
+    "0.97": {
+     "p_overturn": 0.2698,
+     "p_expel": 0.0015
+    },
+    "0.99": {
+     "p_overturn": 0.3422,
+     "p_expel": 0.0033
+    }
+   }
+  },
+  "flat_acc": {
+   "0.10": {
+    "0.80": {
+     "p_overturn": 0.5971,
+     "p_expel": 0.0134
+    },
+    "0.85": {
+     "p_overturn": 0.8578,
+     "p_expel": 0.0979
+    },
+    "0.90": {
+     "p_overturn": 0.9711,
+     "p_expel": 0.3638
+    },
+    "0.95": {
+     "p_overturn": 0.9987,
+     "p_expel": 0.773
+    },
+    "0.97": {
+     "p_overturn": 0.9997,
+     "p_expel": 0.8919
+    },
+    "0.99": {
+     "p_overturn": 1.0,
+     "p_expel": 0.9631
+    }
+   },
+   "0.20": {
+    "0.80": {
+     "p_overturn": 0.1134,
+     "p_expel": 0.0001
+    },
+    "0.85": {
+     "p_overturn": 0.3195,
+     "p_expel": 0.0008
+    },
+    "0.90": {
+     "p_overturn": 0.6102,
+     "p_expel": 0.009
+    },
+    "0.95": {
+     "p_overturn": 0.8554,
+     "p_expel": 0.0593
+    },
+    "0.97": {
+     "p_overturn": 0.9143,
+     "p_expel": 0.1161
+    },
+    "0.99": {
+     "p_overturn": 0.9571,
+     "p_expel": 0.2102
+    }
+   },
+   "0.25": {
+    "0.80": {
+     "p_overturn": 0.0241,
+     "p_expel": 0.0
+    },
+    "0.85": {
+     "p_overturn": 0.0969,
+     "p_expel": 0.0
+    },
+    "0.90": {
+     "p_overturn": 0.2764,
+     "p_expel": 0.0005
+    },
+    "0.95": {
+     "p_overturn": 0.5533,
+     "p_expel": 0.0039
+    },
+    "0.97": {
+     "p_overturn": 0.6633,
+     "p_expel": 0.0092
+    },
+    "0.99": {
+     "p_overturn": 0.7701,
+     "p_expel": 0.0204
+    }
+   }
+  }
+ }
+}
