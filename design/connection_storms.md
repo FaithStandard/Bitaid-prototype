@@ -42,6 +42,18 @@ Resulting layers:
 2. The coin stake per identity once connected.
 3. Cut and ban for abuse, which makes an abuser start over at both layers.
 
+## Gap found in review (2026-11-22): a staked eclipse
+
+Tor's puzzle and the 10 s proof window only protect the moment before a stake is shown. Once proven,
+a link is never evicted, and stakes are never slashed. An attacker holding 32 stakes (2 links each,
+64 incoming slots) can fill a Core with idle proven links and lock out every newcomer and every node
+reconnecting, for 32 × the stake in recoverable capital (0.0064 BTC at 20,000 sats). Directions:
+
+- when full, evict the proven link that has carried the least useful traffic for the longest, so idle
+  stakes buy no lasting seat;
+- reserve some slots for links proven by protocol outputs (a bond, an escrow) over bare link stakes;
+- the Core's own stake price (above) rises when its slots stay full of idle links.
+
 ## Questions for the design
 
 - Is Tor's defense enough, or should the Core's own handshake also carry a puzzle (for Cores reached

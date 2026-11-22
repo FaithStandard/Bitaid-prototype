@@ -450,6 +450,7 @@ fn pool_member(mut n: Node) -> i32 {
     let mut fee_at: HashMap<(String, u32, String), u32> = HashMap::new();
     // the height at which this member saw a tier's last commit: the reveal deadline runs from there
     let mut all_committed_at: HashMap<(String, u32), u32> = HashMap::new();
+    let mut last_commit_h: HashMap<(String, u32), u32> = HashMap::new();
     let mut deadlock_at: HashMap<String, u32> = HashMap::new();
     let mut vcommits: HashMap<(String, u32), HashMap<String, String>> = HashMap::new();
     let mut vreveals: HashMap<(String, u32), Vec<(String, Ballot)>> = HashMap::new();
@@ -583,18 +584,24 @@ fn pool_member(mut n: Node) -> i32 {
         // Nor while an appeal of it is held until a block anchors it, and not until the anchors of the
         // window's last blocks have had time to be listed: an appeal counts from its anchor (§7), and
         // a checkpoint's list can reach a member some blocks after the checkpoint itself
-        let mut held: std::collections::HashSet<String> = deferred
+        let held: std::collections::HashSet<String> = deferred
             .iter()
             .filter_map(|(_, e, _)| match &e.msg {
                 Msg::Escalate { case_id, .. } => Some(case_id.clone()),
                 _ => None,
             })
             .collect();
-        held.extend(n.parked_cases("escalate"));
+        // an appeal still waiting for its anchor holds the case only as long as an unexplained anchor
+        // may: anyone can send one that is never anchored in time, or one after another, and an
+        // appeal anchored after the window counts for nothing anyway (review finding: a stream of
+        // unanchored escalations held a case from finality for good)
+        let parked_esc = n.parked_cases("escalate");
         let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
         let due: Vec<String> = ready_at
             .iter()
-            .filter(|(c, h)| tip >= **h + grace && !held.contains(*c))
+            .filter(|(c, h)| {
+                tip >= **h + grace && !held.contains(*c) && (!parked_esc.contains(*c) || tip >= **h + 4 * grace)
+            })
             .filter(|(_, h)| {
                 // every anchor up to the window's close accounted for. One nobody can account for
                 // (anyone may anchor a root that lists nothing) holds the case four times the grace
@@ -1618,10 +1625,16 @@ fn pool_member(mut n: Node) -> i32 {
                     if m.iter().any(|(w, c)| *c == *commitment && *w != s) {
                         continue;
                     }
-                    m.entry(s.clone()).or_insert(commitment.clone());
-                    // every seat committed: the reveal deadline runs from here (§10.4)
+                    if !m.contains_key(&s) {
+                        m.insert(s.clone(), commitment.clone());
+                        let lh = last_commit_h.entry(key.clone()).or_insert(0);
+                        *lh = (*lh).max(env.height);
+                    }
+                    // every seat committed: the reveal deadline runs from the block anchoring the
+                    // last commitment, the same for every member whenever it arrived (§10.4; review
+                    // finding: each member's own tip on arrival made them disagree)
                     if m.len() >= panels[&key].len() {
-                        let h = n.tip();
+                        let h = last_commit_h.get(&key).copied().unwrap_or(env.height);
                         all_committed_at.entry(key).or_insert(h);
                     }
                 }

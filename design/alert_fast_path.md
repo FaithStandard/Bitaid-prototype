@@ -29,6 +29,10 @@ held behind a separate handshake. A free, unfunded alert stays impossible: the a
 a free alert is what a spammer would send. (The emergency-number analogy: a funded caller always gets through.)
 See also design/connection_storms.md.
 
+Review note (2026-11-22): the alert-as-proof must sign the Core's fresh challenge with the offer's
+scoped key in the same frame (no replay of an alert seen elsewhere), and unproven alert handshakes need
+their own rate limit, since each costs the Core a chain lookup.
+
 ## 4. Priority lanes in the relay
 
 A Core forwards in arrival order. Alerts, acceptances and locations should go ahead of bulk traffic (evidence
