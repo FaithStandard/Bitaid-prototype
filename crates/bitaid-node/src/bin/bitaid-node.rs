@@ -394,6 +394,8 @@ fn pool_member(mut n: Node) -> i32 {
     // per case, the block height at which its outcome is final unless escalated (deemed consent or
     // a tier's verdict): protocol deadlines are block heights, judged by this member's chain tip
     let mut ready_at: HashMap<String, u32> = HashMap::new();
+    // the tip at which each case's log was last asked of the archive before attesting
+    let mut last_fetch: HashMap<String, u32> = HashMap::new();
     // the height of each case's first ballot reveal: the reveal window runs from it, so a seat that
     // never reveals cannot hold deemed consent back (review finding D-8)
     let mut first_reveal: HashMap<String, u32> = HashMap::new();
@@ -599,17 +601,53 @@ fn pool_member(mut n: Node) -> i32 {
         // unanchored escalations held a case from finality for good)
         let parked_esc = n.parked_cases("escalate");
         let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
+        // before a case is attested over anchors this member cannot account for, or over a tier
+        // record on the chain it holds no log for, it reads the case's log from the archive: a
+        // member whose links dropped (the tablet in the 2026-11-22 public run) otherwise attests the
+        // verdict below an appeal it never received. Once read, what the archive also lacks no
+        // longer holds the case (anyone may anchor a root, or record a tier, that stands for nothing)
+        let ripe: Vec<(String, u32)> = ready_at
+            .iter()
+            .filter(|(c, h)| tip >= **h + grace && !held.contains(*c))
+            .map(|(c, h)| (c.clone(), *h))
+            .collect();
+        // a case escalated and waiting for its tier, with a tier record on the chain that this member
+        // holds no commitment for: its links dropped the tier's messages, so it reads the case's
+        // log from the archive (else it would never see the tier end, and never attest)
+        let waiting: Vec<String> = esc.keys().filter(|c| !ready_at.contains_key(*c)).cloned().collect();
+        for c in waiting {
+            if n.unread_tier_records(&c, last_fetch.get(&c).copied()) > 0 && last_fetch.get(&c) != Some(&tip) {
+                last_fetch.insert(c.clone(), tip);
+                n.fetch_case(&c, tip, true);
+            }
+        }
+        // (a case whose log was just read waits a round, so that what it brought is handled first)
+        let mut just_read: std::collections::HashSet<String> = Default::default();
+        for (c, h) in ripe {
+            let unknown = n.unexplained_anchors(h.saturating_sub(64), h) > 0
+                || n.missing_listed(h.saturating_sub(64), h) > 0
+                || n.unread_tier_records(&c, last_fetch.get(&c).copied()) > 0;
+            if unknown && last_fetch.get(&c) != Some(&tip) {
+                last_fetch.insert(c.clone(), tip);
+                if n.fetch_case(&c, tip, true) > 0 {
+                    just_read.insert(c.clone());
+                }
+            }
+        }
         let due: Vec<String> = ready_at
             .iter()
             .filter(|(c, h)| {
-                tip >= **h + grace && !held.contains(*c) && (!parked_esc.contains(*c) || tip >= **h + 4 * grace)
+                tip >= **h + grace && !held.contains(*c) && !just_read.contains(*c) && (!parked_esc.contains(*c) || tip >= **h + 4 * grace)
             })
-            .filter(|(_, h)| {
+            .filter(|(c, h)| {
                 // every anchor up to the window's close accounted for. One nobody can account for
                 // (anyone may anchor a root that lists nothing) holds the case four times the grace
                 // and no longer
-                let unknown = n.unexplained_anchors(h.saturating_sub(64), **h);
-                unknown == 0 || tip >= **h + 4 * grace
+                let unknown = n.unexplained_anchors(h.saturating_sub(64), **h) + n.missing_listed(h.saturating_sub(64), **h);
+                // and only once the archive has been asked since the window closed
+                let asked = last_fetch.get(*c).copied();
+                let read = asked.is_some_and(|at| at >= **h + grace);
+                (unknown == 0 || (tip >= **h + 4 * grace && read)) && n.unread_tier_records(c, asked) == 0
             })
             .map(|(c, _)| c.clone())
             .collect();

@@ -124,6 +124,9 @@ pub struct Node {
     listed: HashMap<String, Vec<String>>,
     /// checkpoint roots whose list this node has read
     roots: std::collections::HashSet<String>,
+    /// BITAID_DEAF_AFTER (a test): once a message of this kind has arrived, the links' case messages
+    /// are dropped, as a device whose link keeps dropping loses them
+    deaf: (Option<String>, bool),
     /// this node's own timed messages not yet anchored: id -> the chain height when sent
     /// this node's own timed messages: the tip when sent, and how long it waits before anchoring
     /// one the checkpoints left out
@@ -453,6 +456,7 @@ impl Node {
             parked: VecDeque::new(),
             listed: HashMap::new(),
             roots: Default::default(),
+            deaf: (std::env::var("BITAID_DEAF_AFTER").ok().filter(|v| !v.is_empty()), false),
             own_timed: HashMap::new(),
             anchoring: HashMap::new(),
             anchorer: None,
@@ -934,6 +938,17 @@ impl Node {
         for c in cases.into_iter().take(12) {
             let k = self.asked.get(&c).map_or(0, |x| x.1);
             self.asked.insert(c.clone(), (now, k + 1));
+            self.fetch_case(&c, tip, false);
+        }
+    }
+
+    /// Reads one case's log from the archivists: every message not held yet. Returns how many.
+    /// `deliver`: hand every message read to whoever works the case, young ones included (a node
+    /// about to act on the case, whose links may have dropped some of them); otherwise a young one
+    /// goes into the record only and waits for its link.
+    pub fn fetch_case(&mut self, c: &str, tip: u32, deliver: bool) -> u32 {
+        let c = c.to_string();
+        {
             let mut got = 0;
             for url in self.archives.clone() {
                 let Ok(b) = crate::blossom::fetch_log(&url, &c) else { continue };
@@ -946,7 +961,7 @@ impl Node {
                         // older than any relay keeps: no link will bring it, so whoever works the case
                         // gets it from here (review finding: a node rejoining after a day lost the
                         // case's alert and roster); a younger one waits for its link, as before
-                        if e.created_at.saturating_add(crate::gossip::KEEP_SECS) < crate::nostr::now() {
+                        if deliver || e.created_at.saturating_add(crate::gossip::KEEP_SECS) < crate::nostr::now() {
                             self.push_backlog(env, e.clone());
                         } else {
                             self.arch_ids.insert(e.id.clone());
@@ -961,7 +976,31 @@ impl Node {
                 self.from_archive.1 += got;
                 self.log(&format!("case {}: {got} message(s) read from the archive", crate::pre(&c, 8)));
             }
+            got
         }
+    }
+
+    /// The height at which this node last read a case's log from the archive.
+    pub fn fetched_at(&self, c: &str) -> Option<u32> {
+        self.fetched.get(c).copied()
+    }
+
+    /// Tier records on the chain for a case that this node cannot account for: a commitment it does
+    /// not hold, for a case whose log it has not read, or asked the archive for (`asked`, a height),
+    /// since the record. A ruling waits on them: a higher tier recorded on the chain means the
+    /// verdict below may not be the last. One the archive was asked about and lacks stands for no
+    /// panel (anyone may write a record).
+    pub fn unread_tier_records(&self, case: &str, asked: Option<u32>) -> usize {
+        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        self.rpc.ledger(|l| {
+            l.tiers
+                .iter()
+                .filter(|t| t.case == case && t.height >= from)
+                .filter(|t| !self.committed.contains(&t.txid.to_string()) && !self.tiers_read.contains(&(case.to_string(), t.tier)))
+                .filter(|t| !self.fetched.get(case).is_some_and(|at| t.height <= *at))
+                .filter(|t| !asked.is_some_and(|at| t.height + 3 <= at))
+                .count()
+        })
     }
 
     /// Anchors on the chain in blocks `from..=to` that this node cannot account for: a root that is
@@ -974,6 +1013,20 @@ impl Node {
             l.anchors
                 .iter()
                 .filter(|(r, h)| *h >= from && *h <= to && !roots.contains(r) && !ids.contains(r))
+                .count()
+        })
+    }
+
+    /// Messages a checkpoint read here lists as anchored in blocks `from..=to` that this node does
+    /// not hold (nor holds sealed, waiting for a key): a link dropped them. A step that turns on
+    /// what was anchored then waits for them, or for the archive to be asked.
+    pub fn missing_listed(&self, from: u32, to: u32) -> usize {
+        let (ids, locked) = (&self.ids, &self.locked);
+        self.rpc.ledger(|l| {
+            self.listed
+                .iter()
+                .filter(|(id, _)| !ids.contains(*id) && !locked.iter().any(|x| &x.id == *id))
+                .filter(|(_, rs)| rs.iter().filter_map(|r| l.anchored(r)).min().is_some_and(|h| h >= from && h <= to))
                 .count()
         })
     }
@@ -1101,6 +1154,19 @@ impl Node {
                     }
                 }
                 due(&self.lagged).and_then(|i| self.lagged.remove(i)).map(|x| (x.1, x.2))
+            }
+        };
+        // BITAID_DEAF_AFTER: past the named kind, case messages from the links are lost
+        let got = match got {
+            Some((_, e)) if self.deaf.1 && e.tag("c").is_some() => None,
+            g => {
+                if let (Some(k), Some((_, e))) = (&self.deaf.0, &g) {
+                    if e.tag("t") == Some(k.as_str()) && !self.deaf.1 {
+                        self.deaf.1 = true;
+                        eprintln!("test: deaf to case messages from here on (BITAID_DEAF_AFTER={k})");
+                    }
+                }
+                g
             }
         };
         match got {

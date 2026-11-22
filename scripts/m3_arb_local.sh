@@ -27,8 +27,13 @@ export BITAID_DRAW_BLOCKS=${BITAID_DRAW_BLOCKS:-10}
 [ "$CHAIN" = signet ] || { CLI="$CLI" BLOCK=${BLOCK:-2} sh scripts/block_producer.sh & PIDS="$!"; }
 BITAID_WALLET=w $BIN/bitaid-node --role core --name core --listen-gossip 127.0.0.1:7700 2>$L/core.log & PIDS="$PIDS $!"
 sleep 0.5
+# DEAF=1: pool member 3 loses every case message from its link once tier 1 is committed (a device whose
+# link keeps dropping), and member 4 lies: the case settles only if member 3 reads what it missed from
+# the archive and attests the final ruling (public signet run 2026-11-22: the tablet's member attested
+# the tier-1 ruling under a tier 2 it never received)
 for i in 1 2 3 4; do
-  BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $P --exit-after 300 2>$L/pool$i.log & PIDS="$PIDS $!"
+  D=""; X=""; [ -n "$DEAF" ] && [ $i = 3 ] && D="tier-committed"; [ -n "$DEAF" ] && [ $i = 4 ] && X="--liar"
+  BITAID_DEAF_AFTER=$D BITAID_WALLET=w $BIN/bitaid-node --role pool-member --name pool$i --id $i --n 4 --t 3 $X $P --exit-after 300 2>$L/pool$i.log & PIDS="$PIDS $!"
 done
 BITAID_WALLET=w $BIN/bitaid-node --role archivist --name archivist $P --listen 127.0.0.1:7481 --exit-after 600 >$L/archivist.out 2>$L/archivist.log & PIDS="$PIDS $!"
 # MISCONDUCT=1: r3 (seat 0) finds r1-liar (seat 1) at fault, having harmed it; so does the panel's
