@@ -33,13 +33,16 @@ links to the run's published log. Every node is still run by us.
 | Tier 2 (7 seats) verdict | 93 to 135 min after escalating | Nov 18, 19, 20 |
 | Fines into the seizure output, paid out to the vindicated dissenter (5,278 sats) | every run since the fix | Nov 19, 20 |
 | Each seat staked before it was paid | 3 of 3, 7 of 7 | Nov 19, 20 |
-| An outsider's forged postings, incident and tier records ignored | every run | Nov 18, 19, 20 |
+| Naive forgeries by an outsider with no stake (postings, incidents, tier records the chain does not back) ignored | every run | Nov 18, 19, 20 |
 | A node that saw nothing reads the same record from the chain and the archive alone | AUDIT_PASS | Nov 19 |
 
 ## Not yet shown
 
 - Independent operators: every node is ours, and the cheaters cheat because a script tells them to.
 - Real funds, outside review of the cryptography and the incentives.
+- Attacks from inside on the public network: a party stalling the appeal it opened, a finality stall by
+  unanchored escalations, a staked eclipse of a Core. The first two are fixed, the first tested locally; the
+  third is a design note (design/connection_storms.md).
 - A location received late on the tablet (Nov 20) was a responder that read it late, fixed and tested
   locally; to be confirmed on the next public run.
 

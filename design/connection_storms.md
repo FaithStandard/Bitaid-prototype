@@ -54,6 +54,15 @@ reconnecting, for 32 × the stake in recoverable capital (0.0064 BTC at 20,000 s
 - reserve some slots for links proven by protocol outputs (a bond, an escrow) over bare link stakes;
 - the Core's own stake price (above) rises when its slots stay full of idle links.
 
+Weighed 2026-11-22, not built. Evicting the idlest link is wrong as stated: an honest phone waiting for
+an alert is idle too, by design, and would be the first evicted, at the moment it matters. Directions
+kept: (1) callers and responders hold links to several Cores (design/alert_fast_path.md §2), so an
+attacker must buy out every one of them, and the cost multiplies by the number of Cores; (2) each Core
+prices its own stake and raises it while its slots stay full, so a lasting eclipse costs more over time;
+(3) slots reserved for links proven by protocol outputs (bonds, escrows), which an attacker cannot mint
+without putting real stake at risk in cases. Eviction, if any, should pick among bare link stakes only,
+at random, never by idleness.
+
 ## Questions for the design
 
 - Is Tor's defense enough, or should the Core's own handshake also carry a puzzle (for Cores reached

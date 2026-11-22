@@ -1,0 +1,662 @@
+{
+ "grid": {
+  "f=0.10 V=0.001 acc=0.85 future=0.0": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.5028,
+   "p_caught_review": 0.0129,
+   "p_caught_total": 0.5157,
+   "p_expelled": 0.0004,
+   "net_per_defection_V": -0.935
+  },
+  "f=0.15 V=0.001 acc=0.85 future=0.0": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4973,
+   "p_caught_review": 0.0071,
+   "p_caught_total": 0.5043,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.7404
+  },
+  "f=0.20 V=0.001 acc=0.85 future=0.0": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4986,
+   "p_caught_review": 0.0031,
+   "p_caught_total": 0.5017,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.7168
+  },
+  "f=0.25 V=0.001 acc=0.85 future=0.0": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4993,
+   "p_caught_review": 0.0007,
+   "p_caught_total": 0.5,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.7024
+  },
+  "f=0.33 V=0.001 acc=0.85 future=0.0": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4733,
+   "p_caught_review": 0.0,
+   "p_caught_total": 0.4733,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.6092
+  },
+  "f=0.10 V=0.01 acc=0.85 future=0.0": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.5028,
+   "p_caught_review": 0.0129,
+   "p_caught_total": 0.5157,
+   "p_expelled": 0.0004,
+   "net_per_defection_V": 0.2724
+  },
+  "f=0.15 V=0.01 acc=0.85 future=0.0": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4973,
+   "p_caught_review": 0.0071,
+   "p_caught_total": 0.5043,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.3337
+  },
+  "f=0.20 V=0.01 acc=0.85 future=0.0": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4986,
+   "p_caught_review": 0.0031,
+   "p_caught_total": 0.5017,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.3603
+  },
+  "f=0.25 V=0.01 acc=0.85 future=0.0": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4993,
+   "p_caught_review": 0.0007,
+   "p_caught_total": 0.5,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.376
+  },
+  "f=0.33 V=0.01 acc=0.85 future=0.0": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4733,
+   "p_caught_review": 0.0,
+   "p_caught_total": 0.4733,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4131
+  },
+  "f=0.10 V=0.1 acc=0.85 future=0.0": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.498,
+   "p_caught_review": 0.025,
+   "p_caught_total": 0.523,
+   "p_expelled": 0.0006,
+   "net_per_defection_V": 0.3133
+  },
+  "f=0.15 V=0.1 acc=0.85 future=0.0": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.5013,
+   "p_caught_review": 0.014,
+   "p_caught_total": 0.5153,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.3883
+  },
+  "f=0.20 V=0.1 acc=0.85 future=0.0": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4976,
+   "p_caught_review": 0.0064,
+   "p_caught_total": 0.504,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4457
+  },
+  "f=0.25 V=0.1 acc=0.85 future=0.0": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4945,
+   "p_caught_review": 0.0018,
+   "p_caught_total": 0.4963,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4811
+  },
+  "f=0.33 V=0.1 acc=0.85 future=0.0": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4879,
+   "p_caught_review": 0.0,
+   "p_caught_total": 0.4879,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.5003
+  },
+  "f=0.10 V=1.0 acc=0.85 future=0.0": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.4958,
+   "p_caught_review": 0.0522,
+   "p_caught_total": 0.548,
+   "p_expelled": 0.0022,
+   "net_per_defection_V": 0.137
+  },
+  "f=0.15 V=1.0 acc=0.85 future=0.0": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.5012,
+   "p_caught_review": 0.0299,
+   "p_caught_total": 0.5311,
+   "p_expelled": 0.0003,
+   "net_per_defection_V": 0.2886
+  },
+  "f=0.20 V=1.0 acc=0.85 future=0.0": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4996,
+   "p_caught_review": 0.0101,
+   "p_caught_total": 0.5098,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4282
+  },
+  "f=0.25 V=1.0 acc=0.85 future=0.0": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4962,
+   "p_caught_review": 0.003,
+   "p_caught_total": 0.4992,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4816
+  },
+  "f=0.33 V=1.0 acc=0.85 future=0.0": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4792,
+   "p_caught_review": 0.0001,
+   "p_caught_total": 0.4793,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.5193
+  },
+  "f=0.10 V=0.001 acc=0.85 future=0.1": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.5028,
+   "p_caught_review": 0.0129,
+   "p_caught_total": 0.5157,
+   "p_expelled": 0.0004,
+   "net_per_defection_V": -1.07
+  },
+  "f=0.15 V=0.001 acc=0.85 future=0.1": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4973,
+   "p_caught_review": 0.0071,
+   "p_caught_total": 0.5043,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.7404
+  },
+  "f=0.20 V=0.001 acc=0.85 future=0.1": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4986,
+   "p_caught_review": 0.0031,
+   "p_caught_total": 0.5017,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.7168
+  },
+  "f=0.25 V=0.001 acc=0.85 future=0.1": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4993,
+   "p_caught_review": 0.0007,
+   "p_caught_total": 0.5,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.7024
+  },
+  "f=0.33 V=0.001 acc=0.85 future=0.1": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4733,
+   "p_caught_review": 0.0,
+   "p_caught_total": 0.4733,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.6092
+  },
+  "f=0.10 V=0.01 acc=0.85 future=0.1": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.5028,
+   "p_caught_review": 0.0129,
+   "p_caught_total": 0.5157,
+   "p_expelled": 0.0004,
+   "net_per_defection_V": 0.2589
+  },
+  "f=0.15 V=0.01 acc=0.85 future=0.1": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4973,
+   "p_caught_review": 0.0071,
+   "p_caught_total": 0.5043,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.3337
+  },
+  "f=0.20 V=0.01 acc=0.85 future=0.1": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4986,
+   "p_caught_review": 0.0031,
+   "p_caught_total": 0.5017,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.3603
+  },
+  "f=0.25 V=0.01 acc=0.85 future=0.1": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4993,
+   "p_caught_review": 0.0007,
+   "p_caught_total": 0.5,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.376
+  },
+  "f=0.33 V=0.01 acc=0.85 future=0.1": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4733,
+   "p_caught_review": 0.0,
+   "p_caught_total": 0.4733,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4131
+  },
+  "f=0.10 V=0.1 acc=0.85 future=0.1": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.498,
+   "p_caught_review": 0.025,
+   "p_caught_total": 0.523,
+   "p_expelled": 0.0006,
+   "net_per_defection_V": 0.3115
+  },
+  "f=0.15 V=0.1 acc=0.85 future=0.1": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.5013,
+   "p_caught_review": 0.014,
+   "p_caught_total": 0.5153,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.3883
+  },
+  "f=0.20 V=0.1 acc=0.85 future=0.1": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4976,
+   "p_caught_review": 0.0064,
+   "p_caught_total": 0.504,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4457
+  },
+  "f=0.25 V=0.1 acc=0.85 future=0.1": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4945,
+   "p_caught_review": 0.0018,
+   "p_caught_total": 0.4963,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4811
+  },
+  "f=0.33 V=0.1 acc=0.85 future=0.1": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4879,
+   "p_caught_review": 0.0,
+   "p_caught_total": 0.4879,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.5003
+  },
+  "f=0.10 V=1.0 acc=0.85 future=0.1": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.4958,
+   "p_caught_review": 0.0522,
+   "p_caught_total": 0.548,
+   "p_expelled": 0.0022,
+   "net_per_defection_V": 0.1364
+  },
+  "f=0.15 V=1.0 acc=0.85 future=0.1": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.5012,
+   "p_caught_review": 0.0299,
+   "p_caught_total": 0.5311,
+   "p_expelled": 0.0003,
+   "net_per_defection_V": 0.2885
+  },
+  "f=0.20 V=1.0 acc=0.85 future=0.1": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4996,
+   "p_caught_review": 0.0101,
+   "p_caught_total": 0.5098,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4282
+  },
+  "f=0.25 V=1.0 acc=0.85 future=0.1": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4962,
+   "p_caught_review": 0.003,
+   "p_caught_total": 0.4992,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4816
+  },
+  "f=0.33 V=1.0 acc=0.85 future=0.1": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4792,
+   "p_caught_review": 0.0001,
+   "p_caught_total": 0.4793,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.5193
+  },
+  "f=0.10 V=0.001 acc=0.95 future=0.0": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.5031,
+   "p_caught_review": 0.0198,
+   "p_caught_total": 0.5229,
+   "p_expelled": 0.0068,
+   "net_per_defection_V": -2.889
+  },
+  "f=0.15 V=0.001 acc=0.95 future=0.0": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4965,
+   "p_caught_review": 0.0163,
+   "p_caught_total": 0.5128,
+   "p_expelled": 0.002,
+   "net_per_defection_V": -1.402
+  },
+  "f=0.20 V=0.001 acc=0.95 future=0.0": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.5011,
+   "p_caught_review": 0.0112,
+   "p_caught_total": 0.5123,
+   "p_expelled": 0.0003,
+   "net_per_defection_V": -0.8571
+  },
+  "f=0.25 V=0.001 acc=0.95 future=0.0": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.5003,
+   "p_caught_review": 0.0047,
+   "p_caught_total": 0.505,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.7343
+  },
+  "f=0.33 V=0.001 acc=0.95 future=0.0": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4783,
+   "p_caught_review": 0.0004,
+   "p_caught_total": 0.4787,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.629
+  },
+  "f=0.10 V=0.01 acc=0.95 future=0.0": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.5031,
+   "p_caught_review": 0.0198,
+   "p_caught_total": 0.5229,
+   "p_expelled": 0.0068,
+   "net_per_defection_V": 0.0338
+  },
+  "f=0.15 V=0.01 acc=0.95 future=0.0": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4965,
+   "p_caught_review": 0.0163,
+   "p_caught_total": 0.5128,
+   "p_expelled": 0.002,
+   "net_per_defection_V": 0.2105
+  },
+  "f=0.20 V=0.01 acc=0.95 future=0.0": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.5011,
+   "p_caught_review": 0.0112,
+   "p_caught_total": 0.5123,
+   "p_expelled": 0.0003,
+   "net_per_defection_V": 0.2927
+  },
+  "f=0.25 V=0.01 acc=0.95 future=0.0": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.5003,
+   "p_caught_review": 0.0047,
+   "p_caught_total": 0.505,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.3464
+  },
+  "f=0.33 V=0.01 acc=0.95 future=0.0": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4783,
+   "p_caught_review": 0.0004,
+   "p_caught_total": 0.4787,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4041
+  },
+  "f=0.10 V=0.1 acc=0.95 future=0.0": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.501,
+   "p_caught_review": 0.0396,
+   "p_caught_total": 0.5406,
+   "p_expelled": 0.0129,
+   "net_per_defection_V": 0.1712
+  },
+  "f=0.15 V=0.1 acc=0.95 future=0.0": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4991,
+   "p_caught_review": 0.0345,
+   "p_caught_total": 0.5336,
+   "p_expelled": 0.0046,
+   "net_per_defection_V": 0.2336
+  },
+  "f=0.20 V=0.1 acc=0.95 future=0.0": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4957,
+   "p_caught_review": 0.023,
+   "p_caught_total": 0.5187,
+   "p_expelled": 0.0002,
+   "net_per_defection_V": 0.3312
+  },
+  "f=0.25 V=0.1 acc=0.95 future=0.0": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4915,
+   "p_caught_review": 0.0098,
+   "p_caught_total": 0.5014,
+   "p_expelled": 0.0001,
+   "net_per_defection_V": 0.4274
+  },
+  "f=0.33 V=0.1 acc=0.95 future=0.0": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4841,
+   "p_caught_review": 0.0008,
+   "p_caught_total": 0.4849,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4983
+  },
+  "f=0.10 V=1.0 acc=0.95 future=0.0": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.4998,
+   "p_caught_review": 0.0824,
+   "p_caught_total": 0.5822,
+   "p_expelled": 0.0283,
+   "net_per_defection_V": -0.0863
+  },
+  "f=0.15 V=1.0 acc=0.95 future=0.0": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.5023,
+   "p_caught_review": 0.0659,
+   "p_caught_total": 0.5682,
+   "p_expelled": 0.0088,
+   "net_per_defection_V": 0.0329
+  },
+  "f=0.20 V=1.0 acc=0.95 future=0.0": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.496,
+   "p_caught_review": 0.043,
+   "p_caught_total": 0.5389,
+   "p_expelled": 0.0009,
+   "net_per_defection_V": 0.2019
+  },
+  "f=0.25 V=1.0 acc=0.95 future=0.0": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4876,
+   "p_caught_review": 0.0211,
+   "p_caught_total": 0.5087,
+   "p_expelled": 0.0001,
+   "net_per_defection_V": 0.3635
+  },
+  "f=0.33 V=1.0 acc=0.95 future=0.0": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4807,
+   "p_caught_review": 0.0019,
+   "p_caught_total": 0.4826,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.5045
+  },
+  "f=0.10 V=0.001 acc=0.95 future=0.1": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.5031,
+   "p_caught_review": 0.0198,
+   "p_caught_total": 0.5229,
+   "p_expelled": 0.0068,
+   "net_per_defection_V": -4.929
+  },
+  "f=0.15 V=0.001 acc=0.95 future=0.1": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4965,
+   "p_caught_review": 0.0163,
+   "p_caught_total": 0.5128,
+   "p_expelled": 0.002,
+   "net_per_defection_V": -2.002
+  },
+  "f=0.20 V=0.001 acc=0.95 future=0.1": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.5011,
+   "p_caught_review": 0.0112,
+   "p_caught_total": 0.5123,
+   "p_expelled": 0.0003,
+   "net_per_defection_V": -0.9321
+  },
+  "f=0.25 V=0.001 acc=0.95 future=0.1": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.5003,
+   "p_caught_review": 0.0047,
+   "p_caught_total": 0.505,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.7343
+  },
+  "f=0.33 V=0.001 acc=0.95 future=0.1": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4783,
+   "p_caught_review": 0.0004,
+   "p_caught_total": 0.4787,
+   "p_expelled": 0.0,
+   "net_per_defection_V": -0.629
+  },
+  "f=0.10 V=0.01 acc=0.95 future=0.1": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.5031,
+   "p_caught_review": 0.0198,
+   "p_caught_total": 0.5229,
+   "p_expelled": 0.0068,
+   "net_per_defection_V": -0.1702
+  },
+  "f=0.15 V=0.01 acc=0.95 future=0.1": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4965,
+   "p_caught_review": 0.0163,
+   "p_caught_total": 0.5128,
+   "p_expelled": 0.002,
+   "net_per_defection_V": 0.1505
+  },
+  "f=0.20 V=0.01 acc=0.95 future=0.1": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.5011,
+   "p_caught_review": 0.0112,
+   "p_caught_total": 0.5123,
+   "p_expelled": 0.0003,
+   "net_per_defection_V": 0.2852
+  },
+  "f=0.25 V=0.01 acc=0.95 future=0.1": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.5003,
+   "p_caught_review": 0.0047,
+   "p_caught_total": 0.505,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.3464
+  },
+  "f=0.33 V=0.01 acc=0.95 future=0.1": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4783,
+   "p_caught_review": 0.0004,
+   "p_caught_total": 0.4787,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4041
+  },
+  "f=0.10 V=0.1 acc=0.95 future=0.1": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.501,
+   "p_caught_review": 0.0396,
+   "p_caught_total": 0.5406,
+   "p_expelled": 0.0129,
+   "net_per_defection_V": 0.1326
+  },
+  "f=0.15 V=0.1 acc=0.95 future=0.1": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.4991,
+   "p_caught_review": 0.0345,
+   "p_caught_total": 0.5336,
+   "p_expelled": 0.0046,
+   "net_per_defection_V": 0.2198
+  },
+  "f=0.20 V=0.1 acc=0.95 future=0.1": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.4957,
+   "p_caught_review": 0.023,
+   "p_caught_total": 0.5187,
+   "p_expelled": 0.0002,
+   "net_per_defection_V": 0.3306
+  },
+  "f=0.25 V=0.1 acc=0.95 future=0.1": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4915,
+   "p_caught_review": 0.0098,
+   "p_caught_total": 0.5014,
+   "p_expelled": 0.0001,
+   "net_per_defection_V": 0.4271
+  },
+  "f=0.33 V=0.1 acc=0.95 future=0.1": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4841,
+   "p_caught_review": 0.0008,
+   "p_caught_total": 0.4849,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.4983
+  },
+  "f=0.10 V=1.0 acc=0.95 future=0.1": {
+   "defection_rate": 0.00087,
+   "p_caught_appeal": 0.4998,
+   "p_caught_review": 0.0824,
+   "p_caught_total": 0.5822,
+   "p_expelled": 0.0283,
+   "net_per_defection_V": -0.0948
+  },
+  "f=0.15 V=1.0 acc=0.95 future=0.1": {
+   "defection_rate": 0.00309,
+   "p_caught_appeal": 0.5023,
+   "p_caught_review": 0.0659,
+   "p_caught_total": 0.5682,
+   "p_expelled": 0.0088,
+   "net_per_defection_V": 0.0302
+  },
+  "f=0.20 V=1.0 acc=0.95 future=0.1": {
+   "defection_rate": 0.00752,
+   "p_caught_appeal": 0.496,
+   "p_caught_review": 0.043,
+   "p_caught_total": 0.5389,
+   "p_expelled": 0.0009,
+   "net_per_defection_V": 0.2017
+  },
+  "f=0.25 V=1.0 acc=0.95 future=0.1": {
+   "defection_rate": 0.01492,
+   "p_caught_appeal": 0.4876,
+   "p_caught_review": 0.0211,
+   "p_caught_total": 0.5087,
+   "p_expelled": 0.0001,
+   "net_per_defection_V": 0.3634
+  },
+  "f=0.33 V=1.0 acc=0.95 future=0.1": {
+   "defection_rate": 0.03484,
+   "p_caught_appeal": 0.4807,
+   "p_caught_review": 0.0019,
+   "p_caught_total": 0.4826,
+   "p_expelled": 0.0,
+   "net_per_defection_V": 0.5045
+  }
+ },
+ "min_rr_f20": {
+  "V=0.001 acc=0.85 future=0.0": 0.0,
+  "V=0.001 acc=0.85 future=0.1": 0.0,
+  "V=0.001 acc=0.95 future=0.0": 0.0,
+  "V=0.001 acc=0.95 future=0.1": 0.0,
+  "V=0.01 acc=0.85 future=0.0": 0.945,
+  "V=0.01 acc=0.85 future=0.1": 0.873,
+  "V=0.01 acc=0.95 future=0.0": 0.226,
+  "V=0.01 acc=0.95 future=0.1": 0.212,
+  "V=0.1 acc=0.85 future=0.0": null,
+  "V=0.1 acc=0.85 future=0.1": null,
+  "V=0.1 acc=0.95 future=0.0": 0.299,
+  "V=0.1 acc=0.95 future=0.1": 0.298,
+  "V=1.0 acc=0.85 future=0.0": null,
+  "V=1.0 acc=0.85 future=0.1": null,
+  "V=1.0 acc=0.95 future=0.0": 0.306,
+  "V=1.0 acc=0.95 future=0.1": 0.306
+ }
+}

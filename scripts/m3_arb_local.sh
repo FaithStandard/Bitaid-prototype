@@ -75,6 +75,9 @@ R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
 # NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
 [ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
+# STALLAPPEAL=1 (with CAPTURE and CHALLENGE): r1-liar, favoured by the captured tier 1, opens tier 2
+# itself and never draws it; the dissenter, appealing too, must carry the tier from its draw block
+[ -n "$STALLAPPEAL" ] && R1APPEAL="$R1APPEAL --stall-appeal"
 # OMIT=1: r1-liar, escalating, posts a tier commitment that leaves one seat's reveal out; the commitment
 # counting every reveal stands all the same (§10.4)
 [ -n "$OMIT" ] && R1APPEAL="$R1APPEAL --omit-reveal"
