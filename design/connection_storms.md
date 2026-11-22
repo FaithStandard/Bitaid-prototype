@@ -68,15 +68,24 @@ at random, never by idleness.
 A Core sorts incoming links by what their stake shows, and gives each tier its own share of the slots,
 so a crowd in one tier can never take the slots of another:
 
-| Tier | Stake proven | Example share of 64 slots |
+| Tier | Stake proven | Guaranteed slots of 64 |
 | --- | --- | --- |
-| Protocol | an output the protocol itself recognises: a responder's, arbitrator's or archivist's bond, a caller's funding output, a Core's relay stake | 48 |
-| Link | a bare link stake (20,000 sats today), nothing else | 12 |
+| Protocol | an output the protocol itself recognises: a responder's, arbitrator's or archivist's bond, a caller's funding output, an insurer's buffer, a Core's relay stake | 56 |
+| Link | a bare link stake (20,000 sats today), nothing else | 4 |
 | Open | proof still pending (the 10 s window) | 4 |
 
-Within a tier, a full tier refuses newcomers or replaces one of its own links at random; it never
-reaches into another tier. A watcher who only wants to look in gets one of the few link slots, and a
-thousand watchers' stakes still fill only those few: the responders, callers and arbitrators keep
+Who holds a bare link stake: outsiders who only read, such as an auditor replaying the record (the
+prototype's audit node), a researcher, a journalist, someone checking the protocol before joining.
+Rare, and none of them in a hurry; evidence itself is fetched from the archivists, not through a
+Core's link slots, so even a police request for a case's footage does not sit here. Four slots keep
+the door open for independent checking, which is part of the protocol's security, without letting
+them weigh on the relays.
+
+The guarantees are floors, not fences: a slot no one in its tier is using may be lent to another
+tier, so that nothing sits idle on a quiet Core, and lending only flows down: a protocol link
+reclaims a lent slot by closing a lower-tier link holding it above that tier's floor, never the
+reverse. Within a tier, a full tier refuses newcomers or replaces one of its own links at random. A watcher who only wants to look in gets one of the few link slots, and a
+thousand watchers' stakes still keep only those four: the responders, callers and arbitrators keep
 theirs. To crowd the protocol tier, an attacker must post real bonds that the chain shows to be bonds,
 two links per bond, each bond at risk in cases if used, and at 0.1 BTC per arbitrator bond 24 of them
 cost 2.4 BTC per Core, multiplied by every Core the victims also link to.
