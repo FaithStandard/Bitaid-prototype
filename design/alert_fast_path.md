@@ -46,6 +46,36 @@ location shown at once. Off by default: accepting puts the bond at stake for a n
 forfeitures), so auto-dispatch is for people actually on duty. The prototype's responder already accepts
 automatically once an alert passes its checks.
 
+## 6. Burst relay of the emergency path (Albert, 2026-11-23)
+
+Measured on Nov 23: the location reached the PC's responder in 4.8 s and the tablet in 55.9 s (whether
+on the tablet's link or in its node is being measured). Still faster than a dispatcher's call, but
+the tail matters. The idea: the first Cores holding an alert or a location push it harder than
+ordinary gossip, past their usual links.
+
+What holds up:
+- **Only for what proves itself.** A Core enters burst mode only for an alert whose escrowed offer it
+  has checked on chain, and for a location signed by that alert's caller. A fake emergency cannot
+  trigger it, so the burst cannot be turned into an amplifier against the network.
+- **Warm links, not new ones.** A new Tor circuit to an onion the Core has not reached before takes 5
+  to 30 s, plus the stake proof, about the delay being fought. So each Core keeps a few standby links
+  to other Cores open and idle at all times (cheap), and the burst goes out on every regular and
+  standby link at once, ahead of bulk traffic (§4). New links are opened only to refill the standby
+  set afterwards.
+- **Several paths to the responder.** A location is sealed to one responder and is useful only on a
+  link it holds; a wider burst helps only because that responder keeps links to two or three Cores
+  (§2). Breadth multiplies the paths to those Cores; the responder's own links decide the last hop.
+
+Notes:
+- Messages are already flooded on every link of a Core; what the burst adds is the standby links, the
+  priority, and duplicates sent on purpose over independent paths (the first copy wins, the rest are
+  dropped as already seen).
+- Proof of work is not per message here: Tor's onion-service proof of work at the connection attempt,
+  only under load, is in design/connection_storms.md (not built). Core-to-Core standby links are
+  proven by the Cores' relay stakes, so they do not pay it.
+- A second transport (I2P) for some standby links makes a Tor-wide outage survivable; optional on
+  phones, for battery.
+
 ## Questions for the design
 
 - How the dedicated listener and the settlement work share a phone's battery and network.
