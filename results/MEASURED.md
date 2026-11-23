@@ -56,3 +56,14 @@ links to the run's published log. Every node is still run by us.
 - [Nov 19](public_signet_anchored_audit_2026-11-19.txt)
 - [Nov 20](public_signet_stake_location_2026-11-20.txt)
 - [Nov 23](public_signet_followers_2026-11-23.txt)
+
+## Public signet, 2026-11-23 (second run, INDEX_FROM 332149): stopped, incident never broadcast
+
+- Location sealed to the responders 2.1 s after accepting (on the link and in the node alike).
+- Signer 2's invalid partial signature caught, its seat given up, set v1 re-signed in 2.57 s; pool
+  co-signed the incident 3 of 4 with member 2 stalling (3 sessions).
+- The caller's one `listunspent` to the PC's bitcoind over Tor timed out connecting (30 s) while the
+  gossip link was also dropping, and the caller gave up: the incident was signed but never sent, so
+  the case had no pot and the arbitration could not seat anyone. A signet reorg from block 332158
+  was handled (one re-read). Fixed: chain calls that never reached the node are asked again, 5 to
+  80 s apart, about 4 minutes in all (`examples/rpc_retry.rs`).
