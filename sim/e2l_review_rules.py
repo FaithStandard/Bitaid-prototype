@@ -7,7 +7,8 @@ excluded). Candidate rules for overturning a verdict:
   pooled    at least 60 of all 90 votes (two thirds of the pooled votes)
   two_of_3  at least 2 of the 3 stages reach 20 of 30
   sixty     each of the 3 stages reaches 18 of 30 (60%)
-  gated     the first stage reaches 15 of 30 (half) to go on, then at least 60 of all 90
+  gated     the first stage reaches 15 of 30 (half) to go on, the first two 30 of 60 for the third to
+            sit (below that 60 of 90 is out of reach), then at least 60 of all 90; expulsion at 72 of 90
 
 A clean review stops at the first stage that cannot reach its bar, so the rules also differ in
 cost: the expected number of reviewers sat per drawn case (`seats_*`). Under `pooled` a review never
@@ -71,9 +72,12 @@ def rules(yes):
         "seats_pooled": 90.0,
         "seats_two_of_3": (60 + 30 * (((yes[:, 0] >= 20) ^ (yes[:, 1] >= 20)))).mean(),
         "seats_sixty": (30 + 30 * (yes[:, 0] >= 18) + 30 * ((yes[:, 0] >= 18) & (yes[:, 1] >= 18))).mean(),
-        "seats_gated": (30 + 60 * (yes[:, 0] >= 15)).mean(),
+        # gated: the second panel sits once the first reaches half; the third only while 60 of 90 is
+        # still reachable (s1 + s2 >= 30), a stop that loses no power
+        "seats_gated": (30 + 30 * (yes[:, 0] >= 15) + 30 * ((yes[:, 0] >= 15) & (yes[:, :2].sum(axis=1) >= 30))).mean(),
         "expel_current": (yes >= 24).all(axis=1).mean(),
         "expel_pooled": (tot >= 72).mean(),
+        "expel_gated": ((yes[:, 0] >= 15) & (yes[:, :2].sum(axis=1) >= 30) & (tot >= 72)).mean(),
     }
 
 
@@ -88,16 +92,16 @@ if __name__ == "__main__":
             for acc in (0.80, 0.85, 0.90, 0.95, 0.99):
                 r = rules(votes(f, acc, corr, False, False))
                 out["power"][f"{'corr' if corr else 'flat'} f={f} acc={acc}"] = {k: round(float(v), 5) for k, v in r.items()}
-                print(f"{f:5.2f} {acc:5.2f} | " + " ".join(f"{r[n]:9.4f}" for n in names))
+                print(f"{f:5.2f} {acc:5.2f} | " + " ".join(f"{r[n]:9.4f}" for n in names) + f" | expel cur {r['expel_current']:.4f} gated {r['expel_gated']:.4f}")
     print("\n=== Safety: P(wrongful overturn) of an honest panel's right verdict ===")
     for corr in (True, False):
         print(f"\n-- {'mixed difficulty' if corr else 'flat accuracy'} --")
-        print(f"{'bloc':>5} {'acc':>5} | " + " ".join(f"{n:>9}" for n in names) + f" {'expel_cur':>10} {'expel_pool':>10}")
+        print(f"{'bloc':>5} {'acc':>5} | " + " ".join(f"{n:>9}" for n in names) + f" {'expel_cur':>10} {'expel_gate':>10}")
         for f in (0.0, 0.20, 0.25):
             for acc in (0.60, 0.70, 0.85):
                 r = rules(votes(f, acc, corr, f > 0, True))
                 out["safety"][f"{'corr' if corr else 'flat'} attack_f={f} acc={acc}"] = {k: float(v) for k, v in r.items()}
-                print(f"{f:5.2f} {acc:5.2f} | " + " ".join(f"{r[n]:9.2e}" for n in names) + f" {r['expel_current']:10.2e} {r['expel_pooled']:10.2e}")
+                print(f"{f:5.2f} {acc:5.2f} | " + " ".join(f"{r[n]:9.2e}" for n in names) + f" {r['expel_current']:10.2e} {r['expel_gated']:10.2e}")
     print("\n=== Cost: expected reviewers sat per drawn case whose verdict was right (no bloc, mixed difficulty) ===")
     out["cost"] = {}
     for acc in (0.70, 0.85, 0.95):

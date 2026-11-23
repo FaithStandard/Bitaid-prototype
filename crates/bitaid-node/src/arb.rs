@@ -699,8 +699,8 @@ impl Tier {
             return None;
         }
         let v: Vec<Ballot> = self.reveals.iter().map(|x| x.1.clone()).collect();
-        // every panel decides at two thirds, review panels too: three in turn overturn a verdict
-        // (§10.3); the entry bond and expulsion need 80% at each stage (`Replay::review_strong`)
+        // every arbitration panel decides at two thirds; a review stage's own two thirds is only
+        // reported: the review counts votes across its stages (`Replay::review_state`, §10.3)
         supermajority(self.seats.len(), &v)
     }
 }
@@ -713,9 +713,10 @@ pub enum ReviewState {
     NotDrawn,
     /// drawn; stage `s` is due or under way
     Pending(u32),
-    /// a stage found nothing wrong at 80% (or no 80% finding): the verdict stands
+    /// the count stopped at this stage (its gate not met) or the pool could not seat the next: the
+    /// verdict stands
     Cleared(u32),
-    /// three panels in turn found the same different verdict, each at 80%
+    /// three panels together gave another verdict two thirds of their votes (the gated rule, §10.3)
     Confirmed(Ballot),
 }
 
@@ -1232,7 +1233,6 @@ impl Replay {
             return ReviewState::NotDrawn;
         }
         let fk = verdict_key(&fv);
-        let mut prev: Option<Vec<u8>> = None;
         for st in 1..=REVIEW_STAGES {
             let Some(t) = self.reviews.get(&(REVIEW_BASE + st)) else {
                 // a pool too small to draw this stage's panel from those who sat on neither the case
@@ -1247,19 +1247,49 @@ impl Replay {
             if !t.committed || (self.flagger.is_some() && !t.fee_paid) {
                 return ReviewState::Pending(st);
             }
-            let Some(v) = t.verdict() else {
+            // the gated rule (§10.3): the votes for one other verdict are counted across the stages;
+            // the first panel must give it half to go on, the first two together a panel's worth
+            // (below that two thirds of all three is out of reach), and all three two thirds
+            let Some((_, v, n)) = self.review_tally(fk.as_slice()) else {
                 return ReviewState::Cleared(st);
             };
-            let k = verdict_key(&v);
-            if k == fk || prev.as_ref().is_some_and(|p| *p != k) {
+            let p = REVIEW_PANEL;
+            let sum: usize = n.iter().take(st as usize).sum();
+            let go_on = match st {
+                1 => 2 * n[0] >= p,
+                2 => sum >= p,
+                _ => 3 * sum >= 2 * (REVIEW_STAGES as usize * p),
+            };
+            if !go_on {
                 return ReviewState::Cleared(st);
             }
             if st == REVIEW_STAGES {
                 return ReviewState::Confirmed(v);
             }
-            prev = Some(k);
         }
         ReviewState::Cleared(REVIEW_STAGES)
+    }
+
+    /// The staged review's count (§10.3): the verdict other than the case's final one (`fk`) that the
+    /// first stage gave most votes (ties to the lowest key), and its votes at each stage held so far.
+    pub fn review_tally(&self, fk: &[u8]) -> Option<(Vec<u8>, Ballot, [usize; 3])> {
+        let first = self.reviews.get(&(REVIEW_BASE + 1)).filter(|t| t.committed)?;
+        let mut count: std::collections::BTreeMap<Vec<u8>, (usize, Ballot)> = Default::default();
+        for (_, b) in &first.reveals {
+            let k = verdict_key(b);
+            if k.as_slice() != fk {
+                count.entry(k).or_insert((0, b.clone())).0 += 1;
+            }
+        }
+        let best = count.values().map(|x| x.0).max()?;
+        let (k, (_, v)) = count.into_iter().find(|(_, (c, _))| *c == best)?;
+        let mut n = [0usize; 3];
+        for st in 1..=REVIEW_STAGES.min(3) {
+            if let Some(t) = self.reviews.get(&(REVIEW_BASE + st)).filter(|t| t.committed) {
+                n[st as usize - 1] = t.reveals.iter().filter(|x| verdict_key(&x.1) == k).count();
+            }
+        }
+        Some((k, v, n))
     }
 
     /// Each seat's case unit: (tier, arbitrator, unit). Every unit the replay verified.
@@ -1782,12 +1812,12 @@ impl Replay {
             return false;
         };
         let ck = verdict_key(cv);
-        (1..=REVIEW_STAGES).all(|st| {
-            self.reviews.get(&(REVIEW_BASE + st)).is_some_and(|t| {
-                let v: Vec<Ballot> = t.reveals.iter().map(|x| x.1.clone()).collect();
-                supermajority_of(t.seats.len(), &v, 4, 5).is_some_and(|b| verdict_key(&b) == ck)
-            })
-        })
+        // 80% of all three stages' seats together, for the confirmed verdict (the gated rule, §10.3)
+        let votes: usize = (1..=REVIEW_STAGES)
+            .filter_map(|st| self.reviews.get(&(REVIEW_BASE + st)))
+            .map(|t| t.reveals.iter().filter(|x| verdict_key(&x.1) == ck).count())
+            .sum();
+        5 * votes >= 4 * (REVIEW_STAGES as usize * REVIEW_PANEL)
     }
 
     /// Who voted, on any arbitration tier, for the verdict a confirmed review overturned (§12).

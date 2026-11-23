@@ -3,7 +3,13 @@
 """
 import json
 import math
+import os
 import random
+
+# RULE=gated: the staged review adopted from e2l (first panel at 15 of 30 to go on, the first two at 30
+# of 60 for the third to sit, overturn at 60 of 90 pooled, expulsion at 72 of 90); default: three
+# stages each at 20 of 30 (expulsion at 24 of 30 each)
+RULE = os.environ.get("RULE", "current")
 
 N = 200
 FEE_T1 = 0.0002
@@ -42,6 +48,14 @@ def staged_review(rng, B, acc, correlated=True):
         p_honest = acc
     pool = [False] * (B - 3) + [True] * (N - B)
     rng.shuffle(pool)
+    if RULE == "gated":
+        tot = 0
+        for s in range(3):
+            panel = pool[s * 30 : (s + 1) * 30]
+            tot += sum(1 for h in panel if h and rng.random() < p_honest)
+            if (s == 0 and tot < 15) or (s == 1 and tot < 30):
+                return False, False
+        return tot >= 60, tot >= 72
     expelled = True
     for s in range(3):
         panel = pool[s * 30 : (s + 1) * 30]
@@ -187,5 +201,5 @@ if __name__ == "__main__":
             vals = [pc[mode][f][a]["p_overturn"] for a in accs]
             print(f"{f:>5} | " + " ".join(f"{v:7.4f}" for v in vals))
 
-    json.dump(out, open("e2h_power_results.json", "w"), indent=1)
+    json.dump(out, open("e2h_power_results.json" if RULE == "current" else f"e2h_power_results_{RULE}.json", "w"), indent=1)
 

@@ -4503,9 +4503,10 @@ fn convene_review(
                         "too few arbitrators who sat on neither the case to draw a review panel; the verdict stands".to_string()
                     } else if rp.reviews.get(&(arb::REVIEW_BASE + st + 1)).is_none()
                         && rp.review_pool < (st as usize + 1) * arb::REVIEW_PANEL
-                        // stage st found against the verdict, so the review would have gone on
-                        && rp.reviews.get(&(arb::REVIEW_BASE + st)).and_then(|t| t.verdict()).is_some_and(|v| {
-                            rp.final_ruling().is_some_and(|(_, f)| arb::verdict_key(&v) != arb::verdict_key(&f))
+                        // stage st passed its gate, so the review would have gone on
+                        && rp.final_ruling().and_then(|(_, f)| rp.review_tally(&arb::verdict_key(&f))).is_some_and(|(_, _, n)| {
+                            let sum: usize = n.iter().take(st as usize).sum();
+                            if st == 1 { 2 * n[0] >= arb::REVIEW_PANEL } else { sum >= arb::REVIEW_PANEL }
                         })
                     {
                         format!("too few arbitrators left to draw review stage {}; the verdict stands", st + 1)
