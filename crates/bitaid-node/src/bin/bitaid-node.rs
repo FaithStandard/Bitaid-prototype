@@ -4501,7 +4501,13 @@ fn convene_review(
                     bitaid_node::pre(&c, 8),
                     if st == 0 {
                         "too few arbitrators who sat on neither the case to draw a review panel; the verdict stands".to_string()
-                    } else if rp.reviews.get(&(arb::REVIEW_BASE + st + 1)).is_none() && rp.review_pool < (st as usize + 1) * arb::REVIEW_PANEL {
+                    } else if rp.reviews.get(&(arb::REVIEW_BASE + st + 1)).is_none()
+                        && rp.review_pool < (st as usize + 1) * arb::REVIEW_PANEL
+                        // stage st found against the verdict, so the review would have gone on
+                        && rp.reviews.get(&(arb::REVIEW_BASE + st)).and_then(|t| t.verdict()).is_some_and(|v| {
+                            rp.final_ruling().is_some_and(|(_, f)| arb::verdict_key(&v) != arb::verdict_key(&f))
+                        })
+                    {
                         format!("too few arbitrators left to draw review stage {}; the verdict stands", st + 1)
                     } else {
                         format!("the staged review cleared the verdict at stage {st}")
