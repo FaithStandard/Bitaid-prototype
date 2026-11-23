@@ -1,0 +1,170 @@
+Public signet run, 2026-11-22/23: PC (core, pool members 1-2, archivist, arbitrators, r3, hostile outsider), tablet (r1, pool member 3), phone (caller, pool member 4 scripted to lie). Over Tor; amounts /100; long deadlines x30. Test coins only.
+First run with the follower fix (a party following a tier decides it by its commitment on chain) and the attestation hold (a pool member reads what it missed from the archive before attesting).
+
+===== PHONE (caller)
+
+~/bitaid-prototype $ cd ~/bitaid-prototype &&  PC=7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion   RPC_PASS=(redacted)  INDEX_FROM=332043   TIME_SCALE=30 SAT_SCALE=100 DISPUTE_BLOCKS=8 COMMIT_BLOCKS=8 sh scripts/net_device.sh caller
+TOR_READY socks 127.0.0.1:9160
+[caller] gossip: dialling 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700 through Tor …
+gossip: link up (to 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700)
+[caller    0.01s] caller on 1 link(s), identity 9e1f7185ce9d3c39
+[PASS] caller oracle pool found and checked: 4 members, threshold 3, 60 nonces — 81abe6f4337ba9fe
+[caller  509.08s] pool 81abe6f4337b…, 1 archivist(s)
+[caller  509.08s] pool ready; alerting in 15 s so responders can start listening
+[PASS] caller registration: funding output (no key path) and template committed — 087b8481d116f80602c425de827f081d7e6934cafb6201820f15f03184b9aced:1
+[caller 1004.74s] ALERT case cdc6521a in H3 cell 886d75db27fffff
+[caller 1010.06s] accepted by 3498b504 (bond 39b5ddd67021)
+[caller 1013.14s] accepted by 21c57202 (bond d6a0e8b3d3d2)
+[caller 1017.02s] accepted by 66feac56 (bond 31c00b6ee16e)
+[PASS] caller 3 responder(s) accepted within the joining window, bonds checked on chain — first after 7.23 s
+[caller 1700.82s] nonces [53, 19, 42] reserved by 3 of 4 members
+[caller 1701.89s] ROSTER v0: 3 seat(s), incident fd09e4f2
+[caller 1744.11s] set v0 failed: signer 2: invalid partial signature on message 0
+[PASS] caller signer 2 caught sending an invalid partial signature; its seat is given up and the set re-signed — signer 2: invalid partial signature on message 0
+[caller 1745.52s] ROSTER v1: 2 seat(s), incident 85328d3d
+[caller 1856.41s] set v1 complete: 39 payouts + 3 refunds, 3 signers, 2.85 s
+[PASS] caller pre-signed set v1 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
+[caller 2225.44s] pool member 2 committed but did not sign session 1; replaced
+[PASS] caller pool co-signed the incident (FROST, 3 of 4 members) — 2 session(s), signers [1, 3, 4], 422.30 s
+[PASS] caller incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
+[caller 3334.10s] time from alert to a funded, fully pre-signed incident: 2331.28 s
+[PASS] caller evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 7.33 s
+[PASS] caller deposit: "returned" completed by the attestation and broadcast — broadcast by another party first
+[PASS] caller reward: "paid (7, 3)" completed by the attestation and broadcast — already broadcast by another party
+[PASS] caller bounty: "split (7, 3)" completed by the attestation and broadcast — already broadcast by another party
+[PASS] caller all 3 pots settled on chain by the attested outcome (3 payouts confirmed) — deposit: returned; reward: paid (7, 3); bounty: split (7, 3)
+[caller] 12 passed, 0 failed
+keeping pool member up 36000 s for penalties
+
+===== TABLET (r1)
+$ cd ~/bitaid-prototype && PC=7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion   RPC_PASS=(redacted)  INDEX_FROM=332043   TIME_SCALE=30 SAT_SCALE=100 sh scripts/net_device.sh responder
+TOR_READY socks 127.0.0.1:9160
+[r1] gossip: dialling 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700 through Tor …
+gossip: link up (to 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700)
+[r1    0.00s] responder on 1 link(s), identity 66feac56a5b81499
+[r1 1012.17s] bond 31c00b6ee16e posted; listening on 7 cells around 886d75db27fffff
+[PASS] r1 alert cdc6521a in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r1 1026.31s] ACCEPT sent
+[r1 1751.32s] roster v0 confirmed by 3 pool members
+[r1 1751.33s] loser-pays forfeiture of 990 sats pre-signed for roster v0, with the fault forfeitures (5000 and 20000 sats)
+[r1 1757.77s] set v0 failed: signer 2: invalid partial signature on message 0; waiting for a re-roll
+[r1 1868.21s] roster v1 confirmed by 3 pool members
+[r1 1868.21s] loser-pays forfeiture of 990 sats pre-signed for roster v1, with the fault forfeitures (5000 and 20000 sats)
+[r1 1871.37s] set v1 complete: 39 payouts + 3 refunds, 3 signers, 3.15 s
+[PASS] r1 pre-signed set v1 verified (seat 1) — 39 payouts
+[PASS] r1 exact location: sealed to me after I accepted, the one the alert committed to, inside its cell — 109 m from here, 55.9 s after accepting
+gossip: link down (to 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700)
+gossip: link up (to 7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7700)
+[PASS] r1 incident transaction on chain: every pot output exists — 85328d3daecca5a5f3dc15f12602a9f77e1b8878fe61894ff27aa1f8f5cdce89
+[PASS] r1 evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 1.77 s
+[r1 6311.07s] 2 of 2 commitments in; revealing
+[PASS] r1 attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
+[PASS] r1 tier 1: posted on the fee market at 330 sats a seat, the panel's fees locked in escrow; taken up at block 332051 — effda6b5d15a6d0b
+[r1 7290.66s] ESCALATE tier 1 (3 seats): seat 0: no 80% agreement on its class; drawn from block 332057
+[r1 7291.42s] seat offer from 39f4c7a9 refused: entry bond missing or below the floor
+[r1 7293.98s] seat offer from 39f4c7a9 refused: entry bond missing or below the floor
+[r1 7855.84s] case cdc6521a: 1 message(s) read from the archive
+[PASS] r1 tier 1: 3 of 3 offering arbitrators drawn from block 332057, case disclosed only to them — 1993.9 s after escalating
+[PASS] r1 tier 1: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[PASS] r1 tier 1: 3 × 330 sats paid to the seats — db2bce1544a5f230
+[PASS] r1 tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — a32be19661926532932ccd51e602e3cc9b44fb2119d9101cf28ee2b99b24aae7
+[PASS] r1 tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 4975.3 s from escalation
+[r1 12265.96s] standing verdict after tier 1: D,I — upholds my claim
+[r1 15018.67s] tier 2 opened by another party; following it
+[r1 25692.95s] standing verdict after tier 2: I,D — against my claim
+[PASS] r1 deposit: "returned" completed by the attestation and broadcast
+[PASS] r1 reward: "paid (7, 3)" completed by the attestation and broadcast
+[PASS] r1 bounty: "split (7, 3)" completed by the attestation and broadcast
+[PASS] r1 my shares arrived at my payout address — 2700 sats
+[r1] 16 passed, 0 failed
+keeping pool member up 36000 s for penalties
+
+===== PC
+=== r3.out
+[PASS] r3-pc alert cdc6521a in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[PASS] r3-pc pre-signed set v1 verified (seat 0) — 39 payouts
+[PASS] r3-pc exact location: sealed to me after I accepted, the one the alert committed to, inside its cell — 164 m from here, 4.8 s after accepting
+[PASS] r3-pc incident transaction on chain: every pot output exists — 85328d3daecca5a5f3dc15f12602a9f77e1b8878fe61894ff27aa1f8f5cdce89
+[PASS] r3-pc evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.00 s
+[PASS] r3-pc deposit: "returned" completes with the attestation
+[PASS] r3-pc reward: "paid (7, 3)" completes with the attestation
+[PASS] r3-pc bounty: "split (7, 3)" completes with the attestation
+[PASS] r3-pc my shares arrived at my payout address — 6300 sats
+[r3-pc] 9 passed, 0 failed
+=== arb1.out
+[PASS] arb1-pc dissented on tier 1 and no party appealed: buying the re-roll to tier 2 on a party's terms
+[PASS] arb1-pc tier 2: 7 of 9 offering arbitrators drawn from block 332077, case disclosed only to them — 5047.7 s after escalating
+[PASS] arb1-pc tier 2: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 7 of 7
+[PASS] arb1-pc tier 2: 7 × 412 sats paid to the seats — c49386ab20d575cd
+[PASS] arb1-pc tier 2: 7 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 483f78adf62b1adf6fa8be0e930856fe8c397719607ef59470212198665a6bf7
+[PASS] arb1-pc tier 2: two-thirds verdict (5 of 7); 2 dissenter(s) owe 2.5× the fee each, settled against the final ruling — 10646.4 s from escalation
+[PASS] arb1-pc tier 2: the larger panel agreed with the dissent — I,D
+[PASS] arb1-pc the pool attested the final outcome — 3 members
+[PASS] arb1-pc attendee 66feac56: the loser pays, one tier-1 panel fee (990 sats) forfeited from its bond into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — b549658689f6acb7 (pool members [1, 2, 3])
+[PASS] arb1-pc tier 1 arbitrator 3d62747f: 2.5× the 330-sat fee (825 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 2badd698361f7d1d (pool members [2, 1, 3])
+[PASS] arb1-pc tier 1 arbitrator bab1c893: 2.5× the 330-sat fee (825 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 763b0203a31d5895 (pool members [1, 2, 3])
+[PASS] arb1-pc tier 2 arbitrator 3d62747f: 2.5× the 412-sat fee (1030 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — b351b7eb4890c7a4 (pool members [2, 1, 3])
+[PASS] arb1-pc tier 2 arbitrator bab1c893: 2.5× the 412-sat fee (1030 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 7bd3c3fc9721ceec (pool members [1, 2, 3])
+[PASS] arb1-pc seizure distribution signed by 1 of 1 archivist(s) after their own replay
+[PASS] arb1-pc seizure output distributed (§12) by the pool and the archivists: 4700 sats to a vindicated dissenter — 240c5e8d230bb1b3
+[arb1-pc] 15 passed, 0 failed
+[PASS] arb1-pc case cdc6521a: review draw at block 332092 (40% for a split final panel): passed over
+[PASS] arb1-pc tier 1 unit of 20000 sats released under the bond's script by the pool's co-signature — bbbd0b38e8b0d67f (pool members [1, 2, 3])
+=== arb3.out
+[PASS] arb3-pc case cdc6521a: review draw at block 332092 (40% for a split final panel): passed over
+[PASS] arb3-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — 47f48c5b38a3c370 (pool members [1, 2, 3])
+=== arb4.out
+[PASS] arb4-pc case cdc6521a: review draw at block 332092 (40% for a split final panel): passed over
+=== arb10.out
+[PASS] arb10-pc case cdc6521a: review draw at block 332092 (40% for a split final panel): passed over
+[PASS] arb10-pc tier 2 unit of 20000 sats released under the bond's script by the pool's co-signature — 15f638bc0ca32151 (pool members [1, 2, 3])
+=== hostile.out
+[PASS] hostile-pc an outsider's records were all accepted by the chain: a posting for a real case, an incident record and a posting for an invented one, two tier records no panel made
+[PASS] hostile-pc the invented case: its incident record, on a transaction the pool never signed, is not read, and its posting holds no place in the queue
+[PASS] hostile-pc the real case was heard by a panel of its parties' drawing, the outsider's posting, offer and announcement notwithstanding
+[PASS] hostile-pc once heard, the case holds no place in the queue: the outsider's posting keeps no slot
+[PASS] hostile-pc the outsider's escrow paid nobody: it sits unspent until its lock
+[hostile-pc] 5 passed, 0 failed
+=== pool1.log (tail)
+[pool1-pc 43855.58s] co-signing input 4 of the seizure output's distribution for cdc6521a
+[pool1-pc 43863.65s] co-signed for cdc6521a (session 190)
+[pool1-pc 44708.70s] co-signing the release of 12920821's tier-2 unit (20000 sats) for cdc6521a: the case is closed and its review let it go
+[pool1-pc 44708.70s] co-signing the release of e2acf9ad's tier-2 unit (20000 sats) for cdc6521a: the case is closed and its review let it go
+[pool1-pc 44709.10s] co-signing the release of 51351a1b's tier-2 unit (20000 sats) for cdc6521a: the case is closed and its review let it go
+[pool1-pc 44709.50s] co-signing the release of 003fa032's tier-2 unit (20000 sats) for cdc6521a: the case is closed and its review let it go
+[pool1-pc 44709.90s] co-signing the release of e6d9edb5's tier-2 unit (20000 sats) for cdc6521a: the case is closed and its review let it go
+[pool1-pc 44712.38s] co-signing the release of 0c0e38bf's tier-1 unit (20000 sats) for cdc6521a: the case is closed and its review let it go
+[pool1-pc 44830.75s] co-signed for cdc6521a (session 1317024)
+[pool1-pc 44832.68s] co-signed for cdc6521a (session 14955168)
+[pool1-pc 44833.09s] co-signed for cdc6521a (session 5421984)
+[pool1-pc 44835.81s] co-signed for cdc6521a (session 116128)
+[pool1-pc 44836.21s] co-signed for cdc6521a (session 15228832)
+[pool1-pc 44836.61s] co-signed for cdc6521a (session 890016)
+chain reorganised from block 332125: reading it again
+=== archivist.log (tail)
+[archivist-pc] gossip: dialling 127.0.0.1:7700 through Tor …
+gossip: link up (to 127.0.0.1:7700)
+[archivist-pc    0.00s] archivist on 1 link(s), identity 3faa91dcefc7b6ee
+[archivist-pc    0.30s] Blossom server at http://7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7480
+[archivist-pc 1621.21s] live case cdc6521a: caller may upload
+[archivist-pc 2318.20s] case cdc6521a: 3 seated responders may upload
+[archivist-pc 2361.71s] case cdc6521a: 2 seated responders may upload
+[archivist-pc 43406.61s] case cdc6521a: review draw at block 332092 passed it over (40%)
+[archivist-pc 43829.78s] signed the seizure distribution of cdc6521a (5 inputs, 4700 sats from 5 forfeitures)
+chain reorganised from block 332125: reading it again
+=== core.log (tail)
+gossip: link up (incoming 127.0.0.1:57414), key deefd301b88036be
+gossip: link up (incoming 127.0.0.1:57417), key c5cc88c5afa82a5b
+gossip: link up (incoming 127.0.0.1:61440), key 3b0da62ccb696fea
+gossip: link up (incoming 127.0.0.1:61441), key 735d5a7d62af387b
+gossip: link up (incoming 127.0.0.1:61453), key 3834d2679e87833b
+gossip: link up (incoming 127.0.0.1:61452), key c11056ac2186d93a
+gossip: link down (incoming 127.0.0.1:57413)
+gossip: link down (incoming 127.0.0.1:61441)
+gossip: link down (incoming 127.0.0.1:61440)
+gossip: link up (incoming 127.0.0.1:52480), key 3b0da62ccb696fea
+gossip: link up (incoming 127.0.0.1:52481), key 735d5a7d62af387b
+gossip: link down (incoming 127.0.0.1:57417)
+gossip: link down (incoming 127.0.0.1:61453)
+gossip: link down (incoming 127.0.0.1:57414)
+gossip: link down (incoming 127.0.0.1:52480)
