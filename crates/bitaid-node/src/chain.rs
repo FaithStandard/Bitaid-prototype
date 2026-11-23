@@ -75,10 +75,25 @@ impl Rpc {
             eprintln!("rpc {method} {}", &p[..p.len().min(90)]);
         }
         let body = json!({"jsonrpc": "1.0", "id": "bitaid", "method": method, "params": params});
-        let r = crate::http_for(&url)
-            .post(&url)
-            .set("Authorization", &self.auth)
-            .send_string(&body.to_string());
+        // A request that never reached the node (over Tor: no circuit, or the onion service slow to
+        // answer) is asked again: it changed nothing, so asking again is safe for every method. Up
+        // to about 4 minutes, Tor's worst case for a fresh circuit (public signet run, 2026-11-23:
+        // one 30 s timeout on listunspent left the incident unbroadcast and the case without a pot).
+        let mut wait = 5;
+        let r = loop {
+            let r = crate::http_for(&url)
+                .post(&url)
+                .set("Authorization", &self.auth)
+                .send_string(&body.to_string());
+            match &r {
+                Err(ureq::Error::Transport(t)) if wait <= 80 && never_sent(t) => {
+                    eprintln!("chain node not reached for {method} ({t}); asking again in {wait} s");
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                    wait *= 2;
+                }
+                _ => break r,
+            }
+        };
         // a long-lived wallet's listings outgrow the client's default cap of 10 MB: read up to 256 MB
         let body = |resp: ureq::Response| -> Result<String, String> {
             use std::io::Read;
@@ -850,3 +865,11 @@ impl Rpc {
 
 /// Blocks above a record before it is taken as settled for good (and remembered without asking again).
 pub const REORG_DEPTH: u32 = 6;
+
+/// True when a transport error happened before the request could reach the node (connecting, the
+/// SOCKS proxy, name lookup): the node saw nothing, so the call can be made again.
+fn never_sent(t: &ureq::Transport) -> bool {
+    use ureq::ErrorKind::*;
+    matches!(t.kind(), ConnectionFailed | Dns | ProxyConnect)
+        || t.to_string().contains("timed out connecting")
+}
