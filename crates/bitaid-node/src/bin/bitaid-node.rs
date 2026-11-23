@@ -982,9 +982,22 @@ fn pool_member(mut n: Node) -> i32 {
                         .collect()
                 });
                 let theirs: Vec<String> = r.oracle_nonces.iter().map(point_hex).collect();
-                if mine.as_ref() != Some(&theirs) {
-                    n.log("roster ignored: oracle nonces are not the ones reserved for this case");
-                    continue;
+                match &mine {
+                    Some(m) if *m != theirs => {
+                        n.log("roster ignored: oracle nonces are not the ones reserved for this case");
+                        continue;
+                    }
+                    // this member reserved nothing for the case (the caller took the nonces of the
+                    // others): it still records the roster and the case key, so it can co-sign the
+                    // later steps and attest the outcome; only the incident is not its to sign.
+                    // Ignoring it left the pool one honest member short whenever a liar was among
+                    // those whose nonces were taken (local test, lagged links)
+                    None => n.log(&format!(
+                        "roster v{} for {} recorded without this member's nonces: it attests and co-signs later steps, not the incident",
+                        r.set_version,
+                        bitaid_node::pre(&case_id, 8)
+                    )),
+                    _ => {}
                 }
                 // a bond backs one open case at a time: a second pre-signed forfeiture of the same
                 // output would be void once the first is taken (review N6)
@@ -4488,6 +4501,14 @@ fn convene_review(
                     bitaid_node::pre(&c, 8),
                     if st == 0 {
                         "too few arbitrators who sat on neither the case to draw a review panel; the verdict stands".to_string()
+                    } else if rp.reviews.get(&(arb::REVIEW_BASE + st + 1)).is_none()
+                        && rp.review_pool < (st as usize + 1) * arb::REVIEW_PANEL
+                        // stage st found against the verdict, so the review would have gone on
+                        && rp.reviews.get(&(arb::REVIEW_BASE + st)).and_then(|t| t.verdict()).is_some_and(|v| {
+                            rp.final_ruling().is_some_and(|(_, f)| arb::verdict_key(&v) != arb::verdict_key(&f))
+                        })
+                    {
+                        format!("too few arbitrators left to draw review stage {}; the verdict stands", st + 1)
                     } else {
                         format!("the staged review cleared the verdict at stage {st}")
                     }
@@ -7425,7 +7446,11 @@ fn responder(mut n: Node) -> i32 {
                 "{:.0} m from here{}",
                 metres(lat, lon, *la, *lo),
                 at.map(|d| format!(", {:.1} s after accepting", d.as_secs_f64())).unwrap_or_default()
-            ),
+            ) + &n
+                .places_read
+                .get(&c)
+                .map(|t| format!(" (read by this node {:.1} s after accepting)", t.saturating_duration_since(accept_t).as_secs_f64()))
+                .unwrap_or_default(),
             (None, _) => "none received".into(),
         };
         n.check(

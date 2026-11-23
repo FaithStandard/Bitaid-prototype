@@ -46,7 +46,73 @@ location shown at once. Off by default: accepting puts the bond at stake for a n
 forfeitures), so auto-dispatch is for people actually on duty. The prototype's responder already accepts
 automatically once an alert passes its checks.
 
-## Questions for the design
+## 6. Burst relay of the emergency path (Albert, 2026-11-23)
+
+Measured on Nov 23: the location reached the PC's responder in 4.8 s and the tablet in 55.9 s (whether
+on the tablet's link or in its node is being measured). Still faster than a dispatcher's call, but
+the tail matters. The idea: the first Cores holding an alert or a location push it harder than
+ordinary gossip, past their usual links.
+
+What holds up:
+- **Only for what proves itself.** A Core enters burst mode only for an alert whose escrowed offer it
+  has checked on chain, and for a location signed by that alert's caller. A fake emergency cannot
+  trigger it, so the burst cannot be turned into an amplifier against the network.
+- **Warm links, not new ones.** A new Tor circuit to an onion the Core has not reached before takes 5
+  to 30 s, plus the stake proof, about the delay being fought. So each Core keeps a few standby links
+  to other Cores open and idle at all times (cheap), and the burst goes out on every regular and
+  standby link at once, ahead of bulk traffic (§4). New links are opened only to refill the standby
+  set afterwards.
+- **Several paths to the responder.** A location is sealed to one responder and is useful only on a
+  link it holds; a wider burst helps only because that responder keeps links to two or three Cores
+  (§2). Breadth multiplies the paths to those Cores; the responder's own links decide the last hop.
+
+Notes:
+- Messages are already flooded on every link of a Core; what the burst adds is the standby links, the
+  priority, and duplicates sent on purpose over independent paths (the first copy wins, the rest are
+  dropped as already seen).
+- Proof of work is not per message here: Tor's onion-service proof of work at the connection attempt,
+  only under load, is in design/connection_storms.md (not built). Core-to-Core standby links are
+  proven by the Cores' relay stakes, so they do not pay it.
+- A second transport (I2P) for some standby links makes a Tor-wide outage survivable; optional on
+  phones, for battery.
+
+## 7. Faster paths outside Tor, weighed (2026-11-23)
+
+Weighed and dropped:
+- **A messenger lane** (Telegram, even with anonymous +888 numbers): it makes the emergency path
+  depend on one company and on a token bought on its own platform, and that company sees who
+  contacted whom, when and from where.
+- **Phone-platform push** (Google's or Apple's): the same kind of dependency and leak, in a milder
+  form (the platform learns when a Core woke a phone). Kept only as a last resort for phones that
+  cannot run a foreground service; off by default.
+
+Kept:
+- **A foreground service for responders on duty** (Android keeps it running with a permanent
+  notification): always linked, no third party, at the cost of battery. Off duty, the app may sleep.
+- **Clear-net links, opt-in, where running Bitaid is lawful** (Albert): Cores, and devices whose
+  owners choose it, also link over ordinary TLS to Cores they name, besides Tor. Every message is
+  signed and the location sealed, so nothing about the content or its integrity depends on the path;
+  the cost is only that a named Core learns the device's IP address. Cores are public infrastructure
+  like Bitcoin nodes, so Core-to-Core links can be clear-net by default where lawful; for callers and
+  responders it is their choice. Each message goes on every path at once and the first copy wins, so
+  Tor still delivers if the clear net is blocked. Tor stays the default everywhere.
+
+Before building it (review, 2026-11-23, checked against the code):
+- **A transport of its own.** Gossip links are plain TCP today (`gossip.rs`); over Tor the onion
+  service encrypts and authenticates them, and Tor's onion proof of work is the storm defense
+  (design/connection_storms.md). On the clear net that would expose the stake handshake, cell tags,
+  case ids and keys to any observer. Clear-net links need Noise (IK or XX, the Core's key known in
+  advance) or TLS, and their own handshake puzzle under load.
+- **The caller's cold start.** A caller's phone may sit asleep for months; at the alert, starting
+  Tor and building a circuit can take 15 to 30 s, a delay none of the runs measured (the caller
+  there was already linked). An opt-in clear-net link to the caller's own Core or its insurer's is
+  worth more there than for a responder already on duty. To measure: an alert from a cold start.
+- **Reliability, not privacy.** Sending on both paths means the named Core, and any observer of the
+  clear-net hop, sees the IP; Tor beside it is only a fallback against blocking or outage. The app
+  must never show "Tor on" as if the address were hidden while the clear-net path is on.
+- I2P stays off phones (battery); between Cores it is the backup if Tor as a whole fails (§6).
+
+## Questions for the design## Questions for the design
 
 - How the dedicated listener and the settlement work share a phone's battery and network.
 - How many Cores a phone should hold links to, against the stake each link needs.
