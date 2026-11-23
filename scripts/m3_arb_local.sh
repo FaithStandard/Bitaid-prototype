@@ -115,7 +115,7 @@ for i in $(seq 1 ${RELEASE_WAIT:-90}); do
   [ $n = 0 ] && break; sleep 2
 done
 # with a review, wait for it to settle before the next case
-[ -n "$REVIEW_PCT" ] && for i in $(seq 1 300); do [ $(grep -c "cleared the verdict\|seizure distributed\|passed it over" $L/archivist.out 2>/dev/null) -ge $c ] && break; sleep 2; done
+[ -n "$REVIEW_PCT" ] && for i in $(seq 1 300); do [ $(grep -c "cleared the verdict\|seizure distributed\|passed it over\|verdict stands" $L/archivist.out 2>/dev/null) -ge $c ] && break; sleep 2; done
 done
 [ -n "$FLAG" ] && for i in $(seq 1 400); do grep -q "seizure distributed\|cleared the verdict\|FAIL" $L/archivist.out 2>/dev/null && break; sleep 2; done
 sleep 20

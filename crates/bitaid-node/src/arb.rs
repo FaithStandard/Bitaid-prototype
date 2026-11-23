@@ -1235,10 +1235,12 @@ impl Replay {
         let mut prev: Option<Vec<u8>> = None;
         for st in 1..=REVIEW_STAGES {
             let Some(t) = self.reviews.get(&(REVIEW_BASE + st)) else {
-                // a pool too small to draw a first panel from those who did not sit on the case: no
-                // review can be held, and the verdict stands (a prototype-scale case)
-                if st == 1 && self.review_pool < REVIEW_PANEL {
-                    return ReviewState::Cleared(0);
+                // a pool too small to draw this stage's panel from those who sat on neither the case
+                // nor an earlier stage: the review cannot complete, and the verdict stands (a
+                // prototype-scale or genesis-scale case; it was retried for ever at stage 2 when the
+                // first stage had used up all but a few)
+                if self.review_pool < st as usize * REVIEW_PANEL {
+                    return ReviewState::Cleared(st - 1);
                 }
                 return ReviewState::Pending(st);
             };

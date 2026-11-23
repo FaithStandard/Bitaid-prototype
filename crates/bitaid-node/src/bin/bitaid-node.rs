@@ -4501,6 +4501,8 @@ fn convene_review(
                     bitaid_node::pre(&c, 8),
                     if st == 0 {
                         "too few arbitrators who sat on neither the case to draw a review panel; the verdict stands".to_string()
+                    } else if rp.reviews.get(&(arb::REVIEW_BASE + st + 1)).is_none() && rp.review_pool < (st as usize + 1) * arb::REVIEW_PANEL {
+                        format!("too few arbitrators left to draw review stage {}; the verdict stands", st + 1)
                     } else {
                         format!("the staged review cleared the verdict at stage {st}")
                     }
