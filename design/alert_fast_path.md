@@ -76,6 +76,28 @@ Notes:
 - A second transport (I2P) for some standby links makes a Tor-wide outage survivable; optional on
   phones, for battery.
 
+## 7. An opt-in messenger lane for the location (Albert, 2026-11-23)
+
+A caller and a responder who have both opted in also exchange the sealed location over a messenger,
+for example Telegram with an anonymous +888 number bought on Fragment (no SIM, no name). Its point on
+a phone: the messenger keeps a push channel alive while the screen is off, where a Tor link may not.
+
+- **Handles are exchanged only after acceptance, sealed.** The responder puts its handle in its
+  Accept, sealed to the caller; nothing is published per cell, so there is no directory of responders
+  by area. The caller sends the sealed location to that handle at the same moment it sends it over
+  Tor; the responder takes whichever arrives first. The alert itself stays on Tor: it already
+  arrives in 2 to 7 s.
+- **What it costs, and only to those who opt in:** the messenger's operator, and whoever can compel
+  it, sees that these two accounts were in contact at that minute, and from what addresses. Content
+  stays sealed, and the responder checks the location against the alert's commitment, so a forged
+  or altered copy is refused. A number reused across cases lets the operator link a person's cases
+  together; rotating numbers costs money.
+- **Never the only path,** and off by default for both sides; the app says plainly what it reveals.
+
+The less revealing alternative for waking a sleeping phone is a content-free push from a Core (the
+phone platform learns only that a Core pinged it). Both can coexist: the push wakes the phone for
+Tor, and the messenger lane is for those who want the fastest delivery.
+
 ## Questions for the design
 
 - How the dedicated listener and the settlement work share a phone's battery and network.
