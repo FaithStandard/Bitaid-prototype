@@ -110,6 +110,8 @@ pub struct Node {
     /// The exact location of each case, sealed to this node, as it arrived: noted the moment it is
     /// received, whatever the node is busy with (a responder must be able to set out at once)
     pub places: HashMap<String, (String, String, Instant)>,
+    /// when the node itself read each case's location (it may have arrived earlier, while busy)
+    pub places_read: HashMap<String, Instant>,
     /// every verified message this node has read, in arrival order: replayed by `arb::Replay`
     pub history: Vec<Envelope>,
     /// subscriptions whose messages only go to the history (read by replays), never to the mailbox
@@ -449,6 +451,7 @@ impl Node {
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
             places: HashMap::new(),
+            places_read: HashMap::new(),
             history: vec![],
             observer: None,
             history_only: Default::default(),
@@ -1213,7 +1216,10 @@ impl Node {
     fn push_backlog(&mut self, env: Envelope, e: Event) {
         if let Msg::Place { case_id, sealed } = &env.msg {
             if e.tag("p") == Some(self.me().as_str()) && !self.places.contains_key(case_id.as_str()) {
-                self.places.insert(case_id.to_string(), (env.sender.clone(), sealed.clone(), Instant::now()));
+                // when it reached the link, not when this node got round to it (both are reported)
+                let at = crate::gossip::arrived(&e.id).unwrap_or_else(Instant::now);
+                self.places_read.insert(case_id.to_string(), Instant::now());
+                self.places.insert(case_id.to_string(), (env.sender.clone(), sealed.clone(), at));
             }
         }
         self.backlog.push_back((env, e));

@@ -565,6 +565,25 @@ fn recheck(shared: &Arc<Mutex<Shared>>, verify: &Verify) {
     }
 }
 
+/// When each message from a link reached this node (its link's reader, before the node handles it),
+/// so that a delay can be told apart: the network's, or the node's own while it was busy elsewhere.
+static ARRIVED: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// When the message `id` arrived on a link, if it did and was recorded.
+pub fn arrived(id: &str) -> Option<Instant> {
+    ARRIVED.lock().ok()?.as_ref()?.get(id).copied()
+}
+
+fn note_arrival(id: &str) {
+    if let Ok(mut m) = ARRIVED.lock() {
+        let m = m.get_or_insert_with(HashMap::new);
+        if m.len() > 50_000 {
+            m.clear();
+        }
+        m.insert(id.to_string(), Instant::now());
+    }
+}
+
 /// Queues `line` for every link but `except`; a link whose queue is full (a peer that stopped
 /// reading) is closed.
 fn forward(g: &Shared, line: &Arc<str>, except: Option<u64>) {
@@ -864,6 +883,7 @@ fn run_link(
             }
             forward(&g, &line, Some(id));
             drop(g);
+            note_arrival(&e.id);
             let _ = local.send(e);
         },
     };

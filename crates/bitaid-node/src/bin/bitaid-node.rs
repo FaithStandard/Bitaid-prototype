@@ -7425,7 +7425,11 @@ fn responder(mut n: Node) -> i32 {
                 "{:.0} m from here{}",
                 metres(lat, lon, *la, *lo),
                 at.map(|d| format!(", {:.1} s after accepting", d.as_secs_f64())).unwrap_or_default()
-            ),
+            ) + &n
+                .places_read
+                .get(&c)
+                .map(|t| format!(" (read by this node {:.1} s after accepting)", t.saturating_duration_since(accept_t).as_secs_f64()))
+                .unwrap_or_default(),
             (None, _) => "none received".into(),
         };
         n.check(
