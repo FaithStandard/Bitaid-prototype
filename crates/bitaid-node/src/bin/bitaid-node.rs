@@ -982,9 +982,22 @@ fn pool_member(mut n: Node) -> i32 {
                         .collect()
                 });
                 let theirs: Vec<String> = r.oracle_nonces.iter().map(point_hex).collect();
-                if mine.as_ref() != Some(&theirs) {
-                    n.log("roster ignored: oracle nonces are not the ones reserved for this case");
-                    continue;
+                match &mine {
+                    Some(m) if *m != theirs => {
+                        n.log("roster ignored: oracle nonces are not the ones reserved for this case");
+                        continue;
+                    }
+                    // this member reserved nothing for the case (the caller took the nonces of the
+                    // others): it still records the roster and the case key, so it can co-sign the
+                    // later steps and attest the outcome; only the incident is not its to sign.
+                    // Ignoring it left the pool one honest member short whenever a liar was among
+                    // those whose nonces were taken (local test, lagged links)
+                    None => n.log(&format!(
+                        "roster v{} for {} recorded without this member's nonces: it attests and co-signs later steps, not the incident",
+                        r.set_version,
+                        bitaid_node::pre(&case_id, 8)
+                    )),
+                    _ => {}
                 }
                 // a bond backs one open case at a time: a second pre-signed forfeiture of the same
                 // output would be void once the first is taken (review N6)
