@@ -76,29 +76,28 @@ Notes:
 - A second transport (I2P) for some standby links makes a Tor-wide outage survivable; optional on
   phones, for battery.
 
-## 7. An opt-in messenger lane for the location (Albert, 2026-11-23)
+## 7. Faster paths outside Tor, weighed (2026-11-23)
 
-A caller and a responder who have both opted in also exchange the sealed location over a messenger,
-for example Telegram with an anonymous +888 number bought on Fragment (no SIM, no name). Its point on
-a phone: the messenger keeps a push channel alive while the screen is off, where a Tor link may not.
+Weighed and dropped:
+- **A messenger lane** (Telegram, even with anonymous +888 numbers): it makes the emergency path
+  depend on one company and on a token bought on its own platform, and that company sees who
+  contacted whom, when and from where.
+- **Phone-platform push** (Google's or Apple's): the same kind of dependency and leak, in a milder
+  form (the platform learns when a Core woke a phone). Kept only as a last resort for phones that
+  cannot run a foreground service; off by default.
 
-- **Handles are exchanged only after acceptance, sealed.** The responder puts its handle in its
-  Accept, sealed to the caller; nothing is published per cell, so there is no directory of responders
-  by area. The caller sends the sealed location to that handle at the same moment it sends it over
-  Tor; the responder takes whichever arrives first. The alert itself stays on Tor: it already
-  arrives in 2 to 7 s.
-- **What it costs, and only to those who opt in:** the messenger's operator, and whoever can compel
-  it, sees that these two accounts were in contact at that minute, and from what addresses. Content
-  stays sealed, and the responder checks the location against the alert's commitment, so a forged
-  or altered copy is refused. A number reused across cases lets the operator link a person's cases
-  together; rotating numbers costs money.
-- **Never the only path,** and off by default for both sides; the app says plainly what it reveals.
+Kept:
+- **A foreground service for responders on duty** (Android keeps it running with a permanent
+  notification): always linked, no third party, at the cost of battery. Off duty, the app may sleep.
+- **Clear-net links, opt-in, where running Bitaid is lawful** (Albert): Cores, and devices whose
+  owners choose it, also link over ordinary TLS to Cores they name, besides Tor. Every message is
+  signed and the location sealed, so nothing about the content or its integrity depends on the path;
+  the cost is only that a named Core learns the device's IP address. Cores are public infrastructure
+  like Bitcoin nodes, so Core-to-Core links can be clear-net by default where lawful; for callers and
+  responders it is their choice. Each message goes on every path at once and the first copy wins, so
+  Tor still delivers if the clear net is blocked. Tor stays the default everywhere.
 
-The less revealing alternative for waking a sleeping phone is a content-free push from a Core (the
-phone platform learns only that a Core pinged it). Both can coexist: the push wakes the phone for
-Tor, and the messenger lane is for those who want the fastest delivery.
-
-## Questions for the design
+## Questions for the design## Questions for the design
 
 - How the dedicated listener and the settlement work share a phone's battery and network.
 - How many Cores a phone should hold links to, against the stake each link needs.
