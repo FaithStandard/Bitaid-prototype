@@ -97,6 +97,21 @@ Kept:
   responders it is their choice. Each message goes on every path at once and the first copy wins, so
   Tor still delivers if the clear net is blocked. Tor stays the default everywhere.
 
+Before building it (review, 2026-11-23, checked against the code):
+- **A transport of its own.** Gossip links are plain TCP today (`gossip.rs`); over Tor the onion
+  service encrypts and authenticates them, and Tor's onion proof of work is the storm defense
+  (design/connection_storms.md). On the clear net that would expose the stake handshake, cell tags,
+  case ids and keys to any observer. Clear-net links need Noise (IK or XX, the Core's key known in
+  advance) or TLS, and their own handshake puzzle under load.
+- **The caller's cold start.** A caller's phone may sit asleep for months; at the alert, starting
+  Tor and building a circuit can take 15 to 30 s, a delay none of the runs measured (the caller
+  there was already linked). An opt-in clear-net link to the caller's own Core or its insurer's is
+  worth more there than for a responder already on duty. To measure: an alert from a cold start.
+- **Reliability, not privacy.** Sending on both paths means the named Core, and any observer of the
+  clear-net hop, sees the IP; Tor beside it is only a fallback against blocking or outage. The app
+  must never show "Tor on" as if the address were hidden while the clear-net path is on.
+- I2P stays off phones (battery); between Cores it is the backup if Tor as a whole fails (§6).
+
 ## Questions for the design## Questions for the design
 
 - How the dedicated listener and the settlement work share a phone's battery and network.
