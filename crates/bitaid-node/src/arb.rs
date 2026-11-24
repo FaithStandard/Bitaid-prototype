@@ -638,6 +638,13 @@ pub struct Tier {
     /// left to replace it. A lapsed tier decides nothing, like a hung one, and the next tier may open
     /// within the escalation window counted from this block (§10.5)
     pub lapsed_at: Option<u32>,
+    /// whether that lapse lets the next tier open: only one the seats caused (a seat unstaked with no
+    /// offer left). A draw never published or a panel never paid is the carrier's own doing, and
+    /// carrying it on would let a carrier that dislikes its draw buy a fresh one (review of issue #1)
+    pub lapse_carries: bool,
+    /// seats that were drawn and put up no stake by their deadline: never drawn again for this case's
+    /// later tiers (review of issue #1)
+    pub nonstakers: Vec<String>,
 }
 
 /// Checks a seat's pre-signed forfeitures: the stake is the seat's case unit, an output of at least
@@ -970,7 +977,7 @@ impl Replay {
                     Some(h) => h + a.template.dispute_blocks,
                     // a tier below that lapsed decides nothing: like a hung one, a party may carry the
                     // case to this tier within the window counted from its lapse
-                    None => match prev.as_ref().and_then(|t| t.lapsed_at) {
+                    None => match prev.as_ref().filter(|t| t.lapse_carries).and_then(|t| t.lapsed_at) {
                         Some(l) => l + a.template.dispute_blocks,
                         None => break,
                     },
@@ -1054,6 +1061,7 @@ impl Replay {
                 a.template.dispute_blocks,
                 rp.seizure_spk().as_ref(),
                 a.template.pots.iter().sum(),
+                &rp.nonstakers(),
             );
             rp.tiers.insert(k, t);
         }
@@ -1108,6 +1116,7 @@ impl Replay {
                 a.template.dispute_blocks,
                 None,
                 0,
+                &[],
             );
             t.review = true;
             // each panel independent: drawn only from arbitrators who sat on neither the case nor an
@@ -1351,6 +1360,15 @@ impl Replay {
                 (k, s, b, tx, d)
             })
             .collect()
+    }
+
+    /// Every arbitrator seated on an arbitration tier of the case so far that put up no stake: no
+    /// later tier of the case draws them (review of issue #1).
+    pub fn nonstakers(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.tiers.values().flat_map(|t| t.nonstakers.iter().cloned()).collect();
+        v.sort();
+        v.dedup();
+        v
     }
 
     /// The final ruling: the last tier that reached two thirds (hung tiers above it decide nothing).
@@ -2286,6 +2304,9 @@ fn read_tier(
     // the case's seizure output and value: a seat's stake is judged against them
     seizure: Option<&ScriptBuf>,
     case_value: u64,
+    // arbitrators no draw of this tier may include: those who were seated on a lower tier of the case
+    // and put up no stake
+    excluded: &[String],
 ) -> Tier {
     let mut t = Tier {
         escalator: escalator.to_string(),
@@ -2362,8 +2383,10 @@ fn read_tier(
             // and every listed offer rests on an entry bond the chain registers, unspent at the draw
             let bonded = registry.is_some()
                 || offers.iter().all(|o| t.offers.get(o).is_some_and(|b| chain_registered(rpc, oracle, b, *height)));
+            let fresh = offers.iter().all(|o| !excluded.contains(o));
             if block_ok
                 && told_ok
+                && fresh
                 && window_ok
                 && bonded
                 && offers.iter().all(|o| t.offers.contains_key(o))
@@ -2583,6 +2606,7 @@ fn read_tier(
                 let l = he + crate::draw_blocks() + commit_blocks;
                 if tip > l {
                     t.lapsed_at = Some(l);
+                    t.lapse_carries = false;
                 }
             }
         } else {
@@ -2608,6 +2632,8 @@ fn read_tier(
                 if used >= left {
                     if tip >= l + crate::draw_depth() {
                         t.lapsed_at = Some(l);
+                        t.lapse_carries = true;
+                        t.nonstakers.extend(due.iter().filter(|x| x.0 <= *d).map(|x| x.1.clone()));
                     }
                     break;
                 }
@@ -2615,6 +2641,10 @@ fn read_tier(
             }
         }
     }
+    let replaced_unstaked = t.unstaked.clone();
+    t.nonstakers.extend(replaced_unstaked);
+    t.nonstakers.sort();
+    t.nonstakers.dedup();
     // a flagged review stage is paid by the flagger, the case fee to each seat (§10.3)
     let fee = if payer.is_some() {
         base_fee
@@ -2646,6 +2676,7 @@ fn read_tier(
             let l = last + 2 * commit_blocks;
             if rpc.height() > l {
                 t.lapsed_at = Some(l);
+                t.lapse_carries = false;
             }
         }
     }

@@ -2946,6 +2946,7 @@ fn stake_or_replace(
             // the replacement's stake deadline runs from the block anchoring its draw
             let Some(t) = told_at(n, &rid, hd, hd + cb) else {
                 n.log(&format!("tier {tier}: the replacement draw was not anchored by its deadline; the tier lapses"));
+                NO_CARRY.with(|x| x.set(true));
                 return None;
             };
             seat_h.insert(new.clone(), t);
@@ -3084,6 +3085,9 @@ thread_local! {
     static STUFFED_TX: std::cell::RefCell<Vec<bitcoin::Txid>> = const { std::cell::RefCell::new(Vec::new()) };
     /// an appeal of this party's came after the window closed: the case is final
     static CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// a tier this party carried lapsed by its own doing (its draw never anchored in time): that lapse
+    /// opens no tier above it (review of issue #1), so the case is not taken on
+    static NO_CARRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// the escrow of a posting that stood down for another party's, to be let go after the hearing
     static STOOD_DOWN: std::cell::RefCell<Option<arb::Bond>> = const { std::cell::RefCell::new(None) };
     /// an escalation this node already sent and saw anchored in time (a dissenter's carrying appeal):
@@ -3412,6 +3416,15 @@ fn escalate_tier(
             )),
         }
     }
+    if !review {
+        // no one seated on a lower tier of the case who put up no stake (review of issue #1): the
+        // replay refuses a draw that lists one
+        let ns = arb::pinned_roster(&n.history, a, &n.rpc)
+            .and_then(|r| arb::Replay::build_core(&n.history, a, &r, &n.rpc))
+            .map(|rp| rp.nonstakers())
+            .unwrap_or_default();
+        offers.retain(|o| !ns.contains(&o.0));
+    }
     if review {
         // independent panels: no one who sat on the case or an earlier stage (§10.3)
         let rk = arb::pinned_roster(&n.history, a, &n.rpc)
@@ -3499,6 +3512,7 @@ fn escalate_tier(
         // from the block anchoring the draw: the seats cannot stake before they are told (§10.4)
         let Some(told) = told_at(n, &seated_id, h, h + cb) else {
             n.log(&format!("tier {tier}: the draw was not anchored by the draw block plus the stake deadline; the tier lapses"));
+                NO_CARRY.with(|x| x.set(true));
             return None;
         };
         let mut seat_h: HashMap<String, u32> = seats.iter().map(|x| (x.clone(), told)).collect();
@@ -3776,6 +3790,7 @@ fn escalate_tier(
             // its stake before it is paid; replaced in turn, unpaid, if it puts up none in time
             let Some(told) = told_at(n, &rid, h, h + cb) else {
                 n.log(&format!("tier {tier}: the replacement draw was not anchored by its deadline; the tier lapses"));
+                NO_CARRY.with(|x| x.set(true));
                 return None;
             };
             let mut seat_h: HashMap<String, u32> = HashMap::from([(new.clone(), told)]);
@@ -7585,7 +7600,7 @@ fn responder(mut n: Node) -> i32 {
                 let Some(v) = standing.clone() else {
                     // a hung first panel leaves the case undecided, like a deadlocked attending vote:
                     // the party that escalated takes it on to the next tier
-                    if flag("--escalate") && tier < max_tier {
+                    if flag("--escalate") && tier < max_tier && !NO_CARRY.with(|x| x.get()) {
                         tier += 1;
                         n.check(
                             &format!("no verdict yet; taking the case on to tier {tier}"),
