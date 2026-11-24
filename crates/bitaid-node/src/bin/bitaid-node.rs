@@ -2917,7 +2917,7 @@ fn stake_or_replace(
             let bh = draw_hash(n, hd);
             let left: Vec<String> = listed.iter().filter(|o| !seats.contains(o) && !out.contains(o)).cloned().collect();
             let Some(new) = arb::draw(&bh, c, tier, &left, 1).pop() else {
-                n.check(&format!("tier {tier}: an offer left to replace the unstaked seat"), false, "none; the escalation lapses");
+                n.log(&format!("tier {tier}: no offer left to replace the unstaked seat; the tier lapses (§10.5)"));
                 return None;
             };
             let pos = seats.iter().position(|x| x == old)?;
@@ -2945,7 +2945,7 @@ fn stake_or_replace(
             );
             // the replacement's stake deadline runs from the block anchoring its draw
             let Some(t) = told_at(n, &rid, hd, hd + cb) else {
-                n.check(&format!("tier {tier}: the replacement draw anchored"), false, "not by its deadline; the escalation lapses");
+                n.log(&format!("tier {tier}: the replacement draw was not anchored by its deadline; the tier lapses"));
                 return None;
             };
             seat_h.insert(new.clone(), t);
@@ -3498,7 +3498,7 @@ fn escalate_tier(
         // every seat's stake before any seat is paid; a seat without one by its deadline is replaced
         // from the block anchoring the draw: the seats cannot stake before they are told (§10.4)
         let Some(told) = told_at(n, &seated_id, h, h + cb) else {
-            n.check(&format!("tier {tier}: the draw anchored"), false, "not by the draw block plus the stake deadline; the escalation lapses");
+            n.log(&format!("tier {tier}: the draw was not anchored by the draw block plus the stake deadline; the tier lapses"));
             return None;
         };
         let mut seat_h: HashMap<String, u32> = seats.iter().map(|x| (x.clone(), told)).collect();
@@ -3775,7 +3775,7 @@ fn escalate_tier(
             );
             // its stake before it is paid; replaced in turn, unpaid, if it puts up none in time
             let Some(told) = told_at(n, &rid, h, h + cb) else {
-                n.check(&format!("tier {tier}: the replacement draw anchored"), false, "not by its deadline; the escalation lapses");
+                n.log(&format!("tier {tier}: the replacement draw was not anchored by its deadline; the tier lapses"));
                 return None;
             };
             let mut seat_h: HashMap<String, u32> = HashMap::from([(new.clone(), told)]);
