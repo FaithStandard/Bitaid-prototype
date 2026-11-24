@@ -565,7 +565,7 @@ impl Node {
             // offers anchored up to two blocks before it, and two periods would come too late, so
             // one anchorer could keep it out of the draw (review finding)
             let p = crate::checkpoint_blocks();
-            let wait = if name == "seat-offer" || name == "seated" { p + 2 } else { 2 * p + 2 };
+            let wait = if name == "seat-offer" || name == "seated" || name == "reseated" { p + 2 } else { 2 * p + 2 };
             self.own_timed.insert(e.id.clone(), (self.rpc.height(), wait));
         }
         e.id

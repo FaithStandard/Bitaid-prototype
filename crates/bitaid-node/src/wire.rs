@@ -573,7 +573,12 @@ impl Msg {
             Msg::Forfeits { tier, .. } => *tier >= 1 && *tier < 100,
             // an appeal's draw (§10.4): any party or dissenter who appealed may publish it, and the
             // first anchored counts, so a party that opens an appeal and stalls is overtaken
-            Msg::Seated { tier, .. } => *tier >= 2 && *tier < 100,
+            // and a seat's stake deadline runs from the block anchoring its draw, for every tier: the
+            // seats cannot stake before they know, so a draw published late delays only its publisher
+            // (public signet run, 2026-11-24: counted from the draw block, every tier-1 seat was late
+            // before it was told)
+            Msg::Seated { tier, .. } => *tier >= 1 && *tier < 100,
+            Msg::Reseated { tier, from, .. } => *tier >= 1 && *tier < 100 && from.is_empty(),
             _ => false,
         }
     }
@@ -737,7 +742,7 @@ pub fn verify(bytes: &[u8]) -> Result<Envelope, String> {
 
 /// Whether a message of this name may be timed (see `Msg::timed`), told from its tag before it is read.
 pub fn timed_name(t: &str) -> bool {
-    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate", "ballot-commit", "ballot-reveal", "forfeits", "seated"].contains(&t)
+    ["seat-offer", "verdict-commit", "review-answer", "flag", "escalate", "ballot-commit", "ballot-reveal", "forfeits", "seated", "reseated"].contains(&t)
 }
 
 pub fn b64(b: &[u8]) -> String {

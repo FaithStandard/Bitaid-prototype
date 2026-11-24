@@ -221,6 +221,9 @@ audit)
   # the archivist announces its onion address: this machine's own, read locally, any other through Tor
   export BITAID_SELF_ONION=$(cat "$L/onion.txt" 2>/dev/null); [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
   P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
+  # the pool named by its keys, as the PC's member logged them: no wait for every member to be online
+  PID=$(grep -h "pool keys:" "$L/pool1.log" 2>/dev/null | head -1 | sed 's/.*attestation \([0-9a-f]*\), co-signing \([0-9a-f]*\).*/\2\1/')
+  [ -n "$PID" ] && P="$P --pool-id $PID"
   BITAID_WALLET=w target/release/bitaid-node --role audit --name audit-links $P --links >"$L/audit-links.out" 2>"$L/audit-links.log"
   BITAID_WALLET=w target/release/bitaid-node --role audit --name audit-archive $P >"$L/audit-archive.out" 2>"$L/audit-archive.log"
   ra=$(grep '^record' "$L/audit-links.out" | sort | sha256sum); rb=$(grep '^record' "$L/audit-archive.out" | sort | sha256sum)
