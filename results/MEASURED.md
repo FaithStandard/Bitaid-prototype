@@ -67,3 +67,17 @@ links to the run's published log. Every node is still run by us.
   the case had no pot and the arbitration could not seat anyone. A signet reorg from block 332158
   was handled (one re-read). Fixed: chain calls that never reached the node are asked again, 5 to
   80 s apart, about 4 minutes in all (`examples/rpc_retry.rs`).
+
+## Public signet, 2026-11-24 (INDEX_FROM 332208): tier 1 lapsed, the pool never followed tier 2
+
+- Incident on chain (the retried RPC held through Tor drops), location 2.1-4.2 s, signer 2 caught,
+  pool co-signed 3 of 4 with member 2 stalling.
+- Tier 1: exactly 3 offers; every seat's stake deadline ran from the draw block, and the draw reached
+  the seats 4,639 s after the escalation, so all three were late before they knew. No offer was left
+  to replace them and the tier lapsed. The party carried the case to tier 2 (7 of 7 staked and paid,
+  6 of 7 for I,D, committed on chain), but the replay opened tier 2 only from a committed tier 1, and
+  the pool members had lapsed tier 1 by the wall clock, so none attested.
+- Fixed (issue #1, reviewed): the stake deadline runs from the block anchoring the draw; a lapse the
+  seats cause (unstaked, no offer left) opens the next tier within the escalation window from it, one
+  the carrier causes opens nothing; non-stakers are never drawn again for the case; the pool decides
+  lapses by the replay. Regtest `CAPTURE=1 LAPSE=1 AUDIT=1`: all checks pass, the pool attests tier 2.
