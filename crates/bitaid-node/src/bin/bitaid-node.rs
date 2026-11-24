@@ -1562,7 +1562,13 @@ fn pool_member(mut n: Node) -> i32 {
                 // stated from the escalation to two blocks before that block, none left out
                 let in_window = |oh: u32| oh + 2 <= *height;
                 // an arbitrator suspended for inactivity as of the opening is left out by rule
-                let off = arb::inactive(&n.history, h0);
+                let mut off = arb::inactive(&n.history, h0);
+                // and so is a seat of a lower tier of the case that put up no stake (issue #1)
+                if let (Some(a), Some(r)) = (alerts.get(case_id), rosters.get(case_id)) {
+                    if let Some(rp) = arb::Replay::build_core(&n.history, a, r, &n.rpc) {
+                        off.extend(rp.nonstakers());
+                    }
+                }
                 let block_ok = *height == h0 + bitaid_node::draw_blocks()
                     && n.rpc.block_hash(*height).as_deref() == Some(block_hash.as_str());
                 let offers_ok = listed
