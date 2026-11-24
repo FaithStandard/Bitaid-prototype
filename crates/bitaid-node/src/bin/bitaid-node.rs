@@ -466,7 +466,11 @@ fn pool_member(mut n: Node) -> i32 {
     // consent height it cancelled (given back if it lapses: an unpaid escalation must not send a case
     // the ballots settled to the refund, review finding)
     #[allow(clippy::type_complexity)]
-    let mut lapse: HashMap<String, (Instant, Option<(u32, String, u32)>, Option<u32>)> = HashMap::new();
+    // (keyed by the tier it waits on; whether that tier lapsed is read from the chain by the replay,
+    // never from this member's clock: public signet run, 2026-11-24, the members lapsed tier 1 by
+    // the clock while the party, by the chain, carried the case on to tier 2)
+    let mut lapse: HashMap<String, (u32, Option<(u32, String, u32)>, Option<u32>)> = HashMap::new();
+    let mut lapse_seen: u32 = 0;
     let idle = num("--exit-after", 900u64);
     let mut last = Instant::now();
     // the setup again every hour (real time: the relays' day is real time), so a node joining
@@ -495,11 +499,26 @@ fn pool_member(mut n: Node) -> i32 {
             ));
             n.send_case(&c, &[], Msg::Deadlock { case_id: c.clone() }, false);
         }
-        let lapsed: Vec<String> = lapse
-            .iter()
-            .filter(|(_, (t, _, _))| Instant::now() >= *t)
-            .map(|(c, _)| c.clone())
-            .collect();
+        // a tier lapses when the replay finds it lapsed (its draw never anchored, a seat unstaked
+        // with no offer left, or a panel never paid) and its escalation window has closed with no
+        // tier above it opened; looked at once a block
+        let lapsed: Vec<String> = if tip != lapse_seen {
+            lapse_seen = tip;
+            let grace = 2 * bitaid_node::checkpoint_blocks() + 2;
+            lapse
+                .iter()
+                .filter(|(c, (k, _, _))| esc.get(*c).is_some_and(|x| x.0 == *k))
+                .filter(|(c, (k, _, _))| {
+                    let (Some(a), Some(r)) = (alerts.get(*c), rosters.get(*c)) else { return false };
+                    arb::Replay::build(&n.history, a, r, &n.rpc)
+                        .and_then(|rp| rp.tiers.get(k).and_then(|t| t.lapsed_at))
+                        .is_some_and(|l| tip >= l + a.template.dispute_blocks + grace)
+                })
+                .map(|(c, _)| c.clone())
+                .collect()
+        } else {
+            vec![]
+        };
         for c in lapsed {
             let (_, prev, consent) = lapse.remove(&c).unwrap();
             match prev {
@@ -508,19 +527,19 @@ fn pool_member(mut n: Node) -> i32 {
             };
             if verdicts.contains_key(&c) {
                 n.log(&format!(
-                    "case {}: the escalation was never seated and lapses; the last verdict stands",
+                    "case {}: the escalation lapsed and no tier above it opened; the last verdict stands",
                     bitaid_node::pre(&c, 8)
                 ));
                 ready_at.insert(c.clone(), 0);
             } else if let Some(h) = consent {
                 // the ballots had settled it: deemed consent comes back, at the height it had
                 n.log(&format!(
-                    "case {}: the escalation was never seated and lapses; deemed consent stands (block {h})",
+                    "case {}: the escalation lapsed and no tier above it opened; the ballots stand (block {h})",
                     bitaid_node::pre(&c, 8)
                 ));
                 ready_at.insert(c.clone(), h);
             } else {
-                n.log(&format!("case {}: the escalation was never seated and lapses; the deadlock stands (refund path)", bitaid_node::pre(&c, 8)));
+                n.log(&format!("case {}: the escalation lapsed and no tier above it opened; the deadlock stands (refund path)", bitaid_node::pre(&c, 8)));
             }
         }
         let tip_r = n.tip();
@@ -1399,9 +1418,6 @@ fn pool_member(mut n: Node) -> i32 {
                         esc.insert(case_id.clone(), (*tier, s.clone(), env.height));
                     }
                     if ok && carriers.entry((case_id.clone(), *tier)).or_default().insert(s.clone()) {
-                        if let Some(l) = lapse.get_mut(case_id) {
-                            l.0 = Instant::now() + secs(num("--seat-wait", 300u64)) + secs(bitaid_node::slow(600));
-                        }
                         n.log(&format!("case {}: {} may carry tier {tier} too", bitaid_node::pre(&case_id, 8), bitaid_node::pre(&s, 8)));
                     }
                     continue;
@@ -1420,7 +1436,7 @@ fn pool_member(mut n: Node) -> i32 {
                 lapse.insert(
                     case_id.clone(),
                     (
-                        Instant::now() + secs(num("--seat-wait", 300u64)),
+                        *tier,
                         esc.get(case_id).cloned(),
                         ready_at.get(case_id).copied(),
                     ),
@@ -1546,7 +1562,13 @@ fn pool_member(mut n: Node) -> i32 {
                 // stated from the escalation to two blocks before that block, none left out
                 let in_window = |oh: u32| oh + 2 <= *height;
                 // an arbitrator suspended for inactivity as of the opening is left out by rule
-                let off = arb::inactive(&n.history, h0);
+                let mut off = arb::inactive(&n.history, h0);
+                // and so is a seat of a lower tier of the case that put up no stake (issue #1)
+                if let (Some(a), Some(r)) = (alerts.get(case_id), rosters.get(case_id)) {
+                    if let Some(rp) = arb::Replay::build_core(&n.history, a, r, &n.rpc) {
+                        off.extend(rp.nonstakers());
+                    }
+                }
                 let block_ok = *height == h0 + bitaid_node::draw_blocks()
                     && n.rpc.block_hash(*height).as_deref() == Some(block_hash.as_str());
                 let offers_ok = listed
@@ -1560,12 +1582,6 @@ fn pool_member(mut n: Node) -> i32 {
                     bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
                 if block_ok && offers_ok && draw_ok {
                     panels.insert((case_id.clone(), *tier), seats.clone());
-                    // the lapse clock starts again from the seating and runs until the panel's fees
-                    // are paid: a panel seated and never paid (whoever escalated withholding them)
-                    // must not hold the case open
-                    if let Some(l) = lapse.get_mut(case_id) {
-                        l.0 = Instant::now() + secs(num("--seat-wait", 300u64));
-                    }
                     n.log(&format!("tier {tier} panel of {} checked: block {height}, draw reproduced, bonds above twice the case value", seats.len()));
                 } else {
                     // not verifiable from what this member holds yet (an offer still on its way, a
@@ -2801,6 +2817,25 @@ fn wait_forfeits(
     out
 }
 
+/// The block anchoring this node's own draw message `id` (a Seated or a Reseated): a seat's stake
+/// deadline runs from it (§10.4), the same height for every node. None if no block has anchored it by
+/// `by`, the draw block plus commit_blocks: a draw that never reaches the chain seats no one, and the
+/// tier lapses.
+fn told_at(n: &mut Node, id: &str, draw_h: u32, by: u32) -> Option<u32> {
+    loop {
+        n.rpc.sync();
+        if let Some(h) = n.anchor_height(id) {
+            return Some(h.max(draw_h));
+        }
+        let tip = n.rpc.height();
+        if tip > by {
+            return None;
+        }
+        n.rpc.mine(1).ok();
+        n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
+    }
+}
+
 /// Before any seat is paid, every seat puts up its stake (§10.4): a case unit and its pre-signed
 /// forfeitures, anchored on chain within commit_blocks of the seat's draw block. A seat that has not
 /// by then is replaced, unpaid, by a draw from the offers left: the i-th of the seats due at the same
@@ -2888,14 +2923,13 @@ fn stake_or_replace(
             let bh = draw_hash(n, hd);
             let left: Vec<String> = listed.iter().filter(|o| !seats.contains(o) && !out.contains(o)).cloned().collect();
             let Some(new) = arb::draw(&bh, c, tier, &left, 1).pop() else {
-                n.check(&format!("tier {tier}: an offer left to replace the unstaked seat"), false, "none; the escalation lapses");
+                n.log(&format!("tier {tier}: no offer left to replace the unstaked seat; the tier lapses (§10.5)"));
                 return None;
             };
             let pos = seats.iter().position(|x| x == old)?;
             seats[pos] = new.clone();
             out.push(old.clone());
-            seat_h.insert(new.clone(), hd);
-            n.send_case(
+            let rid = n.send_case(
                 c,
                 std::slice::from_ref(&new),
                 Msg::Reseated {
@@ -2915,6 +2949,13 @@ fn stake_or_replace(
                 true,
                 "",
             );
+            // the replacement's stake deadline runs from the block anchoring its draw
+            let Some(t) = told_at(n, &rid, hd, hd + cb) else {
+                n.log(&format!("tier {tier}: the replacement draw was not anchored by its deadline; the tier lapses"));
+                NO_CARRY.with(|x| x.set(true));
+                return None;
+            };
+            seat_h.insert(new.clone(), t);
         }
     }
 }
@@ -3050,6 +3091,9 @@ thread_local! {
     static STUFFED_TX: std::cell::RefCell<Vec<bitcoin::Txid>> = const { std::cell::RefCell::new(Vec::new()) };
     /// an appeal of this party's came after the window closed: the case is final
     static CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// a tier this party carried lapsed by its own doing (its draw never anchored in time): that lapse
+    /// opens no tier above it (review of issue #1), so the case is not taken on
+    static NO_CARRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// the escrow of a posting that stood down for another party's, to be let go after the hearing
     static STOOD_DOWN: std::cell::RefCell<Option<arb::Bond>> = const { std::cell::RefCell::new(None) };
     /// an escalation this node already sent and saw anchored in time (a dissenter's carrying appeal):
@@ -3378,6 +3422,15 @@ fn escalate_tier(
             )),
         }
     }
+    if !review {
+        // no one seated on a lower tier of the case who put up no stake (review of issue #1): the
+        // replay refuses a draw that lists one
+        let ns = arb::pinned_roster(&n.history, a, &n.rpc)
+            .and_then(|r| arb::Replay::build_core(&n.history, a, &r, &n.rpc))
+            .map(|rp| rp.nonstakers())
+            .unwrap_or_default();
+        offers.retain(|o| !ns.contains(&o.0));
+    }
     if review {
         // independent panels: no one who sat on the case or an earlier stage (§10.3)
         let rk = arb::pinned_roster(&n.history, a, &n.rpc)
@@ -3419,7 +3472,7 @@ fn escalate_tier(
     let mut seats = seats;
     // where a seat that misses its commit deadline refunds its fee (§10.4)
     let refund_spk = n.rpc.new_spk().unwrap_or_default();
-    n.send_case(
+    let seated_id = n.send_case(
         &c,
         &seats,
         Msg::Seated {
@@ -3462,7 +3515,13 @@ fn escalate_tier(
     let cb = a.template.commit_blocks;
     if !review {
         // every seat's stake before any seat is paid; a seat without one by its deadline is replaced
-        let mut seat_h: HashMap<String, u32> = seats.iter().map(|x| (x.clone(), h)).collect();
+        // from the block anchoring the draw: the seats cannot stake before they are told (§10.4)
+        let Some(told) = told_at(n, &seated_id, h, h + cb) else {
+            n.log(&format!("tier {tier}: the draw was not anchored by the draw block plus the stake deadline; the tier lapses"));
+                NO_CARRY.with(|x| x.set(true));
+            return None;
+        };
+        let mut seat_h: HashMap<String, u32> = seats.iter().map(|x| (x.clone(), told)).collect();
         let opid = case::pool_id(&a.oracle_key, &a.attest_key);
         stake_or_replace(n, &c, tier, &mut seats, &mut seat_h, &ids, &mut forfeited, &mut stakes, &offers, &oxo, fee, seizure.as_ref(), &refund_spk, value, &opid, cb)?;
         n.check(
@@ -3714,7 +3773,7 @@ fn escalate_tier(
             seats[pos] = new.clone();
             forfeited.push(m.clone());
             let key = n.case_keys[&c];
-            n.send_case(
+            let rid = n.send_case(
                 &c,
                 std::slice::from_ref(&new),
                 Msg::Reseated {
@@ -3735,7 +3794,12 @@ fn escalate_tier(
                 false,
             );
             // its stake before it is paid; replaced in turn, unpaid, if it puts up none in time
-            let mut seat_h: HashMap<String, u32> = HashMap::from([(new.clone(), h)]);
+            let Some(told) = told_at(n, &rid, h, h + cb) else {
+                n.log(&format!("tier {tier}: the replacement draw was not anchored by its deadline; the tier lapses"));
+                NO_CARRY.with(|x| x.set(true));
+                return None;
+            };
+            let mut seat_h: HashMap<String, u32> = HashMap::from([(new.clone(), told)]);
             let opid = case::pool_id(&a.oracle_key, &a.attest_key);
             stake_or_replace(n, &c, tier, &mut seats, &mut seat_h, &ids, &mut forfeited, &mut stakes, &offers, &oxo, fee, seizure.as_ref(), &refund_spk, value, &opid, cb)?;
             let new = seats[pos].clone();
@@ -5480,13 +5544,23 @@ fn hostile(mut n: Node) -> i32 {
 /// archivists' logs, checked and replayed against the chain. Both ways must print the same record.
 fn audit(mut n: Node) -> i32 {
     n.subscribe("svc", vec![Filter::kinds(&[kind::ANNOUNCE]).recent(3600)]);
-    let Some(view) = pool::discover(
-        &mut n,
-        &arg("--pool").unwrap_or("bitaid".into()),
-        secs(num("--setup-wait", 600u64)),
-    ) else {
-        n.log("no oracle pool found");
-        return 1;
+    // the pool whose record is read: named outright (--pool-id: its co-signing key then its
+    // attestation key, as its members log them), so a finished case is audited after its pool members
+    // have gone; else found live from their announcements (public signet run, 2026-11-24: the
+    // devices' members had stopped, and the audit waited hours for them)
+    let pool_id = match arg("--pool-id") {
+        Some(p) => p,
+        None => match pool::discover(
+            &mut n,
+            &arg("--pool").unwrap_or("bitaid".into()),
+            secs(num("--setup-wait", 600u64)),
+        ) {
+            Some(view) => view.pool_id(),
+            None => {
+                n.log("no oracle pool found");
+                return 1;
+            }
+        },
     };
     let links = flag("--links");
     if links {
@@ -5505,7 +5579,7 @@ fn audit(mut n: Node) -> i32 {
     let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let on_chain = n.rpc.ledger(|l| l.tiers.iter().filter(|t| t.height >= from).count());
     let unread = n.unread_cases();
-    let logs = arb::ledger(&n.history, &n.rpc, &view.pool_id());
+    let logs = arb::ledger(&n.history, &n.rpc, &pool_id);
     let mut who: Vec<&String> = logs.iter().flat_map(|l| l.seats.iter()).collect();
     who.sort();
     who.dedup();
@@ -7532,7 +7606,7 @@ fn responder(mut n: Node) -> i32 {
                 let Some(v) = standing.clone() else {
                     // a hung first panel leaves the case undecided, like a deadlocked attending vote:
                     // the party that escalated takes it on to the next tier
-                    if flag("--escalate") && tier < max_tier {
+                    if flag("--escalate") && tier < max_tier && !NO_CARRY.with(|x| x.get()) {
                         tier += 1;
                         n.check(
                             &format!("no verdict yet; taking the case on to tier {tier}"),

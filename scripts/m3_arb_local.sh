@@ -71,6 +71,11 @@ for i in $(seq 1 ${ARBS:-10}); do
   # stake; each is replaced unpaid by a draw from the offers left (§10.4), arb11 and arb12 serve tier 2
   [ -n "$UNSTAKED" ] && { [ $i = 9 ] || [ $i = 10 ]; } && extra="--tiers 2 --no-forfeits"
   [ -n "$UNSTAKED" ] && { [ $i = 11 ] || [ $i = 12 ]; } && extra="--tiers 2"
+  # LAPSE=1 (with CAPTURE): arb8 is seated on tier 1 and never puts up its stake; no offer is left to
+  # replace it, so tier 1 lapses (§10.5) and r1-liar carries the case to tier 2, which every pool
+  # member must follow and attest (public signet run, 2026-11-24)
+  # (arb8 offers for tier 2 too: having put up no stake on tier 1, it must not be drawn there)
+  [ -n "$LAPSE" ] && [ $i = 8 ] && extra="--corrupt --tiers 1,2 --no-forfeits"
   BITAID_WALLET=w $BIN/bitaid-node --role arbitrator --name arb$i $P $extra --offer-window 8 --exit-after 600 >$L/arb$i.out 2>$L/arb$i.log & PIDS="$PIDS $!"
 done
 sleep 2
