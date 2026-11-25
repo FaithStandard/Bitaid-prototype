@@ -13,9 +13,9 @@ pub enum Command {
     Accept { case: String },
     /// the responder passes on it
     Decline { case: String },
-    /// the attendee's ballot: its own class (`I` intervened, `D` documented, `N` neither), the class
-    /// it gives every other seat, and whether the outcome was achieved
-    Vote { case: String, claim: String, others: String, achieved: bool },
+    /// the attendee's ballot: the class it gives each seat in order, its own included (`I` intervened,
+    /// `D` documented, `N` neither), and whether the outcome was achieved
+    Vote { case: String, classes: Vec<String>, achieved: bool },
     /// stop listening for new alerts (a case already accepted runs to its end)
     OffDuty,
 }

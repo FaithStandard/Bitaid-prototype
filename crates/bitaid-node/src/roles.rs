@@ -2580,12 +2580,11 @@ fn class_of(s: &str) -> Class {
     }
 }
 
-/// A ballot from what the attendee says: its own class, the class it gives every other seat.
-fn ballot_of(seats: usize, my_seat: usize, claim: &str, others: &str, achieved: bool) -> Ballot {
-    let others = class_of(others);
+/// A ballot from what the attendee says of each seat (a seat it gives no class to is `N`, neither).
+fn ballot_of(seats: usize, classes: &[String], achieved: bool) -> Ballot {
     Ballot {
         acts: (0..seats)
-            .map(|i| Act { seat: i as u8, class: if i == my_seat { class_of(claim) } else { others.clone() }, footage: None })
+            .map(|i| Act { seat: i as u8, class: class_of(classes.get(i).map(|x| x.as_str()).unwrap_or("N")), footage: None })
             .collect(),
         outcome_achieved: achieved,
         misuse: false,
@@ -7741,9 +7740,7 @@ fn responder(mut n: Node) -> i32 {
         crate::events::emit(crate::events::Event::BallotDue { node: n.name.clone(), case: c.clone(), seats: r.seats.len(), my_seat });
         let cs = c.clone();
         match crate::commands::take(secs(3600), |x| matches!(x, crate::commands::Command::Vote { case, .. } if *case == cs)) {
-            Some(crate::commands::Command::Vote { claim, others, achieved, .. }) => {
-                ballot_of(r.seats.len(), my_seat, &claim, &others, achieved)
-            }
+            Some(crate::commands::Command::Vote { classes, achieved, .. }) => ballot_of(r.seats.len(), &classes, achieved),
             _ => ballot_from_args(r.seats.len(), my_seat),
         }
     } else {
