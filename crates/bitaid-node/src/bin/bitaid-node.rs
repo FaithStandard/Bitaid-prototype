@@ -1415,12 +1415,20 @@ fn pool_member(mut n: Node) -> i32 {
                 // a further appeal of a tier already opened: its sender may carry the tier, publishing
                 // the draw if the opener does not (review finding: a winner opened the appeal and
                 // stalled it). Its lapse clock starts again for the newcomer
-                if *tier == cur && cur >= 2 && !done.contains(case_id) {
-                    let ok = party
-                        || arb::Replay::build(&n.history, a, r, &n.rpc).is_some_and(|rp| arb::may_appeal(&rp, *tier, &s));
+                if *tier == cur && cur >= 1 && !done.contains(case_id) {
+                    // tier 1: a party whose own posting for the case is on the chain (issue #39)
+                    let ok = if cur == 1 {
+                        let parties: Vec<&str> =
+                            std::iter::once(a.caller.as_str()).chain(r.seats.iter().map(|x| x.as_str())).collect();
+                        wire::xonly(&a.oracle_key)
+                            .is_some_and(|o| arb::tier1_posters(&n.rpc, &o, case_id, &parties, None).contains(&s))
+                    } else {
+                        party
+                            || arb::Replay::build(&n.history, a, r, &n.rpc).is_some_and(|rp| arb::may_appeal(&rp, *tier, &s))
+                    };
                     // the tier's draw block runs from its earliest anchored appeal, whichever reached
                     // this member first
-                    if ok && esc.get(case_id).is_some_and(|x| env.height < x.2) {
+                    if ok && cur >= 2 && esc.get(case_id).is_some_and(|x| env.height < x.2) {
                         esc.insert(case_id.clone(), (*tier, s.clone(), env.height));
                     }
                     if ok && carriers.entry((case_id.clone(), *tier)).or_default().insert(s.clone()) {
@@ -1579,6 +1587,8 @@ fn pool_member(mut n: Node) -> i32 {
                 let in_window = |oh: u32| oh + 2 <= *height;
                 // an arbitrator suspended for inactivity as of the opening is left out by rule
                 let mut off = arb::inactive(&n.history, h0);
+                // barred for missed stakes as of the opening (§10.3, issue #38)
+                off.extend(arb::stake_barred(&arb::stake_events(&n.history, &n.rpc, alerts.values()), h0));
                 // and so is a seat of a lower tier of the case that put up no stake (issue #1)
                 if let (Some(a), Some(r)) = (alerts.get(case_id), rosters.get(case_id)) {
                     if let Some(rp) = arb::Replay::build_core(&n.history, a, r, &n.rpc) {
@@ -2834,6 +2844,19 @@ fn wait_forfeits(
     out
 }
 
+/// The arbitrators barred at `at` for missed stakes (§10.3), from every case of this pool this node
+/// has read.
+fn stake_struck(n: &Node, a: &Alerted, at: u32) -> std::collections::HashSet<String> {
+    let opid = case::pool_id(&a.oracle_key, &a.attest_key);
+    let alerts: Vec<Alerted> = n
+        .history
+        .iter()
+        .filter(|e| matches!(e.msg, Msg::Alert { .. }))
+        .filter_map(|e| Alerted::check(&e.sender, &e.msg, chain_seen(&n.rpc), &opid).ok())
+        .collect();
+    arb::stake_barred(&arb::stake_events(&n.history, &n.rpc, alerts.iter()), at)
+}
+
 /// The block anchoring this node's own draw message `id` (a Seated or a Reseated): a seat's stake
 /// deadline runs from it (§10.4), the same height for every node. None if no block has anchored it by
 /// `by`, the draw block plus commit_blocks: a draw that never reaches the chain seats no one, and the
@@ -3402,6 +3425,7 @@ fn escalate_tier(
     let t0 = Instant::now();
     // blind taking: offers name only a bond and a payout address
     let mut offers: Vec<(String, bitcoin::ScriptBuf, arb::Bond)> = vec![];
+    let struck = if review { Default::default() } else { stake_struck(n, a, h_esc) };
     let cap = Instant::now() + secs(bitaid_node::slow(3600));
     // the offers already read first (a party carrying a tier late finds them there), then live ones
     let mut queued: std::collections::VecDeque<(String, Msg, u32)> = n
@@ -3447,6 +3471,15 @@ fn escalate_tier(
         if arb::inactive(&n.history, h_esc).contains(&who) {
             n.log(&format!(
                 "seat offer from {} refused: suspended for inactivity",
+                bitaid_node::pre(&who, 8)
+            ));
+            continue;
+        }
+        // barred for missed stakes, as of the tier's opening (§10.3, issue #38): read the same way by
+        // the pool's members, who check that no offer was left out
+        if !review && struck.contains(&who) {
+            n.log(&format!(
+                "seat offer from {} refused: barred for missed stakes",
                 bitaid_node::pre(&who, 8)
             ));
             continue;
@@ -6128,8 +6161,21 @@ fn arbitrator(mut n: Node) -> i32 {
                         v.first().map(|p| hex::encode(p.poster.serialize()))
                     });
                     if first.is_some_and(|f| f != s) {
+                        // another party that posted too may carry tier 1, publishing its draw if the
+                        // opener does not (Specification issue #39)
+                        let posted = oracle.is_some_and(|o| {
+                            let parties: Vec<&str> = rosters
+                                .get(&case_id)
+                                .map(|r| std::iter::once(a.caller.as_str()).chain(r.seats.iter().map(|x| x.as_str())).collect())
+                                .unwrap_or_default();
+                            arb::tier1_posters(&n.rpc, &o, &case_id, &parties, None).contains(&s)
+                        });
+                        if posted {
+                            appellants.entry((case_id.clone(), 1)).or_default().insert(s.clone());
+                        }
                         continue;
                     }
+                    appellants.entry((case_id.clone(), 1)).or_default().insert(s.clone());
                 }
                 // a tier above the first has one escalator: the escalation anchored first (two
                 // parties may appeal the same verdict; lagged run without a transaction index,
@@ -6205,7 +6251,7 @@ fn arbitrator(mut n: Node) -> i32 {
                 // an appeal's draw counts from any appellant, the first one anchored (it reaches this
                 // node only once anchored), and its publisher carries the tier from then on
                 let key = (case_id.clone(), tier);
-                if tier >= 2 && !arb::is_review(tier) && appellants.get(&key).is_some_and(|x| x.contains(&s)) {
+                if tier >= 1 && !arb::is_review(tier) && appellants.get(&key).is_some_and(|x| x.contains(&s)) {
                     if seated.contains_key(&key) {
                         continue;
                     }
