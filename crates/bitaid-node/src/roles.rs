@@ -288,10 +288,28 @@ fn reclaim() -> i32 {
 /// Runs one role to its end, as the binary does from its command line, and returns its exit code.
 /// `args` is the command line, the program name first (M4: the library entry the app calls).
 pub fn run(args: Vec<String>) -> i32 {
+    let name = args
+        .iter()
+        .position(|x| x == "--name" || x == "--role")
+        .and_then(|i| args.get(i + 1).cloned())
+        .unwrap_or_default();
     if let Ok(mut a) = ARGS.write() {
         *a = args;
     }
-    main_inner()
+    // a panic in the role ends it as a fatal event, never silently: an app must not go on showing
+    // the role on duty (review of M4, 2026-11-25)
+    match std::panic::catch_unwind(main_inner) {
+        Ok(code) => code,
+        Err(p) => {
+            let text = p
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "panic".into());
+            crate::events::emit(crate::events::Event::Fatal { node: name, text });
+            101
+        }
+    }
 }
 
 fn main_inner() -> i32 {

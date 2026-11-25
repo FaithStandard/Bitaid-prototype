@@ -123,6 +123,8 @@ pub fn sats(x: u64) -> u64 {
 pub mod blossom;
 pub mod case;
 pub mod chain;
+/// What a running role reports to an app (M4).
+pub mod events;
 pub mod gossip;
 pub mod ledger;
 pub mod market;

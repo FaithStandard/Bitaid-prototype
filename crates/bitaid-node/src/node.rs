@@ -505,9 +505,16 @@ impl Node {
             self.name,
             self.t0.elapsed().as_secs_f64()
         );
+        crate::events::emit(crate::events::Event::Log { node: self.name.clone(), text: s.to_string() });
     }
 
     pub fn check(&mut self, what: &str, ok: bool, detail: &str) {
+        crate::events::emit(crate::events::Event::Check {
+            node: self.name.clone(),
+            what: what.to_string(),
+            ok,
+            detail: detail.to_string(),
+        });
         if ok {
             self.passed += 1;
         } else {
@@ -1352,6 +1359,7 @@ impl Node {
     }
 
     pub fn summary(&self) -> i32 {
+        crate::events::emit(crate::events::Event::Summary { node: self.name.clone(), passed: self.passed, failed: self.failed });
         println!(
             "[{}] {} passed, {} failed",
             self.name, self.passed, self.failed
