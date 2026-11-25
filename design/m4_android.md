@@ -83,23 +83,33 @@ Measured failures that M4 must fix:
 
    The PC's WSL builds it. The tablet and phone install the APK; no Termux build is needed.
 
-## The open question M4 cannot dodge: the phone's view of the chain
+## The phone's view of the chain: the goal, and the prototype's shortcut
 
-Every phone in the runs trusts the PC's bitcoind, over Tor RPC, for heights, UTXOs, the anchored records
-(OP_RETURN), postings and the fee market. For the prototype that was a deliberate shortcut. For M4 there
-are three paths:
+The prototype's phones read everything on chain from the PC's bitcoind over Tor. That is a test
+compromise for the hardware at hand, not the design. The design (Specification §7, parameters: "Anchor
+verification default: local full node") is:
 
-| Path | Trust | Cost on a phone | Problem |
-|---|---|---|---|
-| A node the user chooses (own node, a friend's), over Tor RPC | that node | none | today's model: fine for operators, not for everyone |
-| A BIP157/158 light client in-app (compact block filters) | none beyond proof of work | filters, plus the blocks that match | **BIP158 filters leave out OP_RETURN outputs**, and Bitaid's anchors and postings are OP_RETURN records, so every block would have to be fetched |
-| An Electrum-protocol server over Tor | the server, partly | small | the same problem for OP_RETURN, unless records move to scripts |
+- **Worker roles** (responders, arbitrators, archivists, pool members, Cores) run their own Bitcoin node.
+  It is part of the job, as the bond is.
+- **Callers** may run one, or use a node they trust. If they do neither, the app follows the chain the
+  way a light wallet does, without trusting anyone in particular:
+  - It keeps Bitcoin's block headers (about 4 MB a year) and checks the proof of work itself.
+  - For each record of its own case, it asks for the transaction and its Merkle proof against those
+    headers. It asks several independent nodes of other Bitaid participants (workers' nodes behind
+    their onion services), reached over Tor like everything else. The case log already names every
+    record, so the caller never has to search blocks blindly.
+  - A node can only lie by leaving something out, never by inventing it (proof of work and the Merkle
+    proof stop that). Asking several unrelated nodes means one honest node is enough.
+  - Over Tor, the nodes learn which transactions were asked about, never who asked. Those are the
+    case's own records, which the case's parties and workers already see.
 
-The cleanest fix is in the protocol rather than the app: make every record a phone must find also
-create an output script the filters include. For example, give each case's records a small output
-under a key derived from the case, so a phone watching its case's scripts sees them through BIP158.
-This is a Specification question (§7, anchoring). M4 ships path 1, with the node configurable, and
-opens the question as an issue.
+So the OP_RETURN gap of BIP158 filters (Specification issue #42) matters only for discovering records
+without a case log, which a caller does not need. The question for the Specification narrows to how a
+caller picks its sample of nodes (from the registry of bonded workers, at random, with a cap per
+operator), and how many it asks.
+
+M4 ships the configurable trusted node first, as the prototype does, and then the headers-and-proofs
+path as its own step.
 
 ## Measurement M4 adds
 
@@ -119,6 +129,7 @@ opens the question as an issue.
 4. The foreground service and network-change handling, then the screen-off test.
 5. Keys under the Keystore.
 6. A signet run with the tablet and phone on the app and the PC as today.
+7. The caller's light path: headers plus Merkle proofs from several workers' nodes over Tor.
 
 ## Sources
 
