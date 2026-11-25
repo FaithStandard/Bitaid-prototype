@@ -125,6 +125,8 @@ pub mod case;
 pub mod chain;
 /// The node's settings, from the environment or from an app (M4).
 pub mod config;
+/// What an app tells a running role (M4).
+pub mod commands;
 /// What a running role reports to an app (M4).
 pub mod events;
 pub mod gossip;

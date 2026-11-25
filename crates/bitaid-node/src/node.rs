@@ -1227,6 +1227,16 @@ impl Node {
                 let at = crate::gossip::arrived(&e.id).unwrap_or_else(Instant::now);
                 self.places_read.insert(case_id.to_string(), Instant::now());
                 self.places.insert(case_id.to_string(), (env.sender.clone(), sealed.clone(), at));
+                // opened at once for an app, which shows the responder where to go (the role checks it
+                // against the alert's commitment later, as before)
+                let opened = wire::xonly(&env.sender).and_then(|from| {
+                    let pt = wire::unseal(&self.keys, &from, format!("{case_id}/place").as_bytes(), &hex::decode(sealed).ok()?)?;
+                    let v: serde_json::Value = serde_json::from_slice(&pt).ok()?;
+                    Some((v["lat"].as_str()?.parse::<f64>().ok()?, v["lon"].as_str()?.parse::<f64>().ok()?))
+                });
+                if let Some((lat, lon)) = opened {
+                    crate::events::emit(crate::events::Event::Location { node: self.name.clone(), case: case_id.to_string(), lat, lon });
+                }
             }
         }
         self.backlog.push_back((env, e));

@@ -15,6 +15,15 @@ pub enum Event {
     Summary { node: String, passed: u32, failed: u32 },
     /// the role stopped on a fault (a panic in its thread): whatever the app showed is no longer true
     Fatal { node: String, text: String },
+    /// an alert in the responder's cells passed its checks: the app shows it, and with
+    /// `--ask-accept` the role waits for Accept or Decline
+    Alert { node: String, case: String, cell: String, deposit: u64, reward: u64, bounty: u64 },
+    /// the exact location, opened the moment it arrives (§13): what the responder drives to
+    Location { node: String, case: String, lat: f64, lon: f64 },
+    /// with `--ask-vote`, the role waits for the attendee's ballot on this case
+    BallotDue { node: String, case: String, seats: usize, my_seat: usize },
+    /// the caller's pool is ready: with `--ask-alert` the role waits for RaiseAlert
+    ReadyToAlert { node: String },
 }
 
 static SINK: Mutex<Option<Sender<Event>>> = Mutex::new(None);
