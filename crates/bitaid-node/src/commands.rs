@@ -7,46 +7,62 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// the caller presses the alert
-    RaiseAlert,
+    /// the caller presses the alert, with the phone's position at that moment if it has one (the
+    /// caller may have moved since the app opened)
+    RaiseAlert { at: Option<(f64, f64)> },
     /// the responder takes the alert of this case
     Accept { case: String },
     /// the responder passes on it
     Decline { case: String },
     /// the attendee's ballot: the class it gives each seat in order, its own included (`I` intervened,
-    /// `D` documented, `N` neither), and whether the outcome was achieved
-    Vote { case: String, classes: Vec<String>, achieved: bool },
+    /// `D` documented, `N` neither), one per seat; whether the outcome was achieved; whether it saw
+    /// force misused. A ballot with the wrong number of seats is refused, and no ballot is cast
+    Vote { case: String, classes: Vec<String>, achieved: bool, misuse: bool },
     /// stop listening for new alerts (a case already accepted runs to its end)
     OffDuty,
 }
 
 static QUEUE: Mutex<Vec<Command>> = Mutex::new(Vec::new());
 static READY: Condvar = Condvar::new();
+/// Commands kept at most: an app that sends faster than a role takes loses the oldest, not memory.
+const MAX_QUEUED: usize = 64;
+
+fn queue() -> std::sync::MutexGuard<'static, Vec<Command>> {
+    QUEUE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The app sends a command; the role takes it when it reaches the point that waits for it.
 pub fn send(c: Command) {
-    if let Ok(mut q) = QUEUE.lock() {
-        q.push(c);
-        READY.notify_all();
+    let mut q = queue();
+    if q.len() >= MAX_QUEUED {
+        q.remove(0);
     }
+    q.push(c);
+    READY.notify_all();
+}
+
+/// Drops every queued command: called when a role starts, so nothing left from an earlier role (an
+/// OffDuty sent during a case, an answer that came after its prompt timed out) reaches the new one.
+pub fn clear() {
+    queue().clear();
 }
 
 /// Takes the first queued command that `want` accepts, waiting up to `timeout` for one.
 pub fn take(timeout: Duration, want: impl Fn(&Command) -> bool) -> Option<Command> {
     let until = Instant::now() + timeout;
-    let mut q = QUEUE.lock().ok()?;
+    let mut q = queue();
     loop {
         if let Some(i) = q.iter().position(&want) {
             return Some(q.remove(i));
         }
         let left = until.checked_duration_since(Instant::now())?;
-        q = READY.wait_timeout(q, left).ok()?.0;
+        q = READY.wait_timeout(q, left).unwrap_or_else(|e| e.into_inner()).0;
     }
 }
 
 /// Whether a command `want` accepts is queued, without taking it (OffDuty is looked at this way).
 pub fn pending(want: impl Fn(&Command) -> bool) -> bool {
-    QUEUE.lock().map(|q| q.iter().any(want)).unwrap_or(false)
+    queue().iter().any(want)
 }
 
 #[cfg(test)]
@@ -61,6 +77,8 @@ mod tests {
         send(Command::Accept { case: "b".into() });
         assert_eq!(t.join().unwrap(), Some(Command::Accept { case: "b".into() }));
         assert!(pending(|c| matches!(c, Command::Decline { .. })));
-        assert_eq!(take(Duration::from_millis(10), |c| matches!(c, Command::RaiseAlert)), None);
+        assert_eq!(take(Duration::from_millis(10), |c| matches!(c, Command::RaiseAlert { .. })), None);
+        clear();
+        assert!(!pending(|_| true));
     }
 }

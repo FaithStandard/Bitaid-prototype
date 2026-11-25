@@ -38,18 +38,16 @@ fn main() {
                     other => eprintln!("[app] event {other:?}"),
                 }
                 match e {
-                    Event::ReadyToAlert { .. } => commands::send(Command::RaiseAlert),
+                    Event::ReadyToAlert { .. } => commands::send(Command::RaiseAlert { at: None }),
                     Event::Alert { case, .. } => {
                         alerts += 1;
                         commands::send(Command::Accept { case });
                     }
                     Event::BallotDue { case, .. } => {
-                        commands::send(Command::Vote { case, classes: ballot.clone(), achieved: true })
+                        commands::send(Command::Vote { case, classes: ballot.clone(), achieved: true, misuse: false })
                     }
-                    Event::Fatal { text, .. } => {
-                        eprintln!("[app] the role died: {text}");
-                        std::process::exit(101);
-                    }
+                    // shown, never hidden: a real app would mark the node down until it restarts it
+                    Event::Fatal { text, .. } => eprintln!("[app] FATAL: {text}"),
                     _ => {}
                 }
             }

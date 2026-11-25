@@ -144,10 +144,12 @@ pub mod wire;
 
 /// HTTP for the chain RPC and Blossom: `.onion` URLs go through Tor's SOCKS port (`BITAID_SOCKS`,
 /// e.g. 127.0.0.1:9150), with the name resolved by Tor; anything else is fetched directly.
-pub fn http_for(url: &str) -> &'static ureq::Agent {
-    use std::sync::OnceLock;
+pub fn http_for(url: &str) -> ureq::Agent {
+    use std::sync::{Mutex, OnceLock};
     static DIRECT: OnceLock<ureq::Agent> = OnceLock::new();
-    static TOR: OnceLock<ureq::Agent> = OnceLock::new();
+    // the Tor agent, rebuilt when the proxy setting changes (an app's in-process Tor may restart on
+    // another port; review of M4 step 1: a OnceLock kept the dead port for the life of the process)
+    static TOR: Mutex<Option<(String, ureq::Agent)>> = Mutex::new(None);
     let onion = url
         .split("://")
         .nth(1)
@@ -157,18 +159,25 @@ pub fn http_for(url: &str) -> &'static ureq::Agent {
         .unwrap_or("")
         .ends_with(".onion");
     match (onion, crate::config::var("BITAID_SOCKS")) {
-        (true, Ok(p)) => TOR.get_or_init(|| {
-            let proxy = ureq::Proxy::new(format!("socks5://{p}")).expect("BITAID_SOCKS host:port");
-            ureq::AgentBuilder::new()
-                .proxy(proxy)
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-        }),
-        _ => DIRECT.get_or_init(|| {
-            ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(60))
-                .build()
-        }),
+        (true, Ok(p)) => {
+            let mut t = TOR.lock().unwrap_or_else(|e| e.into_inner());
+            if t.as_ref().is_none_or(|x| x.0 != p) {
+                let proxy = ureq::Proxy::new(format!("socks5://{p}")).expect("BITAID_SOCKS host:port");
+                let agent = ureq::AgentBuilder::new()
+                    .proxy(proxy)
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build();
+                *t = Some((p, agent));
+            }
+            t.as_ref().map(|x| x.1.clone()).expect("set above")
+        }
+        _ => DIRECT
+            .get_or_init(|| {
+                ureq::AgentBuilder::new()
+                    .timeout(std::time::Duration::from_secs(60))
+                    .build()
+            })
+            .clone(),
     }
 }
 pub mod arb;

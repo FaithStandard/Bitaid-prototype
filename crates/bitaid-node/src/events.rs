@@ -30,17 +30,13 @@ static SINK: Mutex<Option<Sender<Event>>> = Mutex::new(None);
 
 /// Where the events go, besides the console: set once by the app before it starts a role.
 pub fn set_sink(tx: Sender<Event>) {
-    if let Ok(mut s) = SINK.lock() {
-        *s = Some(tx);
-    }
+    *SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
 }
 
 /// Sends an event to the app's sink, if one is set (the binary sets none).
 pub fn emit(e: Event) {
-    if let Ok(s) = SINK.lock() {
-        if let Some(tx) = s.as_ref() {
-            let _ = tx.send(e);
-        }
+    if let Some(tx) = SINK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(e);
     }
 }
 

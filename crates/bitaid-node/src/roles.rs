@@ -35,7 +35,7 @@ const RESPONDER_BOND: u64 = 2_000_000;
 /// passes to `run` (M4). Set once per process, before the role starts.
 static ARGS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
 fn args() -> Vec<String> {
-    ARGS.read().map(|a| a.clone()).unwrap_or_default()
+    ARGS.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 fn arg(name: &str) -> Option<String> {
     let a = args();
@@ -288,14 +288,20 @@ fn reclaim() -> i32 {
 /// Runs one role to its end, as the binary does from its command line, and returns its exit code.
 /// `args` is the command line, the program name first (M4: the library entry the app calls).
 pub fn run(args: Vec<String>) -> i32 {
-    let name = args
-        .iter()
-        .position(|x| x == "--name" || x == "--role")
-        .and_then(|i| args.get(i + 1).cloned())
-        .unwrap_or_default();
-    if let Ok(mut a) = ARGS.write() {
-        *a = args;
-    }
+    let after = |flag: &str| args.iter().position(|x| x == flag).and_then(|i| args.get(i + 1).cloned());
+    let name = after("--name").or_else(|| after("--role")).unwrap_or_default();
+    *ARGS.write().unwrap_or_else(|e| e.into_inner()) = args;
+    // nothing an app sent an earlier role reaches this one
+    crate::commands::clear();
+    // a panic on any thread of the node (its links, its relays) is reported too, not only on the
+    // role's own: the app must never go on showing a node on duty that has lost a part of itself
+    let hook_name = name.clone();
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+        crate::events::emit(crate::events::Event::Fatal { node: hook_name.clone(), text: format!("panic on thread {thread}: {info}") });
+        default(info);
+    }));
     // a panic in the role ends it as a fatal event, never silently: an app must not go on showing
     // the role on duty (review of M4, 2026-11-25)
     match std::panic::catch_unwind(main_inner) {
@@ -2580,16 +2586,18 @@ fn class_of(s: &str) -> Class {
     }
 }
 
-/// A ballot from what the attendee says of each seat (a seat it gives no class to is `N`, neither).
-fn ballot_of(seats: usize, classes: &[String], achieved: bool) -> Ballot {
-    Ballot {
-        acts: (0..seats)
-            .map(|i| Act { seat: i as u8, class: class_of(classes.get(i).map(|x| x.as_str()).unwrap_or("N")), footage: None })
-            .collect(),
-        outcome_achieved: achieved,
-        misuse: false,
-        faults: vec![],
+/// A ballot from what the attendee says of each seat: exactly one class per seat, each `I`, `D` or
+/// `N`, or no ballot at all.
+fn ballot_of(seats: usize, classes: &[String], achieved: bool, misuse: bool) -> Option<Ballot> {
+    if classes.len() != seats || !classes.iter().all(|c| matches!(c.trim(), "I" | "D" | "N")) {
+        return None;
     }
+    Some(Ballot {
+        acts: (0..seats).map(|i| Act { seat: i as u8, class: class_of(&classes[i]), footage: None }).collect(),
+        outcome_achieved: achieved,
+        misuse,
+        faults: vec![],
+    })
 }
 
 fn ballot_from_args(seats: usize, my_seat: usize) -> Ballot {
@@ -7042,8 +7050,8 @@ fn caller(mut n: Node) -> i32 {
     );
 
     // ------------------------------------------------ alert
-    let (lat, lon) = (num("--lat", 13.6929f64), num("--lon", -89.2182f64));
-    let cell = cell_of(lat, lon).to_string();
+    let (mut lat, mut lon) = (num("--lat", 13.6929f64), num("--lon", -89.2182f64));
+    let mut cell = cell_of(lat, lon).to_string();
     let case_hex = hex::encode(hash_case(&format!(
         "{}-{}-{}",
         n.me(),
@@ -7058,9 +7066,21 @@ fn caller(mut n: Node) -> i32 {
     // --ask-alert (the app): registered and ready; the alert goes when the caller presses it
     if flag("--ask-alert") {
         crate::events::emit(crate::events::Event::ReadyToAlert { node: n.name.clone() });
-        if crate::commands::take(secs(num("--exit-after", 86_400u64)), |x| matches!(x, crate::commands::Command::RaiseAlert)).is_none() {
-            n.log("no alert raised");
-            return n.summary();
+        let cmd = crate::commands::take(secs(num("--exit-after", 86_400u64)), |x| {
+            matches!(x, crate::commands::Command::RaiseAlert { .. } | crate::commands::Command::OffDuty)
+        });
+        match cmd {
+            Some(crate::commands::Command::RaiseAlert { at }) => {
+                // the position when the alert is pressed, not when the app opened
+                if let Some((la, lo)) = at.filter(|(la, lo)| la.is_finite() && lo.is_finite() && la.abs() <= 90.0 && lo.abs() <= 180.0) {
+                    (lat, lon) = (la, lo);
+                    cell = cell_of(lat, lon).to_string();
+                }
+            }
+            _ => {
+                n.log("no alert raised");
+                return n.summary();
+            }
         }
     }
     // the exact location stays with the caller; the alert broadcasts its cell and a commitment to it
@@ -7477,7 +7497,10 @@ fn responder(mut n: Node) -> i32 {
             return n.summary();
         }
         let slice = Duration::from_secs(5).min(listen_until.saturating_duration_since(Instant::now()));
-        let Some(env) = n.wait(slice, |env, _| matches!(env.msg, Msg::Alert { .. }).then(|| env.clone())) else {
+        let Some((env, got)) = n.wait(slice, |env, ev| {
+            matches!(env.msg, Msg::Alert { .. })
+                .then(|| (env.clone(), crate::gossip::arrived(&ev.id).unwrap_or_else(Instant::now)))
+        }) else {
             if Instant::now() < listen_until {
                 continue;
             }
@@ -7507,12 +7530,23 @@ fn responder(mut n: Node) -> i32 {
                 }
                 // --ask-accept (the app): the responder decides; no answer within the joining window
                 // is a pass
+                // the joining window runs from the alert's arrival, not from when this prompt opens
+                // (an alert queued behind another prompt has had part of its window already)
                 let cs = a.case_hex.clone();
-                let window = Duration::from_secs(a.template.joining_window as u64);
+                let window = Duration::from_secs(a.template.joining_window as u64).saturating_sub(got.elapsed());
+                if window.is_zero() {
+                    n.log(&format!("alert {}: its joining window passed before it could be shown", crate::pre(&a.case_hex, 8)));
+                    continue;
+                }
                 match crate::commands::take(window, |x| {
                     matches!(x, crate::commands::Command::Accept { case } | crate::commands::Command::Decline { case } if *case == cs)
+                        || matches!(x, crate::commands::Command::OffDuty)
                 }) {
                     Some(crate::commands::Command::Accept { .. }) => break a,
+                    Some(crate::commands::Command::OffDuty) => {
+                        n.log("off duty");
+                        return n.summary();
+                    }
                     _ => n.log(&format!("alert {} passed on", crate::pre(&a.case_hex, 8))),
                 }
             }
@@ -7552,6 +7586,8 @@ fn responder(mut n: Node) -> i32 {
         bond_fallback: bf,
         payout_spk: payout.to_hex_string(),
     };
+    // the location this node will be sent: from the caller, and the one the alert committed to
+    n.place_expect.insert(c.clone(), (a.caller.clone(), a.place.clone()));
     n.send_case(&c, std::slice::from_ref(&a.caller), acc, false);
     n.log("ACCEPT sent");
     let accept_t = Instant::now();
@@ -7676,7 +7712,9 @@ fn responder(mut n: Node) -> i32 {
     if !a.place.is_empty() {
         // noted by the node the moment it arrived (each responder's is sealed to it alone, and
         // every responder on the case sees them all)
-        let from_caller = |n: &Node| n.places.get(&c).filter(|p| p.0 == a.caller).map(|p| (p.1.clone(), p.2));
+        let from_caller = |n: &Node| {
+            n.places.get(&c).and_then(|v| v.iter().find(|p| p.0 == a.caller)).map(|p| (p.1.clone(), p.2))
+        };
         let until = Instant::now() + secs(60);
         while from_caller(&n).is_none() && Instant::now() < until {
             n.collect(Duration::from_secs(2), |_, _| None::<()>, |_| false);
@@ -7736,17 +7774,22 @@ fn responder(mut n: Node) -> i32 {
         num("--footage-kib", 512usize) * 1024,
     );
     let my_ballot = if flag("--ask-vote") {
-        // --ask-vote (the app): the attendee's own ballot, as it gives it
+        // --ask-vote (the app): the attendee's own ballot, as it gives it. None given, or a malformed
+        // one, and none is cast: never a ballot the attendee did not give (review of M4 step 1: a
+        // default ballot was committed in the silent attendee's name)
         crate::events::emit(crate::events::Event::BallotDue { node: n.name.clone(), case: c.clone(), seats: r.seats.len(), my_seat });
         let cs = c.clone();
         match crate::commands::take(secs(3600), |x| matches!(x, crate::commands::Command::Vote { case, .. } if *case == cs)) {
-            Some(crate::commands::Command::Vote { classes, achieved, .. }) => ballot_of(r.seats.len(), &classes, achieved),
-            _ => ballot_from_args(r.seats.len(), my_seat),
+            Some(crate::commands::Command::Vote { classes, achieved, misuse, .. }) => ballot_of(r.seats.len(), &classes, achieved, misuse),
+            _ => None,
         }
     } else {
-        ballot_from_args(r.seats.len(), my_seat)
+        Some(ballot_from_args(r.seats.len(), my_seat))
     };
-    vote(&mut n, &a, &r, my_ballot.clone());
+    match &my_ballot {
+        Some(b) => vote(&mut n, &a, &r, b.clone()),
+        None => n.check("ballot given by the attendee", false, "none, or not one class per seat: no ballot cast"),
+    }
     // --escalate: if the attending vote does not settle the case, take it to arbitration (§10.1).
     // --appeal: re-roll a verdict that rules against this attendee's claim to the next tier (§10.5),
     // up to --max-tier. Every party follows each tier, including appeals filed by others.
@@ -7815,7 +7858,7 @@ fn responder(mut n: Node) -> i32 {
                 let mine_ok = v
                     .acts
                     .get(my_seat)
-                    .map(|x| x.class == my_ballot.acts[my_seat].class)
+                    .map(|x| my_ballot.as_ref().is_some_and(|b| x.class == b.acts[my_seat].class))
                     .unwrap_or(false);
                 n.log(&format!(
                     "standing verdict after tier {tier}: {} — {}",

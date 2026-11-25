@@ -109,7 +109,15 @@ pub struct Node {
     backlog: VecDeque<(Envelope, Event)>,
     /// The exact location of each case, sealed to this node, as it arrived: noted the moment it is
     /// received, whatever the node is busy with (a responder must be able to set out at once)
-    pub places: HashMap<String, (String, String, Instant)>,
+    /// sealed exact locations received for each case, one per sender, at most `MAX_PLACES` senders a
+    /// case: anyone can send one, so a forged one must neither shadow the caller's nor fill the map
+    /// (review of M4 step 1: keyed by case alone, a forger's arrived first and the caller's was
+    /// dropped)
+    pub places: HashMap<String, Vec<(String, String, Instant)>>,
+    /// what this node expects of a case's location once it has accepted the alert: the caller who
+    /// sends it and the commitment the alert made to it. Only a location that matches both is shown
+    /// to an app (`Event::Location`)
+    pub place_expect: HashMap<String, (String, String)>,
     /// when the node itself read each case's location (it may have arrived earlier, while busy)
     pub places_read: HashMap<String, Instant>,
     /// every verified message this node has read, in arrival order: replayed by `arb::Replay`
@@ -451,6 +459,7 @@ impl Node {
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
             places: HashMap::new(),
+            place_expect: HashMap::new(),
             places_read: HashMap::new(),
             history: vec![],
             observer: None,
@@ -1222,20 +1231,22 @@ impl Node {
     /// nor push out the messages of the cases this node is working on.
     fn push_backlog(&mut self, env: Envelope, e: Event) {
         if let Msg::Place { case_id, sealed } = &env.msg {
-            if e.tag("p") == Some(self.me().as_str()) && !self.places.contains_key(case_id.as_str()) {
+            let have = self.places.get(case_id.as_str());
+            let fresh = have.is_none_or(|v| v.len() < MAX_PLACES && !v.iter().any(|p| p.0 == env.sender));
+            if e.tag("p") == Some(self.me().as_str()) && fresh {
                 // when it reached the link, not when this node got round to it (both are reported)
                 let at = crate::gossip::arrived(&e.id).unwrap_or_else(Instant::now);
-                self.places_read.insert(case_id.to_string(), Instant::now());
-                self.places.insert(case_id.to_string(), (env.sender.clone(), sealed.clone(), at));
-                // opened at once for an app, which shows the responder where to go (the role checks it
-                // against the alert's commitment later, as before)
-                let opened = wire::xonly(&env.sender).and_then(|from| {
-                    let pt = wire::unseal(&self.keys, &from, format!("{case_id}/place").as_bytes(), &hex::decode(sealed).ok()?)?;
-                    let v: serde_json::Value = serde_json::from_slice(&pt).ok()?;
-                    Some((v["lat"].as_str()?.parse::<f64>().ok()?, v["lon"].as_str()?.parse::<f64>().ok()?))
-                });
-                if let Some((lat, lon)) = opened {
-                    crate::events::emit(crate::events::Event::Location { node: self.name.clone(), case: case_id.to_string(), lat, lon });
+                let expected = self.place_expect.get(case_id.as_str()).cloned();
+                if expected.as_ref().is_some_and(|x| x.0 == env.sender) {
+                    self.places_read.insert(case_id.to_string(), Instant::now());
+                }
+                self.places.entry(case_id.to_string()).or_default().push((env.sender.clone(), sealed.clone(), at));
+                // shown to an app at once, only if it is the caller's and the one the alert committed
+                // to: a forged location would send the responder to an address of the forger's choosing
+                if let Some((caller, commit)) = expected.filter(|x| x.0 == env.sender) {
+                    if let Some((lat, lon)) = open_place(&self.keys, &caller, case_id, sealed, &commit) {
+                        crate::events::emit(crate::events::Event::Location { node: self.name.clone(), case: case_id.to_string(), lat, lon });
+                    }
                 }
             }
         }
@@ -1407,4 +1418,18 @@ mod tests {
         assert_eq!(v.iter().filter(|x| x.0).count(), 100, "every kept entry stays");
         assert_eq!(v.iter().take(100).map(|x| x.1).collect::<Vec<_>>(), (0..100).collect::<Vec<_>>());
     }
+}
+
+/// Senders of a sealed location kept per case: the caller's, and room for a few others.
+const MAX_PLACES: usize = 8;
+
+/// Opens a sealed exact location from `caller`, and returns it only if it is the one the alert
+/// committed to and a real place on Earth.
+pub fn open_place(keys: &bitcoin::secp256k1::Keypair, caller: &str, case_id: &str, sealed: &str, commit: &str) -> Option<(f64, f64)> {
+    let pt = wire::unseal(keys, &wire::xonly(caller)?, format!("{case_id}/place").as_bytes(), &hex::decode(sealed).ok()?)?;
+    let v: serde_json::Value = serde_json::from_slice(&pt).ok()?;
+    let (lat, lon) = (v["lat"].as_str()?.parse::<f64>().ok()?, v["lon"].as_str()?.parse::<f64>().ok()?);
+    let salt = v["salt"].as_str()?;
+    let real = lat.is_finite() && lon.is_finite() && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon);
+    (real && crate::case::place_commitment(case_id, lat, lon, salt) == commit).then_some((lat, lon))
 }

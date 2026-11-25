@@ -14,18 +14,14 @@ static SETTINGS: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 /// The app's settings, replacing the environment for this process. Keys are the same names the
 /// binary reads from its environment (`BITAID_RPC`, `BITAID_SOCKS`, `HOME`, ...).
 pub fn set(settings: HashMap<String, String>) {
-    if let Ok(mut s) = SETTINGS.write() {
-        *s = Some(settings);
-    }
+    *SETTINGS.write().unwrap_or_else(|e| e.into_inner()) = Some(settings);
 }
 
 /// One setting: from the app's settings if it gave them, else from the environment. Same contract as
 /// `std::env::var`, so a call site reads as before.
 pub fn var(key: &str) -> Result<String, VarError> {
-    if let Ok(s) = SETTINGS.read() {
-        if let Some(m) = s.as_ref() {
-            return m.get(key).cloned().ok_or(VarError::NotPresent);
-        }
+    if let Some(m) = SETTINGS.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        return m.get(key).cloned().ok_or(VarError::NotPresent);
     }
     std::env::var(key)
 }
