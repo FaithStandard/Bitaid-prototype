@@ -1042,7 +1042,18 @@ impl Replay {
                 break;
             };
             if k == 1 {
+                // every party whose own posting for the case counts within the window may carry tier 1
+                // too, publishing the draw if the opener withholds it, from its own posting's escrow
+                // (Specification issue #39: an opener that disliked the panel drawn could otherwise
+                // withhold it and leave the other side unheard)
+                let parties: Vec<&str> = rp.parties.iter().map(|p| p.0.as_str()).collect();
+                let close = vote.as_ref().and_then(|v| v.close).map(|f| f + a.template.dispute_blocks);
                 carriers = vec![(escalator.clone(), challenger)];
+                for w in tier1_posters(rpc, &oracle, &case, &parties, close) {
+                    if w != escalator {
+                        carriers.push((w, false));
+                    }
+                }
             }
             let t = read_tier(
                 &mine,
@@ -2377,7 +2388,7 @@ fn read_tier(
                 && rpc.height() >= *height + crate::draw_depth();
             // an arbitration draw counts only if a block anchored it by the draw block plus the
             // stake deadline: after that the tier has lapsed (seats told later could not stake)
-            let told_ok = registry.is_some() || e.height <= *height + commit_blocks;
+            let told_ok = registry.is_some() || e.height <= crate::draw_by(*height, commit_blocks);
             // and every listed offer was stated at least two blocks before the draw
             let window_ok = offers.iter().all(|o| t.offer_height.get(o).is_none_or(|oh| oh + 2 <= *height));
             // and every listed offer rests on an entry bond the chain registers, unspent at the draw
@@ -2603,7 +2614,7 @@ fn read_tier(
         if t.seats.is_empty() {
             // never seated: no draw anchored by the draw block plus the stake deadline
             if let Some(he) = h_esc {
-                let l = he + crate::draw_blocks() + commit_blocks;
+                let l = crate::draw_by(he + crate::draw_blocks(), commit_blocks);
                 if tip > l {
                     t.lapsed_at = Some(l);
                     t.lapse_carries = false;
@@ -3601,6 +3612,29 @@ pub fn tier1_posted(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[&
             .filter(|p| parties.contains(&hex::encode(p.poster.serialize()).as_str()))
             .map(|p| p.at.height)
             .min()
+    })
+}
+
+/// Every party with a valid posting for the case confirmed by `close` (any height if None), in the
+/// chain's order: each may carry tier 1 (§10.5).
+pub fn tier1_posters(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[&str], close: Option<u32>) -> Vec<String> {
+    rpc.ledger(|l| {
+        let mut ps: Vec<&crate::ledger::Posting> = l
+            .postings
+            .iter()
+            .filter(|p| p.case == case && posting_counts(l, p, oracle))
+            .filter(|p| parties.contains(&hex::encode(p.poster.serialize()).as_str()))
+            .filter(|p| close.is_none_or(|w| p.at.height <= w))
+            .collect();
+        ps.sort_by_key(|p| (p.at.height, p.at.pos));
+        let mut out: Vec<String> = vec![];
+        for p in ps {
+            let w = hex::encode(p.poster.serialize());
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+        out
     })
 }
 

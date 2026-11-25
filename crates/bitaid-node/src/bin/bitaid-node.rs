@@ -447,6 +447,8 @@ fn pool_member(mut n: Node) -> i32 {
     let mut esc: HashMap<String, (u32, String, u32)> = HashMap::new();
     let mut offers: HashMap<(String, u32), HashMap<String, (bool, String, u32, String)>> = HashMap::new(); // sender -> (bond ok, payout, its height when offering, bond)
     let mut panels: HashMap<(String, u32), Vec<String>> = HashMap::new();
+    // who published each counted draw: its carrier pays the seats (tier 1 from its own posting)
+    let mut panel_by: HashMap<(String, u32), String> = HashMap::new();
     let mut fees_ok: std::collections::HashSet<(String, u32)> = Default::default();
     // the height at which each seat's fee confirmed: its commit deadline runs from there (§10.4)
     let mut fee_at: HashMap<(String, u32, String), u32> = HashMap::new();
@@ -1192,7 +1194,11 @@ fn pool_member(mut n: Node) -> i32 {
                 } else if let Some((d, what)) = (!done.contains(case_id))
                     .then(|| {
                         let key = (case_id.clone(), 1u32);
-                        let opener = esc.get(case_id).filter(|x| x.0 == 1).map(|x| &x.1);
+                        // the posting that pays is the carrier's whose draw counted: the opener's,
+                        // or another party's that drew the tier when the opener did not (issue #39)
+                        let opener = panel_by
+                            .get(&(case_id.clone(), 1u32))
+                            .or_else(|| esc.get(case_id).filter(|x| x.0 == 1).map(|x| &x.1));
                         // the seats whose stakes this member verified, from its own replay: the
                         // poster's escrow pays no seat that has put up none (§10.4)
                         let staked: Option<std::collections::HashSet<String>> = rosters.get(case_id).and_then(|r| {
@@ -1462,7 +1468,17 @@ fn pool_member(mut n: Node) -> i32 {
                         std::iter::once(a.caller.as_str()).chain(r.seats.iter().map(|x| x.as_str())).collect();
                     match oracle.and_then(|o| arb::tier1_opening(&n.rpc, &o, case_id, &parties)) {
                         Some((who, h)) if who == s => h,
-                        Some(_) => continue,
+                        Some(_) => {
+                            // another party that posted too may carry tier 1, publishing the draw if
+                            // the opener does not (Specification issue #39)
+                            let posted = oracle
+                                .map(|o| arb::tier1_posters(&n.rpc, &o, case_id, &parties, None).contains(&s))
+                                .unwrap_or(false);
+                            if posted && carriers.entry((case_id.clone(), 1)).or_default().insert(s.clone()) {
+                                n.log(&format!("case {}: {} may carry tier 1 too", bitaid_node::pre(&case_id, 8), bitaid_node::pre(&s, 8)));
+                            }
+                            continue;
+                        }
                         None => later!(),
                     }
                 } else {
@@ -1582,6 +1598,7 @@ fn pool_member(mut n: Node) -> i32 {
                     bitaid_node::arb::draw(block_hash, case_id, *tier, listed, size) == *seats;
                 if block_ok && offers_ok && draw_ok {
                     panels.insert((case_id.clone(), *tier), seats.clone());
+                    panel_by.insert((case_id.clone(), *tier), s.clone());
                     n.log(&format!("tier {tier} panel of {} checked: block {height}, draw reproduced, bonds above twice the case value", seats.len()));
                 } else {
                     // not verifiable from what this member holds yet (an offer still on its way, a
@@ -3283,18 +3300,51 @@ fn escalate_tier(
                 let parties: Vec<&str> = std::iter::once(a.caller.as_str()).chain(r.seats.iter().map(|x| x.as_str())).collect();
                 arb::tier1_opening(&n.rpc, &oxo, &c, &parties)
             });
-            if let Some((who, _)) = opener.filter(|o| o.0 != me) {
-                n.log(&format!("tier 1: {} posted first and opens the case; standing down", bitaid_node::pre(&who, 8)));
-                // the pool lets the escrow go once the case holds no place in the queue. That is asked
-                // for once the hearing is over (`release_stood_down`), so that waiting for it never
-                // costs this party its window to appeal
-                STOOD_DOWN.with(|x| *x.borrow_mut() = Some(e.clone()));
-                let until = n.tip() + a.template.dispute_blocks + 2;
-                let v = watch_tier(n, a, 1, until).flatten();
-                return v;
+            if let Some((who, oh)) = opener.filter(|o| o.0 != me) {
+                // the opener draws; this party, posted too, carries tier 1 itself only if no draw is
+                // anchored by the opener's turn (Specification issue #39): from the same block, paid
+                // from its own posting's escrow
+                let until = oh + bitaid_node::draw_blocks() + bitaid_node::carry_after();
+                n.log(&format!(
+                    "tier 1: {} posted first and opens the case; following it, and carrying it if it is not drawn by block {until}",
+                    bitaid_node::pre(&who, 8)
+                ));
+                let drawn = |n: &Node| {
+                    n.history.iter().any(|e| matches!(&e.msg, Msg::Seated { case_id, tier: 1, .. } if *case_id == c) && e.height > 0)
+                };
+                let cap = Instant::now() + secs(bitaid_node::slow(7200));
+                while !drawn(n) && n.tip() < until && Instant::now() < cap {
+                    n.rpc.mine(1).ok();
+                    n.collect(Duration::from_secs(5), |_, _| None::<()>, |_| false);
+                }
+                if drawn(n) || flag("--no-carry") {
+                    // the pool lets the escrow go once the case holds no place in the queue. That is
+                    // asked for once the hearing is over (`release_stood_down`), so that waiting for it
+                    // never costs this party its window to appeal
+                    STOOD_DOWN.with(|x| *x.borrow_mut() = Some(e.clone()));
+                    let until = n.tip() + a.template.dispute_blocks + a.template.commit_blocks + 2;
+                    let v = watch_tier(n, a, 1, until).flatten();
+                    return v;
+                }
+                CARRIED.with(|x| x.set(true));
+                n.check(
+                    "tier 1: the party that opened it never drew it; this party carries it from the same draw block, paid from its own posting",
+                    true,
+                    &format!("block {}", oh + bitaid_node::draw_blocks()),
+                );
+                n.send_case(&c, &[], esc_msg.clone(), false);
+                oh
+            } else {
+                n.send_case(&c, &[], esc_msg.clone(), false);
+                // --withhold-draw (a test): the opener of tier 1 never publishes the draw, as one that
+                // disliked the panel would; another party that posted must carry it (issue #39)
+                if flag("--withhold-draw") {
+                    n.check("tier 1: opened it and withholding the draw (expected for this test)", true, "");
+                    let until = n.tip() + 3 * a.template.commit_blocks + a.template.dispute_blocks + 20;
+                    return watch_tier(n, a, 1, until).flatten();
+                }
+                h
             }
-            n.send_case(&c, &[], esc_msg.clone(), false);
-            h
         }
         None => match n.wait_anchored(&esc_id, secs(bitaid_node::slow(1800))) {
             Some(h) => h,
@@ -3516,7 +3566,7 @@ fn escalate_tier(
     if !review {
         // every seat's stake before any seat is paid; a seat without one by its deadline is replaced
         // from the block anchoring the draw: the seats cannot stake before they are told (§10.4)
-        let Some(told) = told_at(n, &seated_id, h, h + cb) else {
+        let Some(told) = told_at(n, &seated_id, h, bitaid_node::draw_by(h, cb)) else {
             n.log(&format!("tier {tier}: the draw was not anchored by the draw block plus the stake deadline; the tier lapses"));
                 NO_CARRY.with(|x| x.set(true));
             return None;

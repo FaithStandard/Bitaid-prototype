@@ -39,6 +39,19 @@ pub fn checkpoint_blocks() -> u32 {
     std::env::var("BITAID_CHECKPOINT_BLOCKS").ok().and_then(|v| v.parse().ok()).filter(|v| *v > 0).unwrap_or(6)
 }
 
+/// Blocks after a tier's draw block by which its opener must have published the draw before another
+/// carrier may (§10.5): the draw's depth and two finality graces.
+pub fn carry_after() -> u32 {
+    draw_depth() + 2 * (2 * checkpoint_blocks() + 2) + 2
+}
+
+/// The last block by which a tier's draw must be anchored, counted from its draw block: room for a
+/// carrier to publish it after the opener's turn, then the stake deadline (a draw anchored later
+/// seats no one, and the tier lapses by its carrier's doing).
+pub fn draw_by(draw_h: u32, commit_blocks: u32) -> u32 {
+    draw_h + carry_after() + commit_blocks
+}
+
 pub fn draw_depth() -> u32 {
     std::env::var("BITAID_DRAW_DEPTH")
         .ok()
