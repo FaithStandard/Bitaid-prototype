@@ -2,6 +2,7 @@
 //! with its state in `--dir` (default `$HOME/bitaid-arti`), behind the authenticated SOCKS listener.
 //! Prints `BITAID_SOCKS=...` for the node (name `main`) and the time Tor took to bootstrap, then
 //! serves until killed.
+//! Printing the secret is for this test tool only: the app never logs `BITAID_SOCKS`.
 //!   bitaid-tor [--dir DIR]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
