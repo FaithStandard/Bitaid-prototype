@@ -6,7 +6,8 @@
 #   PC=<pc onion> sh scripts/cold_start.sh warm 10      Tor kept running (a reference)
 # For a network switch, run "warm" and toggle airplane mode or Wi-Fi off during the pause it asks for.
 # Each trial prints the marks of the issue, in seconds from T0 (the alert pressed):
-#   T1 Tor bootstrapped 100%   T3 stream open to the Core's onion   T4 the Core's first byte back
+#   T1 Tor bootstrapped 100%   T3 stream open to the Core's onion (a bare TCP connect through SOCKS)
+#   T4 the Core's first byte back
 # (T2, the onion descriptor fetched, is inside T3 without Tor's control port.) Results are appended
 # to $HOME/cold_start.txt with the network type, if termux-api can tell it.
 cd "$(dirname "$0")/.."
@@ -39,7 +40,18 @@ for i in $(seq 1 $N); do
   # the rendezvous); T4: the archive's first byte back over the same onion (the Core's machine)
   R=$(curl -s -o /dev/null --max-time 180 --socks5-hostname 127.0.0.1:$S \
         -w '%{time_connect} %{time_starttransfer} %{http_code}' "http://$PC:7480/" 2>/dev/null)
-  T3=$(awk -v t1="$T1" -v c="$(echo $R | cut -d' ' -f1)" 'BEGIN { printf "%.2f", t1 + c }')
+  # T3: a bare SOCKS5 CONNECT to the Core's gossip port, which returns once Tor has the rendezvous
+  # (curl's own connect time stops at the local proxy)
+  S0=$(now)
+  python3 - "$S" "$PC" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=180)
+s.sendall(b"\x05\x01\x00"); s.recv(2)
+h = sys.argv[2].encode()
+s.sendall(b"\x05\x01\x00\x03" + bytes([len(h)]) + h + (7700).to_bytes(2, "big")); r = s.recv(10)
+sys.exit(0 if len(r) > 1 and r[1] == 0 else 1)
+PY
+  T3=$(awk -v t1="$T1" -v c="$(since $S0)" 'BEGIN { printf "%.2f", t1 + c }')
   T4=$(awk -v t1="$T1" -v c="$(echo $R | cut -d' ' -f2)" 'BEGIN { printf "%.2f", t1 + c }')
   CODE=$(echo $R | cut -d' ' -f3)
   LINE="trial $i mode=$MODE T1=$T1 T3=$T3 T4=$T4 http=$CODE"

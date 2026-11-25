@@ -100,3 +100,21 @@ Log: `results/public_signet_2026-11-25.txt`.
   final panel) passed over; units released.
 - Time from escalation: tier 1 verdict 9,694 s, tier 2 verdict 10,967 s after its escalation; the
   whole case about 12 hours (signet blocks, `COMMIT_BLOCKS=8`, `DISPUTE_BLOCKS=8`).
+
+## Caller cold start over Tor, phone (Redmi, mobile data), 2026-11-25 (prototype issue #2)
+
+`scripts/cold_start.sh`, 10 trials per mode, against the PC's onion (archive port), C Tor in Termux.
+T1 = Tor bootstrapped; T4 = the PC's first byte back, both from T0 (alert pressed). (T3 as first
+written measured only the local SOCKS connect and equals T1; T4 - T1 is the onion connection plus reply.)
+
+| Mode | T1 median | T4 median | T4 worst | Failures |
+| --- | --- | --- | --- | --- |
+| restart (Tor killed, cache kept) | 4.2 s | 9.8 s | 15.8 s | 0/10 |
+| wipe (cache deleted) | 10.2 s | 14.7 s | 17.2 s (of 9) | 1/10 never bootstrapped within 3 min |
+| warm, network switched during the pause | 0 | 2.6 s | 27.0 s | 2/10 refused at once (no network at that instant) |
+
+- Once Tor is up, reaching the Core takes 4-11 s from cold and 1-5 s warm.
+- A wiped cache costs about 6 s more and, once in ten, fails to bootstrap at all: an app must never
+  lose Tor's state.
+- A network switch either fails at once (retry immediately) or adds a long tail (27 s): the app's
+  health probe must react to network-change callbacks, not wait for a timeout.
