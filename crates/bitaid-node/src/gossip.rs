@@ -400,16 +400,44 @@ pub struct Gossip {
 
 /// Connects through a SOCKS5 proxy (Tor) to `host:port`, the host resolved by the proxy, so
 /// `.onion` addresses work and no DNS query leaves this machine.
+///
+/// The proxy may carry credentials, `user:password@host:port` (RFC 1929): the app's in-process Tor
+/// (`bitaid-tor`) refuses any client without its secret, and isolates circuits by the username.
 pub fn socks5_connect(proxy: &str, host: &str, port: u16) -> std::io::Result<TcpStream> {
-    let mut s = TcpStream::connect(proxy)?;
+    let (cred, addr) = match proxy.rsplit_once('@') {
+        Some((c, a)) => (c.split_once(':').map(|(u, p)| (u.to_string(), p.to_string())), a),
+        None => (None, proxy),
+    };
+    let mut s = TcpStream::connect(addr)?;
     s.set_read_timeout(Some(Duration::from_secs(120)))?;
-    s.write_all(&[5, 1, 0])?;
+    match &cred {
+        None => s.write_all(&[5, 1, 0])?,
+        Some(_) => s.write_all(&[5, 1, 2])?,
+    }
     let mut r = [0u8; 2];
     s.read_exact(&mut r)?;
-    if r != [5, 0] {
-        return Err(std::io::Error::other(
-            "SOCKS5: no acceptable authentication",
-        ));
+    match (&cred, r) {
+        (None, [5, 0]) => {}
+        (Some((u, p)), [5, 2]) => {
+            if u.len() > 255 || p.len() > 255 {
+                return Err(std::io::Error::other("SOCKS5: credentials too long"));
+            }
+            let mut a = vec![1, u.len() as u8];
+            a.extend_from_slice(u.as_bytes());
+            a.push(p.len() as u8);
+            a.extend_from_slice(p.as_bytes());
+            s.write_all(&a)?;
+            let mut st = [0u8; 2];
+            s.read_exact(&mut st)?;
+            if st[1] != 0 {
+                return Err(std::io::Error::other("SOCKS5: credentials refused"));
+            }
+        }
+        _ => {
+            return Err(std::io::Error::other(
+                "SOCKS5: no acceptable authentication",
+            ))
+        }
     }
     let h = host.as_bytes();
     let mut req = vec![5, 1, 0, 3, h.len() as u8];
