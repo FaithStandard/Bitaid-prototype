@@ -130,6 +130,9 @@ pub mod node;
 pub mod nostr;
 pub mod pool;
 pub mod relay;
+/// Every role the node runs (caller, responder, pool member, archivist, arbitrator, audit), driven by
+/// its arguments: the binary's whole program, callable from an app (M4).
+pub mod roles;
 pub mod settle;
 pub mod wire;
 
