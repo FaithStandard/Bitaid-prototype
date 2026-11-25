@@ -238,8 +238,8 @@ pub fn link_verifier() -> Verify {
 /// Several link credentials at once (the hostile-peer test needs seven): the usable ones kept, the
 /// rest made in one transaction and one confirmation.
 pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
-    let dir = std::env::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
-        format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into()))
+    let dir = crate::config::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
+        format!("{}/.bitaid", crate::config::var("HOME").unwrap_or(".".into()))
     });
     let _ = std::fs::create_dir_all(&dir);
     let secp = Secp256k1::new();
@@ -287,11 +287,11 @@ pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
 /// reused while its stake stays unspent; otherwise a new key and stake are made and confirmed (on a
 /// test chain the secret is kept, so the stake can be spent back). BITAID_LINK_STAKE=0: none.
 pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
-    if std::env::var("BITAID_LINK_STAKE").map(|v| v == "0").unwrap_or(false) {
+    if crate::config::var("BITAID_LINK_STAKE").map(|v| v == "0").unwrap_or(false) {
         return None;
     }
-    let dir = std::env::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
-        format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into()))
+    let dir = crate::config::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
+        format!("{}/.bitaid", crate::config::var("HOME").unwrap_or(".".into()))
     });
     let _ = std::fs::create_dir_all(&dir);
     let path = format!("{dir}/link_{name}.json");
@@ -391,9 +391,9 @@ impl Node {
         // bonded links: a Core demands a proof of stake on every incoming link (BITAID_OPEN_LINKS=1
         // opens them, for tests); a node that dials proves with its link stake
         let demand = match listen {
-            Some(l) if std::env::var("BITAID_OPEN_LINKS").is_err() => {
+            Some(l) if crate::config::var("BITAID_OPEN_LINKS").is_err() => {
                 let mut names = vec![l.to_string()];
-                if let Ok(v) = std::env::var("BITAID_LINK_NAMES") {
+                if let Ok(v) = crate::config::var("BITAID_LINK_NAMES") {
                     names.extend(v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()));
                 }
                 Some(Demand {
@@ -459,7 +459,7 @@ impl Node {
             parked: VecDeque::new(),
             listed: HashMap::new(),
             roots: Default::default(),
-            deaf: (std::env::var("BITAID_DEAF_AFTER").ok().filter(|v| !v.is_empty()), false),
+            deaf: (crate::config::var("BITAID_DEAF_AFTER").ok().filter(|v| !v.is_empty()), false),
             own_timed: HashMap::new(),
             anchoring: HashMap::new(),
             anchorer: None,
@@ -472,7 +472,7 @@ impl Node {
             tiers_read: Default::default(),
             fetched: Default::default(),
             archive_list: None,
-            archives: std::env::var("BITAID_ARCHIVES")
+            archives: crate::config::var("BITAID_ARCHIVES")
                 .map(|v| v.split(',').filter(|x| !x.is_empty()).map(String::from).collect())
                 .unwrap_or_default(),
             follow_tiers: false,
@@ -484,7 +484,7 @@ impl Node {
             kept: HashMap::new(),
             t0: Instant::now(),
             last_sent: Instant::now() - Duration::from_secs(10),
-            pace_ms: std::env::var("BITAID_PACE_MS")
+            pace_ms: crate::config::var("BITAID_PACE_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(400),
@@ -1001,7 +1001,7 @@ impl Node {
     /// verdict below may not be the last. One the archive was asked about and lacks stands for no
     /// panel (anyone may write a record).
     pub fn unread_tier_records(&self, case: &str, asked: Option<u32>) -> usize {
-        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let from: u32 = crate::config::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         self.rpc.ledger(|l| {
             l.tiers
                 .iter()
@@ -1054,7 +1054,7 @@ impl Node {
     /// Cases with a tier commitment on the chain (from BITAID_INDEX_FROM on, if set) that this node
     /// holds no message for.
     pub fn unread_cases(&self) -> Vec<String> {
-        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let from: u32 = crate::config::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         let mut cases: Vec<String> = self.rpc.ledger(|l| {
             l.tiers
                 .iter()
@@ -1098,7 +1098,7 @@ impl Node {
     /// Tier records on the chain (from BITAID_INDEX_FROM on) that no panel made, as far as this
     /// node can tell: anyone can write one, and none of them counts.
     pub fn records_no_panel(&self) -> usize {
-        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let from: u32 = crate::config::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         self.rpc.ledger(|l| {
             l.tiers
                 .iter()

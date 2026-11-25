@@ -124,7 +124,7 @@ fn chain_seen(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBu
 /// real chain; a day (144) on a faucet-funded test chain (BITAID_SAT_SCALE above 1), so a test run's
 /// bonds, units and funding outputs can be taken back (`--role reclaim`); BITAID_FALLBACK_BLOCKS sets it.
 fn fallback_blocks() -> u32 {
-    std::env::var("BITAID_FALLBACK_BLOCKS")
+    crate::config::var("BITAID_FALLBACK_BLOCKS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(if crate::sats(100) < 100 { 144 } else { 52_560 })
@@ -135,8 +135,8 @@ fn fallback_blocks() -> u32 {
 /// Keeps a per-case secret on disk next to the link keys: the seizure output's fallback, after its
 /// lock, needs every party's per-case key (review N10). Test chains only, as every key file here.
 fn keep_case_key(n: &Node, case: &str, what: &str, k: &Scalar) {
-    let dir = std::env::var("BITAID_LINK_DIR")
-        .unwrap_or_else(|_| format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into())));
+    let dir = crate::config::var("BITAID_LINK_DIR")
+        .unwrap_or_else(|_| format!("{}/.bitaid", crate::config::var("HOME").unwrap_or(".".into())));
     let _ = std::fs::create_dir_all(&dir);
     let path = format!("{dir}/case_{}_{what}_{}.key", crate::pre(case, 16), crate::pre(&n.me(), 8));
     if std::fs::write(&path, hex::encode(k.serialize())).is_err() {
@@ -156,7 +156,7 @@ fn name_of(n: &Node) -> String {
 /// to BITAID_KEYFILE, one JSON line each, so `--role reclaim` can spend what is left under it by the
 /// fallback leaf once its height passes. Never set on a chain with real coins.
 fn keep_keys(kind: &str, who: &str, a: &Scalar, b: &Scalar, oracle: &str, fallback: u32) {
-    let Ok(path) = std::env::var("BITAID_KEYFILE") else {
+    let Ok(path) = crate::config::var("BITAID_KEYFILE") else {
         return;
     };
     let line = serde_json::json!({
@@ -325,7 +325,7 @@ fn main_inner() -> i32 {
     // the Specification's transport: gossip between Cores (over Tor when --socks is given);
     // --relay keeps the Nostr-relay stand-in of the earlier tests
     let node = if !peers.is_empty() || listen.is_some() {
-        let socks = arg("--socks").or_else(|| std::env::var("BITAID_SOCKS").ok());
+        let socks = arg("--socks").or_else(|| crate::config::var("BITAID_SOCKS").ok());
         Node::gossip(
             &name,
             listen.as_deref(),
@@ -507,7 +507,7 @@ fn pool_member(mut n: Node) -> i32 {
     let mut last = Instant::now();
     // the setup again every hour (real time: the relays' day is real time), so a node joining
     // later finds the pool even after its first announcements were dropped
-    let every = Duration::from_secs(num("--reannounce", std::env::var("BITAID_REANNOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3600u64)));
+    let every = Duration::from_secs(num("--reannounce", crate::config::var("BITAID_REANNOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3600u64)));
     let mut announced = Instant::now();
     loop {
         if last.elapsed() > secs(idle) {
@@ -2006,7 +2006,7 @@ fn archivist(mut n: Node) -> i32 {
     let mut first_seen: HashMap<String, Instant> = HashMap::new();
     // announced again every hour, as the pool's setup is: relays forget, and a node joining later
     // must still learn where the logs are
-    let every = Duration::from_secs(num("--reannounce", std::env::var("BITAID_REANNOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3600u64)));
+    let every = Duration::from_secs(num("--reannounce", crate::config::var("BITAID_REANNOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3600u64)));
     let mut announced = Instant::now();
     loop {
         if announced.elapsed() >= every {
@@ -2634,7 +2634,7 @@ fn ballot_from_args(seats: usize, my_seat: usize) -> Ballot {
 /// (tests) Fault findings for a ballot or verdict: `--fault` or BITAID_TEST_FAULT, as
 /// "seat:severity[:harmed seat]" with severity lapse, misconduct or bannable; several joined by ",".
 fn test_faults() -> Vec<wire::Fault> {
-    let spec = arg("--fault").or_else(|| std::env::var("BITAID_TEST_FAULT").ok()).unwrap_or_default();
+    let spec = arg("--fault").or_else(|| crate::config::var("BITAID_TEST_FAULT").ok()).unwrap_or_default();
     spec.split(',')
         .filter_map(|f| {
             let mut it = f.trim().split(':');
@@ -5689,7 +5689,7 @@ fn audit(mut n: Node) -> i32 {
         quiet = if n.unread_cases().is_empty() { quiet + 1 } else { 0 };
     }
     let tip = n.rpc.height();
-    let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let from: u32 = crate::config::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let on_chain = n.rpc.ledger(|l| l.tiers.iter().filter(|t| t.height >= from).count());
     let unread = n.unread_cases();
     let logs = arb::ledger(&n.history, &n.rpc, &pool_id);

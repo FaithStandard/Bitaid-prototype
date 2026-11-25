@@ -3462,13 +3462,13 @@ pub const HEARINGS_PER_DAY: u64 = 1;
 /// Blocks a posting's escrow stays locked at the least (`BITAID_POST_LOCK`, a week by default): what
 /// a posting costs whoever makes it, real case or not.
 pub fn post_lock() -> u32 {
-    std::env::var("BITAID_POST_LOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(4_320)
+    crate::config::var("BITAID_POST_LOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(4_320)
 }
 
 /// The market's opening fee, in sats per seat (`BITAID_FEE0`): a constant of the network, like the
 /// height its ledger is read from.
 pub fn fee0() -> u64 {
-    std::env::var("BITAID_FEE0").ok().and_then(|v| v.parse().ok()).unwrap_or(crate::sats(1_000).max(1))
+    crate::config::var("BITAID_FEE0").ok().and_then(|v| v.parse().ok()).unwrap_or(crate::sats(1_000).max(1))
 }
 
 /// The escrow a posting holds its fees in: the bond script of the poster's key (spent with the
@@ -3558,7 +3558,7 @@ pub fn market_at(l: &crate::ledger::Ledger, oracle: &XOnlyPublicKey, height: u32
         }
     }
     ev.sort();
-    let start = std::env::var("BITAID_INDEX_FROM")
+    let start = crate::config::var("BITAID_INDEX_FROM")
         .ok()
         .and_then(|v| v.parse().ok())
         .or(ev.first().map(|x| x.0))

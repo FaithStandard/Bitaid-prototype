@@ -35,7 +35,7 @@ pub const KEEP_SECS: u64 = 86_400;
 /// How long this Core holds messages: KEEP_SECS, or less for local tests (BITAID_STORE_SECS) that
 /// need a relay to have forgotten old messages, as a busy or day-old one has.
 fn store_secs() -> u64 {
-    std::env::var("BITAID_STORE_SECS").ok().and_then(|v| v.parse().ok()).map_or(KEEP_SECS, |v: u64| v.min(KEEP_SECS))
+    crate::config::var("BITAID_STORE_SECS").ok().and_then(|v| v.parse().ok()).map_or(KEEP_SECS, |v: u64| v.min(KEEP_SECS))
 }
 
 // Limits against a hostile peer. Anyone who knows a Core's onion address can connect and send

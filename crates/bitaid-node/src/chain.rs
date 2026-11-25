@@ -52,8 +52,8 @@ impl Rpc {
 
     pub fn from_env() -> Rpc {
         Rpc::new(
-            &std::env::var("BITAID_RPC").expect("set BITAID_RPC=http://user:pass@host:port"),
-            &std::env::var("BITAID_WALLET").unwrap_or("w".into()),
+            &crate::config::var("BITAID_RPC").expect("set BITAID_RPC=http://user:pass@host:port"),
+            &crate::config::var("BITAID_WALLET").unwrap_or("w".into()),
         )
     }
 
@@ -64,13 +64,13 @@ impl Rpc {
             self.base.clone()
         };
         // BITAID_RPC_DELAY_MS (tests): add latency to every call, as a chain reached over Tor has
-        if let Some(ms) = std::env::var("BITAID_RPC_DELAY_MS")
+        if let Some(ms) = crate::config::var("BITAID_RPC_DELAY_MS")
             .ok()
             .and_then(|v| v.parse().ok())
         {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
-        if std::env::var("BITAID_RPC_TRACE").is_ok() {
+        if crate::config::var("BITAID_RPC_TRACE").is_ok() {
             let p = params.to_string();
             eprintln!("rpc {method} {}", &p[..p.len().min(90)]);
         }
@@ -399,7 +399,7 @@ impl Rpc {
             Ok(v) => Some(v),
             Err(e) if e.contains("txindex") || e.contains("No such mempool") => self.indexed(txid),
             Err(e) => {
-                if std::env::var("BITAID_DEBUG").is_ok() {
+                if crate::config::var("BITAID_DEBUG").is_ok() {
                     eprintln!("raw_tx {txid}: {e}");
                 }
                 None
@@ -454,7 +454,7 @@ impl Rpc {
         let tip = self.height();
         let mut ledger = self.ledger.lock().unwrap();
         if ix.0 == 0 {
-            let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+            let env = |k: &str| crate::config::var(k).ok().and_then(|v| v.parse::<u32>().ok());
             ix.0 = env("BITAID_INDEX_FROM")
                 .unwrap_or_else(|| tip.saturating_sub(env("BITAID_INDEX_BACK").unwrap_or(36)))
                 .max(1);
@@ -603,7 +603,7 @@ impl Rpc {
     /// mempool and recent blocks show (estimatesmartfee, conservative), capped by BITAID_MAX_FEE_RATE
     /// (default 200 sat/vB). None where the node has no estimate yet (regtest, a fresh test chain).
     pub fn fee_rate(&self, target: u32) -> Option<f64> {
-        let max: f64 = std::env::var("BITAID_MAX_FEE_RATE")
+        let max: f64 = crate::config::var("BITAID_MAX_FEE_RATE")
             .ok()
             .and_then(|x| x.parse().ok())
             .unwrap_or(200.0);
@@ -654,7 +654,7 @@ impl Rpc {
         // the child's fee: 20,000 sats, divided with every amount on a faucet-funded chain but at
         // least 1,000 (a package of a few hundred vbytes at a few sat/vB); BITAID_CHILD_FEE overrides
         // (the child: two inputs, one output, about 160 vB)
-        let fee: u64 = std::env::var("BITAID_CHILD_FEE")
+        let fee: u64 = crate::config::var("BITAID_CHILD_FEE")
             .ok()
             .and_then(|v| v.parse().ok())
             .or_else(|| {
