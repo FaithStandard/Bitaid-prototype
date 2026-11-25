@@ -422,7 +422,7 @@ pub fn setup(n: &mut Node, cfg: MemberCfg) -> Result<Member, String> {
         }
     }
     // test only: accuse every other dealer falsely (they must answer, and stay qualified)
-    let accusation = if std::env::var("BITAID_TEST_ACCUSE_ALL").is_ok() {
+    let accusation = if crate::config::var("BITAID_TEST_ACCUSE_ALL").is_ok() {
         members.iter().copied().filter(|m| *m != me).collect()
     } else {
         bad.clone()
@@ -657,8 +657,8 @@ fn dkg(
 
 /// Where a member records the nonce indices it has attested under (one file per attestation key).
 fn spent_path(key: &MemberKey) -> String {
-    let dir = std::env::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
-        format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into()))
+    let dir = crate::config::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
+        format!("{}/.bitaid", crate::config::var("HOME").unwrap_or(".".into()))
     });
     let _ = std::fs::create_dir_all(&dir);
     format!("{dir}/spent_{}_{}.txt", &hex::encode(key.xonly())[..16], key.id)

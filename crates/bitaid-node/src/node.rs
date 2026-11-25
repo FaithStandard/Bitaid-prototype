@@ -109,7 +109,14 @@ pub struct Node {
     backlog: VecDeque<(Envelope, Event)>,
     /// The exact location of each case, sealed to this node, as it arrived: noted the moment it is
     /// received, whatever the node is busy with (a responder must be able to set out at once)
-    pub places: HashMap<String, (String, String, Instant)>,
+    /// the sealed exact location received for each case this node accepted, from its caller alone:
+    /// anyone can send one, so a forged one must neither shadow the caller's nor take its place
+    /// (review of M4 step 1)
+    pub places: HashMap<String, Vec<(String, String, Instant)>>,
+    /// what this node expects of a case's location once it has accepted the alert: the caller who
+    /// sends it and the commitment the alert made to it. Only a location that matches both is shown
+    /// to an app (`Event::Location`)
+    pub place_expect: HashMap<String, (String, String)>,
     /// when the node itself read each case's location (it may have arrived earlier, while busy)
     pub places_read: HashMap<String, Instant>,
     /// every verified message this node has read, in arrival order: replayed by `arb::Replay`
@@ -238,8 +245,8 @@ pub fn link_verifier() -> Verify {
 /// Several link credentials at once (the hostile-peer test needs seven): the usable ones kept, the
 /// rest made in one transaction and one confirmation.
 pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
-    let dir = std::env::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
-        format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into()))
+    let dir = crate::config::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
+        format!("{}/.bitaid", crate::config::var("HOME").unwrap_or(".".into()))
     });
     let _ = std::fs::create_dir_all(&dir);
     let secp = Secp256k1::new();
@@ -287,11 +294,11 @@ pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
 /// reused while its stake stays unspent; otherwise a new key and stake are made and confirmed (on a
 /// test chain the secret is kept, so the stake can be spent back). BITAID_LINK_STAKE=0: none.
 pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
-    if std::env::var("BITAID_LINK_STAKE").map(|v| v == "0").unwrap_or(false) {
+    if crate::config::var("BITAID_LINK_STAKE").map(|v| v == "0").unwrap_or(false) {
         return None;
     }
-    let dir = std::env::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
-        format!("{}/.bitaid", std::env::var("HOME").unwrap_or(".".into()))
+    let dir = crate::config::var("BITAID_LINK_DIR").unwrap_or_else(|_| {
+        format!("{}/.bitaid", crate::config::var("HOME").unwrap_or(".".into()))
     });
     let _ = std::fs::create_dir_all(&dir);
     let path = format!("{dir}/link_{name}.json");
@@ -391,9 +398,9 @@ impl Node {
         // bonded links: a Core demands a proof of stake on every incoming link (BITAID_OPEN_LINKS=1
         // opens them, for tests); a node that dials proves with its link stake
         let demand = match listen {
-            Some(l) if std::env::var("BITAID_OPEN_LINKS").is_err() => {
+            Some(l) if crate::config::var("BITAID_OPEN_LINKS").is_err() => {
                 let mut names = vec![l.to_string()];
-                if let Ok(v) = std::env::var("BITAID_LINK_NAMES") {
+                if let Ok(v) = crate::config::var("BITAID_LINK_NAMES") {
                     names.extend(v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()));
                 }
                 Some(Demand {
@@ -451,6 +458,7 @@ impl Node {
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
             places: HashMap::new(),
+            place_expect: HashMap::new(),
             places_read: HashMap::new(),
             history: vec![],
             observer: None,
@@ -459,7 +467,7 @@ impl Node {
             parked: VecDeque::new(),
             listed: HashMap::new(),
             roots: Default::default(),
-            deaf: (std::env::var("BITAID_DEAF_AFTER").ok().filter(|v| !v.is_empty()), false),
+            deaf: (crate::config::var("BITAID_DEAF_AFTER").ok().filter(|v| !v.is_empty()), false),
             own_timed: HashMap::new(),
             anchoring: HashMap::new(),
             anchorer: None,
@@ -472,7 +480,7 @@ impl Node {
             tiers_read: Default::default(),
             fetched: Default::default(),
             archive_list: None,
-            archives: std::env::var("BITAID_ARCHIVES")
+            archives: crate::config::var("BITAID_ARCHIVES")
                 .map(|v| v.split(',').filter(|x| !x.is_empty()).map(String::from).collect())
                 .unwrap_or_default(),
             follow_tiers: false,
@@ -484,7 +492,7 @@ impl Node {
             kept: HashMap::new(),
             t0: Instant::now(),
             last_sent: Instant::now() - Duration::from_secs(10),
-            pace_ms: std::env::var("BITAID_PACE_MS")
+            pace_ms: crate::config::var("BITAID_PACE_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(400),
@@ -505,9 +513,16 @@ impl Node {
             self.name,
             self.t0.elapsed().as_secs_f64()
         );
+        crate::events::emit(crate::events::Event::Log { node: self.name.clone(), text: s.to_string() });
     }
 
     pub fn check(&mut self, what: &str, ok: bool, detail: &str) {
+        crate::events::emit(crate::events::Event::Check {
+            node: self.name.clone(),
+            what: what.to_string(),
+            ok,
+            detail: detail.to_string(),
+        });
         if ok {
             self.passed += 1;
         } else {
@@ -994,7 +1009,7 @@ impl Node {
     /// verdict below may not be the last. One the archive was asked about and lacks stands for no
     /// panel (anyone may write a record).
     pub fn unread_tier_records(&self, case: &str, asked: Option<u32>) -> usize {
-        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let from: u32 = crate::config::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         self.rpc.ledger(|l| {
             l.tiers
                 .iter()
@@ -1047,7 +1062,7 @@ impl Node {
     /// Cases with a tier commitment on the chain (from BITAID_INDEX_FROM on, if set) that this node
     /// holds no message for.
     pub fn unread_cases(&self) -> Vec<String> {
-        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let from: u32 = crate::config::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         let mut cases: Vec<String> = self.rpc.ledger(|l| {
             l.tiers
                 .iter()
@@ -1091,7 +1106,7 @@ impl Node {
     /// Tier records on the chain (from BITAID_INDEX_FROM on) that no panel made, as far as this
     /// node can tell: anyone can write one, and none of them counts.
     pub fn records_no_panel(&self) -> usize {
-        let from: u32 = std::env::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let from: u32 = crate::config::var("BITAID_INDEX_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         self.rpc.ledger(|l| {
             l.tiers
                 .iter()
@@ -1215,11 +1230,23 @@ impl Node {
     /// nor push out the messages of the cases this node is working on.
     fn push_backlog(&mut self, env: Envelope, e: Event) {
         if let Msg::Place { case_id, sealed } = &env.msg {
-            if e.tag("p") == Some(self.me().as_str()) && !self.places.contains_key(case_id.as_str()) {
+            // kept only from the caller this node expects it from, once it has accepted the case: a
+            // forged location, from any number of throwaway keys, takes no room the caller's needs
+            // (review of M4 step 1: eight forgeries filled a per-case list before the caller's came)
+            let expected = self.place_expect.get(case_id.as_str()).cloned().filter(|x| x.0 == env.sender);
+            let have = self.places.get(case_id.as_str()).is_some_and(|v| !v.is_empty());
+            if e.tag("p") == Some(self.me().as_str()) && expected.is_some() && !have {
                 // when it reached the link, not when this node got round to it (both are reported)
                 let at = crate::gossip::arrived(&e.id).unwrap_or_else(Instant::now);
                 self.places_read.insert(case_id.to_string(), Instant::now());
-                self.places.insert(case_id.to_string(), (env.sender.clone(), sealed.clone(), at));
+                self.places.entry(case_id.to_string()).or_default().push((env.sender.clone(), sealed.clone(), at));
+                // shown to an app at once, only if it is the one the alert committed to: a forged
+                // location would send the responder to an address of the forger's choosing
+                if let Some((caller, commit)) = expected.filter(|x| x.0 == env.sender) {
+                    if let Some((lat, lon)) = open_place(&self.keys, &caller, case_id, sealed, &commit) {
+                        crate::events::emit(crate::events::Event::Location { node: self.name.clone(), case: case_id.to_string(), lat, lon });
+                    }
+                }
             }
         }
         self.backlog.push_back((env, e));
@@ -1352,6 +1379,7 @@ impl Node {
     }
 
     pub fn summary(&self) -> i32 {
+        crate::events::emit(crate::events::Event::Summary { node: self.name.clone(), passed: self.passed, failed: self.failed });
         println!(
             "[{}] {} passed, {} failed",
             self.name, self.passed, self.failed
@@ -1389,4 +1417,15 @@ mod tests {
         assert_eq!(v.iter().filter(|x| x.0).count(), 100, "every kept entry stays");
         assert_eq!(v.iter().take(100).map(|x| x.1).collect::<Vec<_>>(), (0..100).collect::<Vec<_>>());
     }
+}
+
+/// Opens a sealed exact location from `caller`, and returns it only if it is the one the alert
+/// committed to and a real place on Earth.
+pub fn open_place(keys: &bitcoin::secp256k1::Keypair, caller: &str, case_id: &str, sealed: &str, commit: &str) -> Option<(f64, f64)> {
+    let pt = wire::unseal(keys, &wire::xonly(caller)?, format!("{case_id}/place").as_bytes(), &hex::decode(sealed).ok()?)?;
+    let v: serde_json::Value = serde_json::from_slice(&pt).ok()?;
+    let (lat, lon) = (v["lat"].as_str()?.parse::<f64>().ok()?, v["lon"].as_str()?.parse::<f64>().ok()?);
+    let salt = v["salt"].as_str()?;
+    let real = lat.is_finite() && lon.is_finite() && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon);
+    (real && crate::case::place_commitment(case_id, lat, lon, salt) == commit).then_some((lat, lon))
 }

@@ -18,14 +18,14 @@ pub fn pre(s: &str, n: usize) -> &str {
 
 /// Production rules (BITAID_PRODUCTION=1): the spec's windows and no test settings in templates.
 pub fn production() -> bool {
-    std::env::var("BITAID_PRODUCTION").is_ok_and(|v| v == "1")
+    crate::config::var("BITAID_PRODUCTION").is_ok_and(|v| v == "1")
 }
 
 /// Blocks from a tier's opening to its draw block (`BITAID_DRAW_BLOCKS`). Offers count from the
 /// block that anchors them and must be anchored two blocks before the draw, so the default leaves
 /// two checkpoint periods and a margin.
 pub fn draw_blocks() -> u32 {
-    std::env::var("BITAID_DRAW_BLOCKS")
+    crate::config::var("BITAID_DRAW_BLOCKS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2 * checkpoint_blocks() + 4)
@@ -36,7 +36,7 @@ pub fn draw_blocks() -> u32 {
 /// How often, in blocks, the pool's members anchor a checkpoint of the timed messages they hold
 /// (§7; env BITAID_CHECKPOINT_BLOCKS, default 6).
 pub fn checkpoint_blocks() -> u32 {
-    std::env::var("BITAID_CHECKPOINT_BLOCKS").ok().and_then(|v| v.parse().ok()).filter(|v| *v > 0).unwrap_or(6)
+    crate::config::var("BITAID_CHECKPOINT_BLOCKS").ok().and_then(|v| v.parse().ok()).filter(|v| *v > 0).unwrap_or(6)
 }
 
 /// Blocks after a tier's draw block by which its opener must have published the draw before another
@@ -53,7 +53,7 @@ pub fn draw_by(draw_h: u32, commit_blocks: u32) -> u32 {
 }
 
 pub fn draw_depth() -> u32 {
-    std::env::var("BITAID_DRAW_DEPTH")
+    crate::config::var("BITAID_DRAW_DEPTH")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3)
@@ -67,7 +67,7 @@ pub fn slow(secs: u64) -> u64 {
     if secs < 60 {
         return secs;
     }
-    let k: f64 = std::env::var("BITAID_TIME_SCALE")
+    let k: f64 = crate::config::var("BITAID_TIME_SCALE")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|k: &f64| *k >= 1.0)
@@ -86,7 +86,7 @@ pub fn slow(secs: u64) -> u64 {
 /// `BITAID_REPLY_MIN` is that floor in seconds (0 on a local machine; 900 on runs over Tor): every
 /// wait on a reply is at least that long, whatever figure the code names.
 pub fn reply(secs: u64) -> u64 {
-    let floor: u64 = std::env::var("BITAID_REPLY_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let floor: u64 = crate::config::var("BITAID_REPLY_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     slow(secs).max(floor)
 }
 
@@ -95,7 +95,7 @@ pub fn reply(secs: u64) -> u64 {
 /// `spike` instead (a circuit being rebuilt). Unset, nothing is delayed. A local run with no lag
 /// proves the logic; only one with lag shows whether the waits fit the network.
 pub fn lag() -> Option<std::time::Duration> {
-    let v = std::env::var("BITAID_LAG").ok()?;
+    let v = crate::config::var("BITAID_LAG").ok()?;
     let (range, spike) = v.split_once(',').unwrap_or((v.as_str(), ""));
     let (lo, hi) = range.split_once('-')?;
     let (lo, hi): (u64, u64) = (lo.parse().ok()?, hi.parse().ok()?);
@@ -112,7 +112,7 @@ pub fn lag() -> Option<std::time::Duration> {
 /// divides every amount the prototype chooses — bonds, case pots, fees, retention — so a run fits a
 /// few hundredths of a coin. Every mechanism and proportion stays the same.
 pub fn sats(x: u64) -> u64 {
-    let k: u64 = std::env::var("BITAID_SAT_SCALE")
+    let k: u64 = crate::config::var("BITAID_SAT_SCALE")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|k: &u64| *k >= 1)
@@ -123,6 +123,12 @@ pub fn sats(x: u64) -> u64 {
 pub mod blossom;
 pub mod case;
 pub mod chain;
+/// The node's settings, from the environment or from an app (M4).
+pub mod config;
+/// What an app tells a running role (M4).
+pub mod commands;
+/// What a running role reports to an app (M4).
+pub mod events;
 pub mod gossip;
 pub mod ledger;
 pub mod market;
@@ -130,15 +136,20 @@ pub mod node;
 pub mod nostr;
 pub mod pool;
 pub mod relay;
+/// Every role the node runs (caller, responder, pool member, archivist, arbitrator, audit), driven by
+/// its arguments: the binary's whole program, callable from an app (M4).
+pub mod roles;
 pub mod settle;
 pub mod wire;
 
 /// HTTP for the chain RPC and Blossom: `.onion` URLs go through Tor's SOCKS port (`BITAID_SOCKS`,
 /// e.g. 127.0.0.1:9150), with the name resolved by Tor; anything else is fetched directly.
-pub fn http_for(url: &str) -> &'static ureq::Agent {
-    use std::sync::OnceLock;
+pub fn http_for(url: &str) -> ureq::Agent {
+    use std::sync::{Mutex, OnceLock};
     static DIRECT: OnceLock<ureq::Agent> = OnceLock::new();
-    static TOR: OnceLock<ureq::Agent> = OnceLock::new();
+    // the Tor agent, rebuilt when the proxy setting changes (an app's in-process Tor may restart on
+    // another port; review of M4 step 1: a OnceLock kept the dead port for the life of the process)
+    static TOR: Mutex<Option<(String, ureq::Agent)>> = Mutex::new(None);
     let onion = url
         .split("://")
         .nth(1)
@@ -147,19 +158,26 @@ pub fn http_for(url: &str) -> &'static ureq::Agent {
         .next()
         .unwrap_or("")
         .ends_with(".onion");
-    match (onion, std::env::var("BITAID_SOCKS")) {
-        (true, Ok(p)) => TOR.get_or_init(|| {
-            let proxy = ureq::Proxy::new(format!("socks5://{p}")).expect("BITAID_SOCKS host:port");
-            ureq::AgentBuilder::new()
-                .proxy(proxy)
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-        }),
-        _ => DIRECT.get_or_init(|| {
-            ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(60))
-                .build()
-        }),
+    match (onion, crate::config::var("BITAID_SOCKS")) {
+        (true, Ok(p)) => {
+            let mut t = TOR.lock().unwrap_or_else(|e| e.into_inner());
+            if t.as_ref().is_none_or(|x| x.0 != p) {
+                let proxy = ureq::Proxy::new(format!("socks5://{p}")).expect("BITAID_SOCKS host:port");
+                let agent = ureq::AgentBuilder::new()
+                    .proxy(proxy)
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build();
+                *t = Some((p, agent));
+            }
+            t.as_ref().map(|x| x.1.clone()).expect("set above")
+        }
+        _ => DIRECT
+            .get_or_init(|| {
+                ureq::AgentBuilder::new()
+                    .timeout(std::time::Duration::from_secs(60))
+                    .build()
+            })
+            .clone(),
     }
 }
 pub mod arb;
@@ -167,7 +185,7 @@ pub mod arb;
 /// A node on the same machine as a service reaches it locally rather than through its own onion
 /// address: `BITAID_SELF_ONION` names this machine's onion, and URLs on it become 127.0.0.1.
 pub fn local_url(url: &str) -> String {
-    match std::env::var("BITAID_SELF_ONION") {
+    match crate::config::var("BITAID_SELF_ONION") {
         Ok(o) if !o.is_empty() && url.contains(&o) => url.replace(&o, "127.0.0.1"),
         _ => url.to_string(),
     }
