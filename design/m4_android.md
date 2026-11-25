@@ -1,6 +1,7 @@
 # Design note: M4, a minimal Android app over the same core
 
-Status: proposal (2026-11-25), for review before any code. Milestone M4 of the README.
+Status: proposal (2026-11-25), reviewed by Neon the same day (prototype #3, handoff note
+`2026-11-25-m4-review.md`); its findings are adopted in the last section. Milestone M4 of the README.
 
 ## What M4 must prove
 
@@ -130,6 +131,49 @@ path as its own step.
 5. Keys under the Keystore.
 6. A signet run with the tablet and phone on the app and the PC as today.
 7. The caller's light path: headers plus Merkle proofs from several workers' nodes over Tor.
+
+## Adopted from review (Neon, 2026-11-25)
+
+All checked against the code at `1d76d99`.
+
+**The local SOCKS port stays, made private.**
+- Every Tor connection the node makes goes through two places: `http_for` (`lib.rs`, `ureq`) and
+  `gossip::socks5_connect`. The loopback hop costs nothing against Tor's seconds.
+- Loopback is shared with every app on the device, though. So Arti listens on an ephemeral port and
+  requires a random per-process SOCKS5 username and password (RFC 1929). `gossip.rs` sends only
+  no-auth today (`[5, 1, 0]`), so it gains the auth exchange.
+
+**Separate circuits through credentials.** Arti isolates streams by SOCKS credentials. The caller's
+light path (§7.2) therefore uses distinct credentials per worker query, one agent per query, so that
+each query gets its own circuit.
+
+**The proxy setting can change.** `http_for` caches its Tor agent in a `OnceLock` built from
+`BITAID_SOCKS` for the life of the process. If Arti restarts on a new port, that agent stays bound to
+the dead one. The proxy becomes a value held by the node and swappable at run time.
+
+**No environment variables in the library.** Setting the environment in a multi-threaded process is
+unsound, so `libbitaid` takes a configuration struct across JNI. `BITAID_RPC`, `BITAID_SOCKS`,
+`BITAID_KEYFILE` and the rest stay for the CLI binary only.
+
+**Step 1 is a real refactor.**
+- `caller()` and `responder()` live in the 8,000-line binary and run to completion from command-line
+  flags. Turning them into loops driven by commands (raise alert, accept, vote, go on or off duty) is
+  the bulk of step 1.
+- Every role thread is wrapped in `catch_unwind` and reports a fatal event to the app, so that a dead
+  thread never leaves the screen showing "on duty". Arti's own threads are watched by the health
+  probe.
+
+**The foreground service declares its type.** Android 14 and later refuse a foreground service
+without a type. It declares `specialUse` while on duty, and `location` while responding, and keeps
+the battery-optimisation exemption, since deep Doze still throttles a foreground service's network.
+
+**No key in a plain file.** The CLI's `keep_keys` appends keys to `BITAID_KEYFILE` as plain JSON lines,
+a test-chain convenience. In the app, keys live in memory and persist only as the Keystore-encrypted
+blob; the key-file path does not exist there.
+
+**A responder's phone reads its own node.** A responder is a worker, so the trusted node configured
+on its phone is the responder's own full node, at home and reached over Tor. The light path of §7.2 is
+for callers only.
 
 ## Sources
 
