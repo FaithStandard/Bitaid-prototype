@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/bitaid-core", "crates/bitaid-oracle", "crates/bitaid-node"]
+members = ["crates/bitaid-core", "crates/bitaid-oracle", "crates/bitaid-node", "crates/bitaid-tor"]
 
 [workspace.package]
 edition = "2021"
