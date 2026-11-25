@@ -136,16 +136,24 @@ path as its own step.
 
 All checked against the code at `1d76d99`.
 
-**The local SOCKS port stays, made private.**
+**The local SOCKS port stays, behind our own small listener.**
 - Every Tor connection the node makes goes through two places: `http_for` (`lib.rs`, `ureq`) and
   `gossip::socks5_connect`. The loopback hop costs nothing against Tor's seconds.
-- Loopback is shared with every app on the device, though. So Arti listens on an ephemeral port and
-  requires a random per-process SOCKS5 username and password (RFC 1929). `gossip.rs` sends only
-  no-auth today (`[5, 1, 0]`), so it gains the auth exchange.
+- Loopback is shared with every app on the device, and Tor's SOCKS credentials are not access control.
+  Arti, like C Tor, accepts any username and password, and no-auth too, and uses them only to isolate
+  streams (Neon, handoff `2026-11-25-arti-socks-isolation.md`).
+- So `libbitaid` embeds `arti-client`, not the `arti` binary. In front of the `TorClient` it runs its
+  own SOCKS5 listener (a few dozen lines, or `tor-socksproto`) on an ephemeral port. It accepts only
+  RFC 1929 auth whose password is a random secret drawn when the process starts, and rejects no-auth
+  and any wrong password before touching Tor.
+- `gossip.rs` sends only no-auth today (`[5, 1, 0]`), so it gains the auth exchange; `ureq` passes the
+  credentials in the proxy URL.
 
-**Separate circuits through credentials.** Arti isolates streams by SOCKS credentials. The caller's
-light path (§7.2) therefore uses distinct credentials per worker query, one agent per query, so that
-each query gets its own circuit.
+**Separate circuits through the username.** The listener maps the SOCKS username to an Arti isolation
+token (`StreamPrefs::set_isolation` on `connect_with_prefs`):
+- one fixed name (`main`) for ordinary traffic: gossip, RPC, the archive;
+- a fresh name per worker query on the caller's light path (§7.2), each mapped to a new
+  `IsolationToken`, so each query gets its own circuit.
 
 **The proxy setting can change.** `http_for` caches its Tor agent in a `OnceLock` built from
 `BITAID_SOCKS` for the life of the process. If Arti restarts on a new port, that agent stays bound to
