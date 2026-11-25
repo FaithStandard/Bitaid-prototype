@@ -1042,7 +1042,18 @@ impl Replay {
                 break;
             };
             if k == 1 {
+                // every party whose own posting for the case counts within the window may carry tier 1
+                // too, publishing the draw if the opener withholds it, from its own posting's escrow
+                // (Specification issue #39: an opener that disliked the panel drawn could otherwise
+                // withhold it and leave the other side unheard)
+                let parties: Vec<&str> = rp.parties.iter().map(|p| p.0.as_str()).collect();
+                let close = vote.as_ref().and_then(|v| v.close).map(|f| f + a.template.dispute_blocks);
                 carriers = vec![(escalator.clone(), challenger)];
+                for w in tier1_posters(rpc, &oracle, &case, &parties, close) {
+                    if w != escalator {
+                        carriers.push((w, false));
+                    }
+                }
             }
             let t = read_tier(
                 &mine,
@@ -2377,7 +2388,7 @@ fn read_tier(
                 && rpc.height() >= *height + crate::draw_depth();
             // an arbitration draw counts only if a block anchored it by the draw block plus the
             // stake deadline: after that the tier has lapsed (seats told later could not stake)
-            let told_ok = registry.is_some() || e.height <= *height + commit_blocks;
+            let told_ok = registry.is_some() || e.height <= crate::draw_by(*height, commit_blocks);
             // and every listed offer was stated at least two blocks before the draw
             let window_ok = offers.iter().all(|o| t.offer_height.get(o).is_none_or(|oh| oh + 2 <= *height));
             // and every listed offer rests on an entry bond the chain registers, unspent at the draw
@@ -2603,7 +2614,7 @@ fn read_tier(
         if t.seats.is_empty() {
             // never seated: no draw anchored by the draw block plus the stake deadline
             if let Some(he) = h_esc {
-                let l = he + crate::draw_blocks() + commit_blocks;
+                let l = crate::draw_by(he + crate::draw_blocks(), commit_blocks);
                 if tip > l {
                     t.lapsed_at = Some(l);
                     t.lapse_carries = false;
@@ -2865,6 +2876,93 @@ pub fn inactive(hist: &[Envelope], height: u32) -> std::collections::HashSet<Str
         })
         .map(|(w, _)| w)
         .collect()
+}
+
+/// Missed stakes (§10.3, Specification issue #38), counted apart from the inactivity ratio over each
+/// arbitrator's last `STRIKE_SEATINGS` seatings or `STRIKE_BLOCKS` blocks, whichever is shorter.
+pub const STRIKE_SEATINGS: usize = 20;
+pub const STRIKE_BLOCKS: u32 = 4320;
+/// A second miss in the window bars new offers for this many blocks.
+pub const STRIKE_COOLDOWN: u32 = 144;
+
+/// Every arbitration seating the chain shows for the given cases, by arbitrator: its stake deadline,
+/// and whether the seat missed it. Read from each case's replay (a miss is a fact only once the
+/// deadline has passed with no stake); a seat still within its deadline is not counted yet.
+pub fn stake_events<'a>(
+    hist: &[Envelope],
+    rpc: &Rpc,
+    alerts: impl IntoIterator<Item = &'a Alerted>,
+) -> HashMap<String, Vec<(u32, bool)>> {
+    let mut out: HashMap<String, Vec<(u32, bool)>> = HashMap::new();
+    for a in alerts {
+        let Some(r) = pinned_roster(hist, a, rpc) else { continue };
+        let Some(rp) = Replay::build_core(hist, a, &r, rpc) else { continue };
+        for (k, t) in &rp.tiers {
+            if is_review(*k) {
+                continue;
+            }
+            for (w, h) in &t.seat_height {
+                let d = h + a.template.commit_blocks;
+                if t.nonstakers.contains(w) {
+                    out.entry(w.clone()).or_default().push((d, true));
+                } else if t.forfeits.contains_key(w) {
+                    out.entry(w.clone()).or_default().push((d, false));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The arbitrators barred from new offers at `at` for missed stakes (§10.3): suspended at four misses
+/// in the window, or three that are more than a quarter of its seatings; cooled for
+/// `STRIKE_COOLDOWN` blocks after a second. A first miss costs nothing beyond its own case.
+pub fn stake_barred(events: &HashMap<String, Vec<(u32, bool)>>, at: u32) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for (w, ev) in events {
+        let mut v: Vec<(u32, bool)> = ev.iter().copied().filter(|(d, _)| *d <= at && d + STRIKE_BLOCKS > at).collect();
+        v.sort();
+        let v = &v[v.len().saturating_sub(STRIKE_SEATINGS)..];
+        let misses: Vec<u32> = v.iter().filter(|x| x.1).map(|x| x.0).collect();
+        let m = misses.len();
+        let suspended = m >= 4 || (m >= 3 && 4 * m > v.len());
+        let cooled = m >= 2 && misses.last().is_some_and(|l| at < l + STRIKE_COOLDOWN);
+        if suspended || cooled {
+            out.insert(w.clone());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod strike_tests {
+    use super::*;
+
+    fn ev(v: &[(u32, bool)]) -> HashMap<String, Vec<(u32, bool)>> {
+        HashMap::from([("w".to_string(), v.to_vec())])
+    }
+
+    #[test]
+    fn strikes() {
+        // a first miss: nothing
+        assert!(stake_barred(&ev(&[(100, true), (200, false)]), 300).is_empty());
+        // a second: cooled for 144 blocks after it, then free again
+        let e = ev(&[(100, true), (200, true)]);
+        assert!(stake_barred(&e, 300).contains("w"));
+        assert!(stake_barred(&e, 344).is_empty());
+        // three of ten seatings: suspended; three of twenty: only the cooldown
+        let mut t: Vec<(u32, bool)> = (0..7).map(|i| (10 + i, false)).collect();
+        t.extend([(50, true), (60, true), (70, true)]);
+        assert!(stake_barred(&ev(&t), 1000).contains("w"));
+        let mut t: Vec<(u32, bool)> = (0..17).map(|i| (10 + i, false)).collect();
+        t.extend([(50, true), (60, true), (70, true)]);
+        assert!(stake_barred(&ev(&t), 1000).is_empty());
+        // four in the window: suspended; out of the window (4,320 blocks later): free
+        let mut t: Vec<(u32, bool)> = (0..16).map(|i| (10 + i, false)).collect();
+        t.extend([(50, true), (60, true), (70, true), (80, true)]);
+        assert!(stake_barred(&ev(&t), 1000).contains("w"));
+        assert!(stake_barred(&ev(&t), 80 + STRIKE_BLOCKS).is_empty());
+    }
 }
 
 /// The case id under which arbitrators register their bonds (the prototype's stand-in for the pool's
@@ -3601,6 +3699,29 @@ pub fn tier1_posted(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[&
             .filter(|p| parties.contains(&hex::encode(p.poster.serialize()).as_str()))
             .map(|p| p.at.height)
             .min()
+    })
+}
+
+/// Every party with a valid posting for the case confirmed by `close` (any height if None), in the
+/// chain's order: each may carry tier 1 (§10.5).
+pub fn tier1_posters(rpc: &Rpc, oracle: &XOnlyPublicKey, case: &str, parties: &[&str], close: Option<u32>) -> Vec<String> {
+    rpc.ledger(|l| {
+        let mut ps: Vec<&crate::ledger::Posting> = l
+            .postings
+            .iter()
+            .filter(|p| p.case == case && posting_counts(l, p, oracle))
+            .filter(|p| parties.contains(&hex::encode(p.poster.serialize()).as_str()))
+            .filter(|p| close.is_none_or(|w| p.at.height <= w))
+            .collect();
+        ps.sort_by_key(|p| (p.at.height, p.at.pos));
+        let mut out: Vec<String> = vec![];
+        for p in ps {
+            let w = hex::encode(p.poster.serialize());
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+        out
     })
 }
 

@@ -85,6 +85,9 @@ R3APPEAL="--appeal --greedy"; [ -n "$CHALLENGE" ] && R3APPEAL=""
 # DOUBLE=1: r3 posts the case on the fee market too. The posting first on the chain opens the tier and
 # pays the panel; the other party stands down and the pool lets its escrow go, whole (§10.6)
 [ -n "$DOUBLE" ] && R3APPEAL="$R3APPEAL --escalate"
+# WITHHOLD=1 (with DOUBLE): whichever party's posting opens tier 1 never publishes the draw; the other,
+# having posted too, must carry it from the same block and pay it from its own posting (issue #39)
+[ -n "$WITHHOLD" ] && R3APPEAL="$R3APPEAL --withhold-draw"
 # NOAPPEAL=1: a captured tier 1 stands; with REVIEW_PCT=100 the staged review must catch it
 [ -n "$NOAPPEAL" ] && R3APPEAL=""
 R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
@@ -98,6 +101,7 @@ R1APPEAL="--appeal"; [ "$CHALLENGE" = bad ] && R1APPEAL=""
 # posting counts only for a case whose incident transaction the pool co-signed, so none of them holds
 # a place in the queue.
 [ -n "$STUFF" ] && R1APPEAL="$R1APPEAL --stuff $STUFF"
+[ -n "$WITHHOLD" ] && R1APPEAL="$R1APPEAL --withhold-draw"
 # CASES=2: the same network takes a second case (with CAPTURE, the same pair captures it again: a
 # second confirmed overturn costs them their entry bonds, §12)
 for c in $(seq 1 ${CASES:-1}); do
