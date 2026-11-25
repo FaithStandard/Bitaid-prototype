@@ -109,10 +109,9 @@ pub struct Node {
     backlog: VecDeque<(Envelope, Event)>,
     /// The exact location of each case, sealed to this node, as it arrived: noted the moment it is
     /// received, whatever the node is busy with (a responder must be able to set out at once)
-    /// sealed exact locations received for each case, one per sender, at most `MAX_PLACES` senders a
-    /// case: anyone can send one, so a forged one must neither shadow the caller's nor fill the map
-    /// (review of M4 step 1: keyed by case alone, a forger's arrived first and the caller's was
-    /// dropped)
+    /// the sealed exact location received for each case this node accepted, from its caller alone:
+    /// anyone can send one, so a forged one must neither shadow the caller's nor take its place
+    /// (review of M4 step 1)
     pub places: HashMap<String, Vec<(String, String, Instant)>>,
     /// what this node expects of a case's location once it has accepted the alert: the caller who
     /// sends it and the commitment the alert made to it. Only a location that matches both is shown
@@ -1231,18 +1230,18 @@ impl Node {
     /// nor push out the messages of the cases this node is working on.
     fn push_backlog(&mut self, env: Envelope, e: Event) {
         if let Msg::Place { case_id, sealed } = &env.msg {
-            let have = self.places.get(case_id.as_str());
-            let fresh = have.is_none_or(|v| v.len() < MAX_PLACES && !v.iter().any(|p| p.0 == env.sender));
-            if e.tag("p") == Some(self.me().as_str()) && fresh {
+            // kept only from the caller this node expects it from, once it has accepted the case: a
+            // forged location, from any number of throwaway keys, takes no room the caller's needs
+            // (review of M4 step 1: eight forgeries filled a per-case list before the caller's came)
+            let expected = self.place_expect.get(case_id.as_str()).cloned().filter(|x| x.0 == env.sender);
+            let have = self.places.get(case_id.as_str()).is_some_and(|v| !v.is_empty());
+            if e.tag("p") == Some(self.me().as_str()) && expected.is_some() && !have {
                 // when it reached the link, not when this node got round to it (both are reported)
                 let at = crate::gossip::arrived(&e.id).unwrap_or_else(Instant::now);
-                let expected = self.place_expect.get(case_id.as_str()).cloned();
-                if expected.as_ref().is_some_and(|x| x.0 == env.sender) {
-                    self.places_read.insert(case_id.to_string(), Instant::now());
-                }
+                self.places_read.insert(case_id.to_string(), Instant::now());
                 self.places.entry(case_id.to_string()).or_default().push((env.sender.clone(), sealed.clone(), at));
-                // shown to an app at once, only if it is the caller's and the one the alert committed
-                // to: a forged location would send the responder to an address of the forger's choosing
+                // shown to an app at once, only if it is the one the alert committed to: a forged
+                // location would send the responder to an address of the forger's choosing
                 if let Some((caller, commit)) = expected.filter(|x| x.0 == env.sender) {
                     if let Some((lat, lon)) = open_place(&self.keys, &caller, case_id, sealed, &commit) {
                         crate::events::emit(crate::events::Event::Location { node: self.name.clone(), case: case_id.to_string(), lat, lon });
@@ -1419,9 +1418,6 @@ mod tests {
         assert_eq!(v.iter().take(100).map(|x| x.1).collect::<Vec<_>>(), (0..100).collect::<Vec<_>>());
     }
 }
-
-/// Senders of a sealed location kept per case: the caller's, and room for a few others.
-const MAX_PLACES: usize = 8;
 
 /// Opens a sealed exact location from `caller`, and returns it only if it is the one the alert
 /// committed to and a real place on Earth.

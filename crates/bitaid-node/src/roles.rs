@@ -294,29 +294,28 @@ pub fn run(args: Vec<String>) -> i32 {
     // nothing an app sent an earlier role reaches this one
     crate::commands::clear();
     // a panic on any thread of the node (its links, its relays) is reported too, not only on the
-    // role's own: the app must never go on showing a node on duty that has lost a part of itself
-    let hook_name = name.clone();
-    let default = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
-        crate::events::emit(crate::events::Event::Fatal { node: hook_name.clone(), text: format!("panic on thread {thread}: {info}") });
-        default(info);
-    }));
+    // role's own: the app must never go on showing a node on duty that has lost a part of itself.
+    // The hook is installed once per process and names the role running now (review of M4 step 1: one
+    // installed per run chained, and a restarted role reported each panic once per earlier run)
+    *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = name;
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+            let node = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            crate::events::emit(crate::events::Event::Fatal { node, text: format!("panic on thread {thread}: {info}") });
+            default(info);
+        }));
+    });
     // a panic in the role ends it as a fatal event, never silently: an app must not go on showing
     // the role on duty (review of M4, 2026-11-25)
-    match std::panic::catch_unwind(main_inner) {
-        Ok(code) => code,
-        Err(p) => {
-            let text = p
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
-                .unwrap_or_else(|| "panic".into());
-            crate::events::emit(crate::events::Event::Fatal { node: name, text });
-            101
-        }
-    }
+    // (the hook has already reported it as Fatal)
+    std::panic::catch_unwind(main_inner).unwrap_or(101)
 }
+
+/// The name of the role running in this process, for the panic hook.
+static RUNNING: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 fn main_inner() -> i32 {
     let role = arg("--role").expect("--role caller|responder|oracle|archivist");
