@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 for c in "sim_arbitration.py" "sim_arbitration.py sweep" e1b_herding.py e2_collusion.py \
          e2b_corruption_economics.py "e2b_corruption_economics.py c" e2d_marginal.py e2e_fixes.py \
          e2f_fixes_low_appeal.py e3_capture.py e4_attending_vote.py e5_insurers.py e6_staging.py \
-         e6b_funders_hunters.py e7_availability.py e8_storage_layout.py e2g_smart_bloc.py e2h_bloc_momentum.py e2h_power_and_hist.py e2l_review_rules.py e3b_slot_rule.py; do
+         e6b_funders_hunters.py e7_availability.py e8_storage_layout.py e2g_smart_bloc.py e2h_bloc_momentum.py e2h_power_and_hist.py e2l_review_rules.py e2m_tier_retry.py e3b_slot_rule.py; do
   echo "== $c"
   python3 $c > /dev/null
 done
