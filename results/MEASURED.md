@@ -111,10 +111,13 @@ written measured only the local SOCKS connect and equals T1; T4 - T1 is the onio
 | --- | --- | --- | --- | --- |
 | restart (Tor killed, cache kept) | 4.2 s | 9.8 s | 15.8 s | 0/10 |
 | wipe (cache deleted) | 10.2 s | 14.7 s | 17.2 s (of 9) | 1/10 never bootstrapped within 3 min |
-| warm, network switched during the pause | 0 | 2.6 s | 27.0 s | 2/10 refused at once (no network at that instant) |
+| warm, Wi-Fi flicked off and on quickly during the 5 s pause | 0 | 2.6 s | 27.0 s | 2/10 refused at once (no network at that instant) |
 
 - Once Tor is up, reaching the Core takes 4-11 s from cold and 1-5 s warm.
 - A wiped cache costs about 6 s more and, once in ten, fails to bootstrap at all: an app must never
   lose Tor's state.
-- A network switch either fails at once (retry immediately) or adds a long tail (27 s): the app's
-  health probe must react to network-change callbacks, not wait for a timeout.
+- The warm trials toggled Wi-Fi quickly, so some ran while the phone had no network or was still
+  reconnecting: a rough picture, not a clean handoff. Then a request either fails at once (retry
+  immediately) or waits out the reconnection (27 s once). The app's health probe must act on Android's
+  network-change callback, not on a timeout. A clean handoff (one switch, then a trial once the new
+  network is up) is still to be measured.
