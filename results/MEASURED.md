@@ -81,3 +81,22 @@ links to the run's published log. Every node is still run by us.
   seats cause (unstaked, no offer left) opens the next tier within the escalation window from it, one
   the carrier causes opens nothing; non-stakers are never drawn again for the case; the pool decides
   lapses by the replay. Regtest `CAPTURE=1 LAPSE=1 AUDIT=1`: all checks pass, the pool attests tier 2.
+
+## Public signet, 2026-11-24/25 (INDEX_FROM 332329): full case, all checks pass
+
+First complete case on public signet after the issue #1 fix. Tablet 17/0, phone 13/0, PC r3 10/0,
+arb1 14/0, hostile 5/0, audit `AUDIT_PASS` (2 tiers, archive record equals links record).
+Log: `results/public_signet_2026-11-25.txt`.
+
+- Alert to a funded, fully pre-signed incident: 840 s. Location sealed 4.2 s after accepting.
+- Attending vote unsettled; tier 1 (3 of 3 offers) drawn, every seat staked in time (the Nov 24
+  failure), paid 3 × 330 sats; two corrupt seats outvoted arb1 2 to 1 (D,I).
+- No party appealed; arb1 bought the dissenter's re-roll; tier 2 (7 seats) overturned, 6 of 7 for I,D.
+- Pool attested 3 of 4; the lying member's three shares for a different outcome caught as evidence;
+  all three pots settled on chain.
+- Forfeitures by pre-signed scripts and pool co-signature: each corrupt tier-1 seat 4 × fee, the
+  tier-2 dissenter 4 × fee, the losing attendee one tier-1 panel fee; seizure output (5,278 sats)
+  distributed to the vindicated dissenter after the archivist's own replay. Review draw (40%, split
+  final panel) passed over; units released.
+- Time from escalation: tier 1 verdict 9,694 s, tier 2 verdict 10,967 s after its escalation; the
+  whole case about 12 hours (signet blocks, `COMMIT_BLOCKS=8`, `DISPUTE_BLOCKS=8`).

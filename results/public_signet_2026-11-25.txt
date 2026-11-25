@@ -1,0 +1,278 @@
+# Public signet run 2026-11-24/25, INDEX_FROM 332329: PC side
+
+=== r3
+[r3-pc] gossip: dialling 127.0.0.1:7700 through Tor …
+[r3-pc    0.00s] responder on 1 link(s), identity aad3f1b82f2d43ca
+[r3-pc 1157.42s] bond c4b30d2ed933 posted; listening on 7 cells around 886d75db27fffff
+[r3-pc 1189.60s] PASS alert 5aec74b8 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r3-pc 1189.92s] ACCEPT sent
+[r3-pc 1329.75s] roster v0 confirmed by 3 pool members
+[r3-pc 1329.75s] loser-pays forfeiture of 990 sats pre-signed for roster v0, with the fault forfeitures (5000 and 20000 sats)
+[r3-pc 1536.29s] set v0 failed: signer 2: invalid partial signature on message 0; waiting for a re-roll
+[r3-pc 1541.97s] roster v1 confirmed by 3 pool members
+[r3-pc 1541.97s] loser-pays forfeiture of 990 sats pre-signed for roster v1, with the fault forfeitures (5000 and 20000 sats)
+[r3-pc 1545.87s] set v1 complete: 39 payouts + 3 refunds, 3 signers, 3.89 s
+[r3-pc 1545.87s] PASS pre-signed set v1 verified (seat 0) — 39 payouts
+[r3-pc 1545.87s] PASS exact location: sealed to me after I accepted, the one the alert committed to, inside its cell — 164 m from here, 1.6 s after accepting (read by this node 1.6 s after accepting)
+[r3-pc 2028.04s] PASS incident transaction on chain: every pot output exists — 40eb0376b2899ed9785e74b9978dd44cfeed19618bd686a75bea61cd5eac592a
+[r3-pc 2028.05s] PASS evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 0.01 s
+[r3-pc 4120.49s] 2 of 2 commitments in; revealing
+[r3-pc 43045.54s] pool member 4: valid share for a different outcome on pot 0 — signed evidence against it
+[r3-pc 43045.54s] pool member 4: valid share for a different outcome on pot 1 — signed evidence against it
+[r3-pc 43045.54s] pool member 4: valid share for a different outcome on pot 2 — signed evidence against it
+[r3-pc 43045.54s] PASS 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[r3-pc 43045.54s] PASS deposit: "returned" completes with the attestation
+[r3-pc 43045.54s] PASS reward: "paid (7, 3)" completes with the attestation
+[r3-pc 43045.54s] PASS bounty: "split (7, 3)" completes with the attestation
+[r3-pc 43650.20s] PASS my shares arrived at my payout address — 6300 sats
+
+=== r4
+[r4-pc-cheat] gossip: dialling 127.0.0.1:7700 through Tor …
+[r4-pc-cheat    0.00s] responder on 1 link(s), identity 7fb7189f4da14df8
+[r4-pc-cheat 1157.42s] bond f53dd066a471 posted; listening on 7 cells around 886d75db27fffff
+[r4-pc-cheat 1189.59s] PASS alert 5aec74b8 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r4-pc-cheat 1190.71s] ACCEPT sent
+[r4-pc-cheat 1329.75s] roster v0 confirmed by 3 pool members
+[r4-pc-cheat 1329.75s] loser-pays forfeiture of 990 sats pre-signed for roster v0, with the fault forfeitures (5000 and 20000 sats)
+[r4-pc-cheat 1533.76s] sending corrupted partial signatures (test)
+[r4-pc-cheat 1536.29s] set v0 failed: signer 2: invalid partial signature on message 0; waiting for a re-roll
+[r4-pc-cheat 1537.39s] roster v1 does not seat me
+[r4-pc-cheat 1537.39s] PASS dropped from the set after sending a bad partial signature (expected for this test)
+
+=== arb1
+[arb1-pc] gossip: dialling 127.0.0.1:7700 through Tor …
+[arb1-pc    0.00s] arbitrator on 1 link(s), identity da78eb4a686ed7f3
+[arb1-pc 1159.47s] arbitrator bond 87cdd008fae8 posted
+[arb1-pc 3828.73s] offered a seat on tier 1 of 5aec74b8
+[arb1-pc 5761.03s] offered a seat on tier 1 of 5aec74b8
+[arb1-pc 6284.52s] case 5aec74b8: 3 message(s) read from the archive
+[arb1-pc 8377.75s] seated on tier 1 of 5aec74b8 (seat 2); case disclosed
+[arb1-pc 8377.76s] momentum 0.00 on taking the seat: penalties up to 4.0× the fee, case unit 20000 sats
+[arb1-pc 12986.44s] reviewed 1536 KiB of footage from 3 recorders; verdict I,D
+[arb1-pc 15393.64s] dissented on tier 1 (D,I against my I,D); challenging at block 332366 unless a party appeals
+[arb1-pc 17694.90s] PASS dissented on tier 1 and no party appealed: buying the re-roll to tier 2 on a party's terms
+[arb1-pc 18741.84s] ESCALATE tier 2 (7 seats): dissenter's re-roll; drawn from block 332373
+[arb1-pc 25419.52s] PASS tier 2: 7 of 9 offering arbitrators drawn from block 332373, case disclosed only to them — 6677.7 s after escalating
+[arb1-pc 27397.50s] PASS tier 2: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 7 of 7
+[arb1-pc 27671.89s] PASS tier 2: 7 × 412 sats paid to the seats — 67bbd933f135a464
+[arb1-pc 29709.00s] PASS tier 2: 7 of 7 verdicts revealed; roster and answers committed on chain (OP_RETURN) — 8ae8f82d85dbdb8597e4bcf9d82348cdec8d13d54dc0bbb5768b903123d9d87d
+[arb1-pc 29709.00s] PASS tier 2: two-thirds verdict (6 of 7); 1 dissenter(s) owe 4.0× the fee each, settled against the final ruling — 10967.2 s from escalation
+[arb1-pc 29709.00s] PASS tier 2: the larger panel agreed with the dissent — I,D
+[arb1-pc 42986.25s] PASS the pool attested the final outcome — 3 members
+[arb1-pc 43221.35s] PASS attendee 8ddf75bd: the loser pays, one tier-1 panel fee (990 sats) forfeited from its bond into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — abcac7ea717fe1b3 (pool members [1, 2, 4])
+[arb1-pc 43250.09s] PASS tier 1 arbitrator 51fa73b1: 4.0× the 330-sat fee (1320 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — f2e27a450c2ceeba (pool members [2, 1, 4])
+[arb1-pc 43265.27s] PASS tier 1 arbitrator 55702435: 4.0× the 330-sat fee (1320 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — 1ab45ea6a1bf88fd (pool members [1, 2, 4])
+[arb1-pc 43275.25s] PASS tier 2 arbitrator 51fa73b1: 4.0× the 412-sat fee (1648 sats) forfeited from its stake into the case's seizure output by its pre-signed forfeiture and the pool's co-signature — b8c94db1fc8d3f9d (pool members [2, 1, 4])
+[arb1-pc 43621.66s] PASS seizure distribution signed by 1 of 1 archivist(s) after their own replay
+[arb1-pc 45466.33s] PASS seizure output distributed (§12) by the pool and the archivists: 5278 sats to a vindicated dissenter — ffb2143d66449037
+[arb1-pc 45466.33s] case 5aec74b8 final; its units wait for the review draw
+[arb1-pc 45466.33s] case 5aec74b8 final; its units wait for the review draw
+[arb1-pc 45469.68s] PASS case 5aec74b8: review draw at block 332385 (40% for a split final panel): passed over
+[arb1-pc 45626.15s] PASS tier 1 unit of 20000 sats released under the bond's script by the pool's co-signature — 5222778704bd3073 (pool members [2, 1, 4])
+[arb1-pc 45626.15s] case 5aec74b8: 1 unit(s), 20000 sats, back to free capital
+
+=== hostile
+[hostile-pc] gossip: dialling 127.0.0.1:7700 through Tor …
+[hostile-pc    0.00s] hostile on 1 link(s), identity 012f49bb8f13be5f
+[hostile-pc 2015.98s] incident of case 5aec74b8 on chain; acting
+[hostile-pc 4117.96s] PASS an outsider's records were all accepted by the chain: a posting for a real case, an incident record and a posting for an invented one, two tier records no panel made
+[hostile-pc 19463.47s] PASS the invented case: its incident record, on a transaction the pool never signed, is not read, and its posting holds no place in the queue
+[hostile-pc 19463.47s] PASS the real case was heard by a panel of its parties' drawing, the outsider's posting, offer and announcement notwithstanding
+[hostile-pc 19463.47s] PASS once heard, the case holds no place in the queue: the outsider's posting keeps no slot
+[hostile-pc 19463.47s] PASS the outsider's escrow paid nobody: it sits unspent until its lock
+
+=== pool1
+[pool1-pc] gossip: dialling 127.0.0.1:7700 through Tor …
+[pool1-pc    0.00s] pool-member on 1 link(s), identity ff61a954e3266813
+[pool1-pc  219.12s] all pool members present: 1=ff61a954 2=fb434e03 3=a6644435 4=8048119c
+[pool1-pc  296.17s] pool keys: attestation e436023241a9108785daf5631c1f6e639a54d7cb70ef8327b1cbf008dad247aa, co-signing 0eab51443559eb98300ed41400d0680637031a2e8594802a8e160a0799c95911
+[pool1-pc  376.17s] pool ready: 60 nonces, qualified dealers {1, 2, 3, 4}
+[pool1-pc 1191.65s] alert 5aec74b8 in cell 886d75db27fffff checked
+[pool1-pc 1314.35s] nonces [4, 22, 52] reserved for 5aec74b8
+[pool1-pc 1554.80s] co-signed for 5aec74b8 (session 1)
+[pool1-pc 1631.03s] co-signed for 5aec74b8 (session 2)
+[pool1-pc 3828.06s] anchored 1 message(s) — c030e9233e97be30
+[pool1-pc 5335.96s] case 5aec74b8: the attending vote closed at block 332339 with 2 of 2 ballots; deemed consent at block 332347 unless escalated
+[pool1-pc 5761.04s] case 5aec74b8 escalated to tier 1 by 8ddf75bd
+[pool1-pc 6285.66s] case 5aec74b8: 3 message(s) read from the archive
+[pool1-pc 8378.60s] tier 1 panel of 3 checked: block 332342, draw reproduced, bonds above twice the case value
+[pool1-pc 8715.55s] anchored 3 message(s) — 72ab95e3934a134a
+[pool1-pc 12110.13s] co-signing the payment of the tier-1 panel (3 × 330 sats) out of the posting's escrow for 5aec74b8
+[pool1-pc 12430.31s] co-signed for 5aec74b8 (session 50000)
+[pool1-pc 14633.39s] anchored 2 message(s) — 3a13a612b3410ba3
+[pool1-pc 15393.66s] tier 1: dissenter da78eb4a owes 2.0× the fee (provisional until the final ruling)
+[pool1-pc 15393.66s] tier 1 verdict D,I committed on chain in block 332362; final at block 332370 unless appealed
+[pool1-pc 18742.83s] case 5aec74b8: a dissenter of the tier below opens tier 2
+[pool1-pc 18742.83s] case 5aec74b8 escalated to tier 2 by da78eb4a
+[pool1-pc 19467.91s] anchored 8 message(s) — e9b8965a4caff047
+[pool1-pc 25419.82s] anchored 1 message(s) — 727ece9d57c2a9c8
+[pool1-pc 25993.09s] tier 2 panel of 7 checked: block 332373, draw reproduced, bonds above twice the case value
+[pool1-pc 27675.27s] anchored 4 message(s) — a8fff97419e039e0
+[pool1-pc 29709.03s] tier 2: dissenter 51fa73b1 owes 4.0× the fee (provisional until the final ruling)
+[pool1-pc 29709.04s] tier 2 verdict I,D committed on chain in block 332383; final at block 332391 unless appealed
+[pool1-pc 42885.69s] attestation share for deposit "returned"
+[pool1-pc 42885.69s] attestation share for reward "paid (7, 3)"
+[pool1-pc 42886.09s] attestation share for bounty "split (7, 3)"
+[pool1-pc 42886.53s] case 5aec74b8: the final ruling calls for 8 co-signature(s) on forfeitures and the seizure distribution
+[pool1-pc 42989.34s] co-signing the forfeiture of 990 sats (0.0× the fee) from the bond of 8ddf75bd for 5aec74b8
+[pool1-pc 43128.86s] co-signed for 5aec74b8 (session 100)
+[pool1-pc 43221.38s] co-signing the forfeiture of 1320 sats (4.0× the fee) from the bond of 51fa73b1 for 5aec74b8
+[pool1-pc 43248.28s] co-signed for 5aec74b8 (session 110)
+[pool1-pc 43250.12s] co-signing the forfeiture of 1320 sats (4.0× the fee) from the bond of 55702435 for 5aec74b8
+[pool1-pc 43258.58s] co-signed for 5aec74b8 (session 120)
+[pool1-pc 43265.30s] co-signing the forfeiture of 1648 sats (4.0× the fee) from the bond of 51fa73b1 for 5aec74b8
+[pool1-pc 43273.58s] co-signed for 5aec74b8 (session 130)
+[pool1-pc 43622.05s] co-signing input 0 of the seizure output's distribution for 5aec74b8
+[pool1-pc 43642.36s] co-signed for 5aec74b8 (session 140)
+[pool1-pc 43645.45s] co-signing input 1 of the seizure output's distribution for 5aec74b8
+[pool1-pc 43648.96s] co-signed for 5aec74b8 (session 150)
+[pool1-pc 43660.08s] co-signing input 2 of the seizure output's distribution for 5aec74b8
+[pool1-pc 43671.38s] co-signed for 5aec74b8 (session 160)
+[pool1-pc 43671.78s] co-signing input 3 of the seizure output's distribution for 5aec74b8
+[pool1-pc 43679.76s] co-signed for 5aec74b8 (session 170)
+[pool1-pc 45467.66s] co-signing the release of 35aa70a2's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool1-pc 45467.66s] co-signing the release of a3530a74's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool1-pc 45468.06s] co-signing the release of 07fb7ab3's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool1-pc 45468.46s] co-signing the release of c9c12700's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool1-pc 45468.86s] co-signing the release of 13b9b7bc's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool1-pc 45469.26s] co-signing the release of da4f429e's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool1-pc 45469.72s] co-signing the release of da78eb4a's tier-1 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool1-pc 45595.18s] co-signed for 5aec74b8 (session 3616928)
+[pool1-pc 45600.09s] co-signed for 5aec74b8 (session 10803616)
+[pool1-pc 45601.76s] co-signed for 5aec74b8 (session 623008)
+[pool1-pc 45602.16s] co-signed for 5aec74b8 (session 13322144)
+[pool1-pc 45604.59s] co-signed for 5aec74b8 (session 1392544)
+[pool1-pc 45604.99s] co-signed for 5aec74b8 (session 14407072)
+[pool1-pc 45605.39s] co-signed for 5aec74b8 (session 14417568)
+
+=== pool2
+[pool2-pc-stall] gossip: dialling 127.0.0.1:7700 through Tor …
+[pool2-pc-stall    0.00s] pool-member on 1 link(s), identity fb434e03108cc6ef
+[pool2-pc-stall  219.11s] all pool members present: 1=ff61a954 2=fb434e03 3=a6644435 4=8048119c
+[pool2-pc-stall  296.16s] pool keys: attestation e436023241a9108785daf5631c1f6e639a54d7cb70ef8327b1cbf008dad247aa, co-signing 0eab51443559eb98300ed41400d0680637031a2e8594802a8e160a0799c95911
+[pool2-pc-stall  376.16s] pool ready: 60 nonces, qualified dealers {1, 2, 3, 4}
+[pool2-pc-stall 1159.97s] anchored 10 message(s) — 353186116a2f7e6b
+[pool2-pc-stall 1191.64s] alert 5aec74b8 in cell 886d75db27fffff checked
+[pool2-pc-stall 1314.34s] nonces [4, 22, 52] reserved for 5aec74b8
+[pool2-pc-stall 1554.79s] stalling on co-signing session 1 (test)
+[pool2-pc-stall 1631.02s] session 2: this member was not chosen for the session
+[pool2-pc-stall 4124.45s] anchored 5 message(s) — d4c78ec243935c5f
+[pool2-pc-stall 5334.04s] case 5aec74b8: the attending vote closed at block 332339 with 2 of 2 ballots; deemed consent at block 332347 unless escalated
+[pool2-pc-stall 5761.03s] case 5aec74b8 escalated to tier 1 by 8ddf75bd
+[pool2-pc-stall 5761.74s] anchored 3 message(s) — f551a078c48e0aa7
+[pool2-pc-stall 6285.67s] case 5aec74b8: 3 message(s) read from the archive
+[pool2-pc-stall 8008.81s] anchored 1 message(s) — 9a7edfcd154ad5f1
+[pool2-pc-stall 8378.63s] tier 1 panel of 3 checked: block 332342, draw reproduced, bonds above twice the case value
+[pool2-pc-stall 12110.12s] co-signing the payment of the tier-1 panel (3 × 330 sats) out of the posting's escrow for 5aec74b8
+[pool2-pc-stall 12430.30s] co-signed for 5aec74b8 (session 50000)
+[pool2-pc-stall 15393.64s] tier 1: dissenter da78eb4a owes 2.0× the fee (provisional until the final ruling)
+[pool2-pc-stall 15393.64s] tier 1 verdict D,I committed on chain in block 332362; final at block 332370 unless appealed
+[pool2-pc-stall 18742.82s] case 5aec74b8: a dissenter of the tier below opens tier 2
+[pool2-pc-stall 18742.82s] case 5aec74b8 escalated to tier 2 by da78eb4a
+[pool2-pc-stall 19483.25s] anchored 8 message(s) — 007b9d7e5ec1ad81
+[pool2-pc-stall 25992.64s] tier 2 panel of 7 checked: block 332373, draw reproduced, bonds above twice the case value
+[pool2-pc-stall 26420.19s] anchored 7 message(s) — 925f61e2b63dd62a
+[pool2-pc-stall 29136.57s] anchored 3 message(s) — 517a18770d8f2adf
+[pool2-pc-stall 29709.34s] tier 2: dissenter 51fa73b1 owes 4.0× the fee (provisional until the final ruling)
+[pool2-pc-stall 29709.34s] tier 2 verdict I,D committed on chain in block 332383; final at block 332391 unless appealed
+[pool2-pc-stall 42884.81s] attestation share for deposit "returned"
+[pool2-pc-stall 42884.81s] attestation share for reward "paid (7, 3)"
+[pool2-pc-stall 42885.21s] attestation share for bounty "split (7, 3)"
+[pool2-pc-stall 42885.65s] case 5aec74b8: the final ruling calls for 8 co-signature(s) on forfeitures and the seizure distribution
+[pool2-pc-stall 42989.33s] co-signing the forfeiture of 990 sats (0.0× the fee) from the bond of 8ddf75bd for 5aec74b8
+[pool2-pc-stall 43128.85s] co-signed for 5aec74b8 (session 100)
+[pool2-pc-stall 43221.37s] co-signing the forfeiture of 1320 sats (4.0× the fee) from the bond of 51fa73b1 for 5aec74b8
+[pool2-pc-stall 43248.27s] co-signed for 5aec74b8 (session 110)
+[pool2-pc-stall 43250.11s] co-signing the forfeiture of 1320 sats (4.0× the fee) from the bond of 55702435 for 5aec74b8
+[pool2-pc-stall 43258.57s] co-signed for 5aec74b8 (session 120)
+[pool2-pc-stall 43265.29s] co-signing the forfeiture of 1648 sats (4.0× the fee) from the bond of 51fa73b1 for 5aec74b8
+[pool2-pc-stall 43273.57s] co-signed for 5aec74b8 (session 130)
+[pool2-pc-stall 43622.03s] co-signing input 0 of the seizure output's distribution for 5aec74b8
+[pool2-pc-stall 43642.35s] co-signed for 5aec74b8 (session 140)
+[pool2-pc-stall 43645.44s] co-signing input 1 of the seizure output's distribution for 5aec74b8
+[pool2-pc-stall 43648.95s] co-signed for 5aec74b8 (session 150)
+[pool2-pc-stall 43660.07s] co-signing input 2 of the seizure output's distribution for 5aec74b8
+[pool2-pc-stall 43671.37s] co-signed for 5aec74b8 (session 160)
+[pool2-pc-stall 43671.77s] co-signing input 3 of the seizure output's distribution for 5aec74b8
+[pool2-pc-stall 43679.75s] co-signed for 5aec74b8 (session 170)
+[pool2-pc-stall 45467.65s] co-signing the release of 35aa70a2's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool2-pc-stall 45467.65s] co-signing the release of a3530a74's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool2-pc-stall 45468.05s] co-signing the release of 07fb7ab3's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool2-pc-stall 45468.45s] co-signing the release of c9c12700's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool2-pc-stall 45468.85s] co-signing the release of 13b9b7bc's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool2-pc-stall 45469.25s] co-signing the release of da4f429e's tier-2 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool2-pc-stall 45469.71s] co-signing the release of da78eb4a's tier-1 unit (20000 sats) for 5aec74b8: the case is closed and its review let it go
+[pool2-pc-stall 45595.17s] co-signed for 5aec74b8 (session 3616928)
+[pool2-pc-stall 45600.08s] co-signed for 5aec74b8 (session 10803616)
+[pool2-pc-stall 45601.75s] co-signed for 5aec74b8 (session 623008)
+[pool2-pc-stall 45602.15s] co-signed for 5aec74b8 (session 13322144)
+[pool2-pc-stall 45604.58s] co-signed for 5aec74b8 (session 1392544)
+[pool2-pc-stall 45604.98s] co-signed for 5aec74b8 (session 14407072)
+[pool2-pc-stall 45605.38s] co-signed for 5aec74b8 (session 14417568)
+
+=== archivist
+[archivist-pc] gossip: dialling 127.0.0.1:7700 through Tor …
+[archivist-pc    0.00s] archivist on 1 link(s), identity 590fe10524226e79
+[archivist-pc    0.30s] Blossom server at http://7mu7sovtsffaf4shp7vo3zc52egqgf4usxaaatpwsj6bbza2nofcx6id.onion:7480
+[archivist-pc 1191.64s] live case 5aec74b8: caller may upload
+[archivist-pc 1325.13s] case 5aec74b8: 3 seated responders may upload
+[archivist-pc 1539.43s] case 5aec74b8: 2 seated responders may upload
+[archivist-pc 42989.09s] case 5aec74b8: review draw at block 332385 passed it over (40%)
+[archivist-pc 43621.68s] signed the seizure distribution of 5aec74b8 (4 inputs, 5278 sats from 4 forfeitures)
+
+=== audit-links
+[audit-links] gossip: dialling 127.0.0.1:7700 through Tor …
+[audit-links    0.00s] audit on 1 link(s), identity c327c33e5910aafe
+[audit-links    6.50s] PASS every tier commitment on the chain since block 332329 is read (4 records, 2 no panel made, 2 tiers replayed, 9 arbitrators) from this node's links — 0 case(s) unread
+
+=== audit-archive
+[audit-archive] gossip: dialling 127.0.0.1:7700 through Tor …
+[audit-archive    0.00s] audit on 1 link(s), identity 1f3d927f6f5070aa
+[audit-archive    2.65s] case 05a1418f: 20 message(s) read from the archive
+[audit-archive    2.69s] case 5aec74b8: 258 message(s) read from the archive
+[audit-archive    6.75s] PASS every tier commitment on the chain since block 332329 is read (4 records, 2 no panel made, 2 tiers replayed, 9 arbitrators) from the archivists' logs alone: 2 cases, 278 messages — 0 case(s) unread
+
+=== audit
+AUDIT_PASS: the record read from the archive alone equals the record read from the links (2 tiers)
+
+# Device side (Termux output as pasted; gossip link up/down lines omitted)
+
+=== tablet: r1 (responder; escalated to tier 1)
+[r1    0.00s] responder on 1 link(s), identity 8ddf75bd3c0501a7
+[r1 1026.32s] bond 0ac08cda3343 posted; listening on 7 cells around 886d75db27fffff
+[r1 1032.01s] PASS alert 5aec74b8 in cell 886d75db27fffff checked: registration, wallet signature, funding output on chain
+[r1 1034.31s] ACCEPT sent
+[r1 1344.66s] set v0 failed: signer 2: invalid partial signature on message 0; waiting for a re-roll
+[r1 1354.10s] set v1 complete: 39 payouts + 3 refunds, 3 signers, 2.47 s
+[r1 1354.11s] PASS exact location: sealed to me after I accepted, the one the alert committed to, inside its cell — 109 m from here, 4.2 s after accepting (read by this node 267.0 s after accepting)
+[r1 1843.10s] PASS incident transaction on chain: every pot output exists — 40eb0376b2899ed9785e74b9978dd44cfeed19618bd686a75bea61cd5eac592a
+[r1 5157.40s] PASS attending vote did not settle (seat 0: no 80% agreement on its class); escalating to arbitration
+[r1 5559.29s] PASS tier 1: posted on the fee market at 330 sats a seat, the panel's fees locked in escrow; taken up at block 332336 — 90ce65d4f6cf1711
+[r1 7815.71s] PASS tier 1: 3 of 3 offering arbitrators drawn from block 332342, case disclosed only to them — 2249.3 s after escalating
+[r1 11911.33s] PASS tier 1: every seat committed a case unit of at least twice the case value (20000 sats) under its bond's script and pre-signed its forfeitures (2× to 4×, into the case's seizure output) and its seat forfeiture — 3 of 3
+[r1 12788.06s] PASS tier 1: 3 × 330 sats paid to the seats — 5bf00be978d40b69
+[r1 15260.64s] PASS tier 1: 3 of 3 verdicts revealed; roster and answers committed on chain (OP_RETURN) — ce761c74e0b1b76e97d0631868d47559400ea41336b74cbd611e0c6a5fc128de
+[r1 15260.65s] PASS tier 1: two-thirds verdict (2 of 3); 1 dissenter(s) owe 2.0× the fee each, settled against the final ruling — 9694.3 s from escalation
+[r1 18612.59s] tier 2 opened by another party; following it
+[r1 29824.59s] standing verdict after tier 2: I,D — against my claim
+[r1 42860.06s] PASS 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[r1 42880.65s] PASS deposit: "returned" completed by the attestation and broadcast
+[r1 42899.16s] PASS reward: "paid (7, 3)" completed by the attestation and broadcast
+[r1 42924.38s] PASS bounty: "split (7, 3)" completed by the attestation and broadcast
+[r1 43485.10s] PASS my shares arrived at my payout address — 2700 sats
+[r1] 17 passed, 0 failed
+
+=== phone: caller
+[caller  194.00s] PASS oracle pool found and checked: 4 members, threshold 3, 60 nonces — 0eab51443559eb98
+[caller  981.99s] PASS registration: funding output (no key path) and template committed — 15e691efdf9966eadc156a4881e6f0b2a2074531e45b43c7ea3521a3c98b1d8c:1
+[caller  983.54s] ALERT case 5aec74b8 in H3 cell 886d75db27fffff
+[caller 1105.60s] PASS 3 responder(s) accepted within the joining window, bonds checked on chain — first after 3.29 s
+[caller 1330.18s] PASS signer 2 caught sending an invalid partial signature; its seat is given up and the set re-signed — signer 2: invalid partial signature on message 0
+[caller 1340.06s] PASS pre-signed set v1 complete and verified across machines — 39 payouts + 3 refunds, 3 signers
+[caller 1435.65s] PASS pool co-signed the incident (FROST, 3 of 4 members) — 2 session(s), signers [1, 4, 3], 95.59 s
+[caller 1440.94s] PASS incident transaction: scoped key + oracle co-signature, zero fee, accepted as a package
+[caller 1822.24s] time from alert to a funded, fully pre-signed incident: 839.94 s
+[caller 1825.53s] PASS evidence: 512 KiB encrypted in 2 blobs, pinned on 1/1 archivists — 3.24 s
+[caller 42840.09s] PASS 3 attestation share(s) for a different outcome caught and kept as evidence; t honest shares still combined
+[caller 43422.62s] PASS all 3 pots settled on chain by the attested outcome (3 payouts confirmed) — deposit: returned; reward: paid (7, 3); bounty: split (7, 3)
+[caller] 13 passed, 0 failed
