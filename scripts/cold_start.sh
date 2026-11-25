@@ -36,10 +36,6 @@ for i in $(seq 1 $N); do
     for j in $(seq 1 600); do grep -q "Bootstrapped 100" $D/tor.log 2>/dev/null && break; sleep 0.3; done
   fi
   T1=$(since $T0)
-  # T3: the stream to the Core's onion open (curl's connect through the SOCKS proxy, which waits for
-  # the rendezvous); T4: the archive's first byte back over the same onion (the Core's machine)
-  R=$(curl -s -o /dev/null --max-time 180 --socks5-hostname 127.0.0.1:$S \
-        -w '%{time_connect} %{time_starttransfer} %{http_code}' "http://$PC:7480/" 2>/dev/null)
   # T3: a bare SOCKS5 CONNECT to the Core's gossip port, which returns once Tor has the rendezvous
   # (curl's own connect time stops at the local proxy)
   S0=$(now)
@@ -52,7 +48,11 @@ s.sendall(b"\x05\x01\x00\x03" + bytes([len(h)]) + h + (7700).to_bytes(2, "big"))
 sys.exit(0 if len(r) > 1 and r[1] == 0 else 1)
 PY
   T3=$(awk -v t1="$T1" -v c="$(since $S0)" 'BEGIN { printf "%.2f", t1 + c }')
-  T4=$(awk -v t1="$T1" -v c="$(echo $R | cut -d' ' -f2)" 'BEGIN { printf "%.2f", t1 + c }')
+  command -v python3 >/dev/null || T3=-
+  # T4: the archive's first byte back over the same onion (the Core's machine), on the circuit T3 built
+  R=$(curl -s -o /dev/null --max-time 180 --socks5-hostname 127.0.0.1:$S \
+        -w '%{time_connect} %{time_starttransfer} %{http_code}' "http://$PC:7480/" 2>/dev/null)
+  T4=$(since $T0)
   CODE=$(echo $R | cut -d' ' -f3)
   LINE="trial $i mode=$MODE T1=$T1 T3=$T3 T4=$T4 http=$CODE"
   echo "$LINE"; echo "$LINE" >> $OUT
