@@ -1,0 +1,17 @@
+[package]
+name = "bitaid-jni"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Thin JNI boundary over bitaid-node and bitaid-tor for the Android app (M4)"
+
+[lib]
+name = "bitaid_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+bitaid-node = { path = "../bitaid-node" }
+bitaid-tor = { path = "../bitaid-tor" }
+jni = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
