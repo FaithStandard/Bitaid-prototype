@@ -499,7 +499,8 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_startRole(
         }
         to_jstring(&mut env, "")
     }))
-    .unwrap_or(std::ptr::null_mut())
+    // never null: Kotlin reads the result as a non-null String
+    .unwrap_or_else(|_| to_jstring(&mut env, "internal error starting the role"))
 }
 
 #[no_mangle]
