@@ -140,6 +140,20 @@ pub async fn serve_with(connect: Connector, limits: Limits) -> std::io::Result<L
     Ok(listener)
 }
 
+static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Logs each stream's target, outcome and timing on stderr (the test tool's `--debug`). Never the
+/// secret; the app leaves it off.
+pub fn set_debug(on: bool) {
+    DEBUG.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn note(f: impl FnOnce() -> String) {
+    if DEBUG.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("[bitaid-tor] {}", f());
+    }
+}
+
 fn refuse<T>(why: &str) -> std::io::Result<T> {
     Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, why.to_string()))
 }
@@ -232,27 +246,42 @@ async fn handle(
     mut closed: watch::Receiver<u64>,
 ) -> std::io::Result<()> {
     let (name, host, port) = match timeout(limits.handshake, handshake(&mut s, secret)).await {
-        Ok(r) => r?,
-        Err(_) => return timed_out("handshake"),
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            note(|| format!("refused: {e}"));
+            return Err(e);
+        }
+        Err(_) => {
+            note(|| "handshake timed out".into());
+            return timed_out("handshake");
+        }
     };
     drop(pre);
+    let t0 = Instant::now();
+    let what = format!("{host}:{port} as {name}");
+    note(|| format!("connecting {what}"));
     let far = match timeout(limits.connect, connect(host, port, name)).await {
         Ok(Ok(far)) => far,
         Ok(Err(e)) => {
+            note(|| format!("connect {what} failed after {:.1} s: {e}", t0.elapsed().as_secs_f64()));
             let _ = s.write_all(&[5, 4, 0, 1, 0, 0, 0, 0, 0, 0]).await;
             return Err(e);
         }
         Err(_) => {
+            note(|| format!("connect {what} timed out after {:.1} s", t0.elapsed().as_secs_f64()));
             let _ = s.write_all(&[5, 6, 0, 1, 0, 0, 0, 0, 0, 0]).await;
             return timed_out("connect");
         }
     };
+    note(|| format!("connected {what} in {:.1} s", t0.elapsed().as_secs_f64()));
     s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
     closed.mark_unchanged();
-    tokio::select! {
+    let r = tokio::select! {
         r = relay(s, far, limits) => r,
         _ = closed.changed() => Ok(()),
-    }
+    };
+    note(|| format!("closed {what} after {:.1} s: {r:?}", t0.elapsed().as_secs_f64()));
+    r
 }
 
 /// Bytes both ways. Unlike `copy_bidirectional`, which waits for both directions to end, this ends
