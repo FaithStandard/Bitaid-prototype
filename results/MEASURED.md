@@ -121,3 +121,25 @@ written measured only the local SOCKS connect and equals T1; T4 - T1 is the onio
   immediately) or waits out the reconnection (27 s once). The app's health probe must act on Android's
   network-change callback, not on a timeout. A clean handoff (one switch, then a trial once the new
   network is up) is still to be measured.
+
+## In-process Tor (Arti, `bitaid-tor`) on the same phone, 2026-11-26 (M4 step 2)
+
+`scripts/arti_check.sh 10` against the same onion. Arti restarted for every trial, its state and
+cache kept (the restart mode above). T1 = Arti bootstrapped; T4 = the archive's first byte through
+the authenticated listener, both measured from the start. The network type was not recorded.
+
+| Build | T1 median | T4 median | T4 worst | Failures |
+| --- | --- | --- | --- | --- |
+| first, relay never flushed (bug) | 1.8 s | none | none | 10/10: stream opened in 11.3 s, request never left |
+| flush fixed, no retry | 1.8 s | 6.0 s | 66.1 s | 3/10 gave up in 3-4 s |
+| flush and retry (`ef4e942`) | 1.8 s | 9.2 s | 21.2 s | 0/10 |
+
+- Arti bootstraps from its kept state in under 2 s; C Tor took 4.2 s.
+- The three quick failures were all the same. Each of the six descriptor fetches was cut by Arti's
+  learned circuit-build timeout ("circuit took too long to build"), and Arti gave up within 3-4 s;
+  the next connection usually worked. The listener now retries within its 180 s bound, waiting
+  0.5 s at first and doubling up to 8 s. It does not retry an error another attempt cannot fix:
+  a wrong target, wrong client auth, or a shutdown.
+- The listener refused a client without the secret in all 30 trials.
+- With the retry, reaching the Core from a cold app takes about the same as C Tor (median 9.2 s
+  against 9.8 s), worst 21 s.
