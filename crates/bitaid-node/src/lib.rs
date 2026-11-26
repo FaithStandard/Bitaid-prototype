@@ -120,6 +120,17 @@ pub fn sats(x: u64) -> u64 {
     x / k
 }
 
+/// Prints a line on stderr, as the binary always has, and sends it to an app's log too (on Android
+/// stderr goes nowhere: the first device run showed a node connecting with an empty log).
+#[macro_export]
+macro_rules! say {
+    ($($t:tt)*) => {{
+        let line = format!($($t)*);
+        eprintln!("{line}");
+        $crate::events::emit($crate::events::Event::Log { node: String::new(), text: line });
+    }};
+}
+
 /// Why a role stopped itself (a missing link stake, an unreachable chain node), with the exit code
 /// the binary returns for it. Raised by `stop` and caught by `roles::run`.
 pub struct Stop {
