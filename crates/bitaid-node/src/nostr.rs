@@ -263,6 +263,10 @@ impl Client {
 
     /// Connects to a relay (`ws://` or `wss://`). Existing subscriptions are sent to it.
     pub fn add_relay(&mut self, url: &str) -> Result<(), String> {
+        // relays are reached directly, never through Tor: none where only onions are allowed
+        if crate::onion_only() {
+            return Err(format!("{url}: relays are not reached over Tor, refused (BITAID_ONION_ONLY)"));
+        }
         let (mut ws, _) = tungstenite::connect(url).map_err(|e| format!("{url}: {e}"))?;
         set_timeout(&mut ws, Duration::from_millis(30));
         let (otx, orx) = channel::<String>();
