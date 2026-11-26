@@ -196,6 +196,11 @@ enum WireEvent {
     ReadyToAlert {
         node: String,
     },
+    Listening {
+        node: String,
+        home: String,
+        cells: usize,
+    },
     RoleExited {
         code: i32,
     },
@@ -264,6 +269,9 @@ impl From<Event> for WireEvent {
                 my_seat,
             },
             Event::ReadyToAlert { node } => WireEvent::ReadyToAlert { node },
+            Event::Listening { node, home, cells } => WireEvent::Listening { node, home, cells },
+            // an event this build does not know yet (Event is non_exhaustive): shown as a log line
+            other => WireEvent::Log { node: String::new(), text: format!("{other:?}") },
         }
     }
 }
