@@ -447,6 +447,9 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_startRole(
         // Inject the authenticated loopback SOCKS proxy directly in Rust so the secret never
         // crosses JNI or appears in Kotlin strings/logs.
         settings.insert("BITAID_SOCKS".into(), tor.listener.socks("main"));
+        // and the node itself refuses every non-onion address, whatever it is given (the checks
+        // above cover BITAID_RPC and --peer only)
+        settings.insert("BITAID_ONION_ONLY".into(), "1".into());
         bitaid_node::config::set(settings);
 
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
