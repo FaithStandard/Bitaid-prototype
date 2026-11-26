@@ -304,6 +304,11 @@ pub fn run(args: Vec<String>) -> i32 {
         std::panic::set_hook(Box::new(move |info| {
             let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
             let node = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            // a role that stopped itself says why, and has already printed it
+            if let Some(s) = info.payload().downcast_ref::<crate::Stop>() {
+                crate::events::emit(crate::events::Event::Fatal { node, text: s.why.clone() });
+                return;
+            }
             crate::events::emit(crate::events::Event::Fatal { node, text: format!("panic on thread {thread}: {info}") });
             default(info);
         }));
@@ -311,7 +316,10 @@ pub fn run(args: Vec<String>) -> i32 {
     // a panic in the role ends it as a fatal event, never silently: an app must not go on showing
     // the role on duty (review of M4, 2026-11-25)
     // (the hook has already reported it as Fatal)
-    std::panic::catch_unwind(main_inner).unwrap_or(101)
+    match std::panic::catch_unwind(main_inner) {
+        Ok(code) => code,
+        Err(p) => p.downcast_ref::<crate::Stop>().map(|s| s.code).unwrap_or(101),
+    }
 }
 
 /// The name of the role running in this process, for the panic hook.

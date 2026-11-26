@@ -176,8 +176,7 @@ impl Rpc {
         let mut wait = 2;
         while c.is_empty() {
             if wait > 300 {
-                eprintln!("CHAIN_UNREACHABLE: the chain node behind BITAID_RPC does not answer getblockchaininfo");
-                std::process::exit(3);
+                crate::stop(3, "CHAIN_UNREACHABLE: the chain node behind BITAID_RPC does not answer getblockchaininfo".into());
             }
             eprintln!("chain node not answering yet; asking again in {wait} s");
             std::thread::sleep(std::time::Duration::from_secs(wait));

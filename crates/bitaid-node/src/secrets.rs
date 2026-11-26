@@ -11,7 +11,10 @@ use std::sync::{Arc, RwLock};
 
 /// An app's encrypted store. `name` is a flat file name such as `link_r1.json`.
 pub trait SecretStore: Send + Sync {
-    fn get(&self, name: &str) -> Option<Vec<u8>>;
+    /// `Ok(None)`: no such secret. `Err`: it may exist but cannot be read (a Keystore key gone, a
+    /// corrupt file); the node then stops rather than making a new one in its place (review of M4
+    /// steps 3-5: a new identity or a new link stake, silently).
+    fn get(&self, name: &str) -> std::io::Result<Option<Vec<u8>>>;
     fn put(&self, name: &str, data: &[u8]) -> std::io::Result<()>;
     /// Adds `line` (which ends in a newline) at the end of `name`, creating it.
     fn append(&self, name: &str, line: &str) -> std::io::Result<()>;
@@ -33,11 +36,19 @@ pub fn in_store() -> bool {
     store().is_some()
 }
 
-pub fn read(name: &str, path: &str) -> Option<String> {
-    match store() {
-        Some(s) => s.get(name).and_then(|b| String::from_utf8(b).ok()),
-        None => std::fs::read_to_string(path).ok(),
-    }
+/// `Ok(None)` when the secret does not exist; `Err` when it may but cannot be read.
+pub fn read(name: &str, path: &str) -> std::io::Result<Option<String>> {
+    let bytes = match store() {
+        Some(s) => s.get(name)?,
+        None => match std::fs::read(path) {
+            Ok(b) => Some(b),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        },
+    };
+    bytes
+        .map(|b| String::from_utf8(b).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{name}: not text"))))
+        .transpose()
 }
 
 pub fn write(name: &str, path: &str, data: &str) -> std::io::Result<()> {
@@ -73,8 +84,8 @@ mod tests {
     #[derive(Default)]
     struct Mem(Mutex<HashMap<String, Vec<u8>>>);
     impl SecretStore for Mem {
-        fn get(&self, name: &str) -> Option<Vec<u8>> {
-            self.0.lock().unwrap().get(name).cloned()
+        fn get(&self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
+            Ok(self.0.lock().unwrap().get(name).cloned())
         }
         fn put(&self, name: &str, data: &[u8]) -> std::io::Result<()> {
             self.0.lock().unwrap().insert(name.into(), data.to_vec());
@@ -94,8 +105,12 @@ mod tests {
         write("a.key", &p("a.key"), "one").unwrap();
         append("k.jsonl", &p("k.jsonl"), "x\n").unwrap();
         append("k.jsonl", &p("k.jsonl"), "y\n").unwrap();
-        assert_eq!(read("a.key", &p("a.key")).as_deref(), Some("one"));
-        assert_eq!(read("k.jsonl", &p("k.jsonl")).as_deref(), Some("x\ny\n"));
+        assert_eq!(read("a.key", &p("a.key")).unwrap().as_deref(), Some("one"));
+        assert_eq!(read("k.jsonl", &p("k.jsonl")).unwrap().as_deref(), Some("x\ny\n"));
+        assert_eq!(read("none", &p("none")).unwrap(), None);
+        // a file that exists but cannot be read is an error, never "absent"
+        std::fs::create_dir_all(dir.join("adir")).unwrap();
+        assert!(read("adir", &p("adir")).is_err());
         let mem = Arc::new(Mem::default());
         set_store(mem.clone());
         assert!(in_store());
@@ -103,10 +118,10 @@ mod tests {
         append("k2.jsonl", &p("k2.jsonl"), "z\n").unwrap();
         assert!(!std::path::Path::new(&p("b.key")).exists());
         assert!(!std::path::Path::new(&p("k2.jsonl")).exists());
-        assert_eq!(read("b.key", &p("b.key")).as_deref(), Some("two"));
-        assert_eq!(mem.get("k2.jsonl").unwrap(), b"z\n");
+        assert_eq!(read("b.key", &p("b.key")).unwrap().as_deref(), Some("two"));
+        assert_eq!(mem.get("k2.jsonl").unwrap().unwrap(), b"z\n");
         // the files written before are not read through the store
-        assert_eq!(read("a.key", &p("a.key")), None);
+        assert_eq!(read("a.key", &p("a.key")).unwrap(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

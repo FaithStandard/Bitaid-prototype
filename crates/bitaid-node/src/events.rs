@@ -30,7 +30,23 @@ static SINK: Mutex<Option<Sender<Event>>> = Mutex::new(None);
 
 /// Where the events go, besides the console: set once by the app before it starts a role.
 pub fn set_sink(tx: Sender<Event>) {
+    APP.store(true, std::sync::atomic::Ordering::Release);
     *SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+}
+
+/// Set for good once an app attaches a sink: a thread left over from an earlier role must not
+/// exit the app's process after the sink is cleared.
+static APP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether an app has ever attached a sink in this process (the binary never does).
+pub fn attached() -> bool {
+    APP.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Drops the app's sink: once the events already sent are read, its receiver ends. For an app to
+/// learn a role has ended after its last event, not before it (review of M4 steps 3-5).
+pub fn clear_sink() {
+    *SINK.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Sends an event to the app's sink, if one is set (the binary sets none).

@@ -252,7 +252,11 @@ pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
     let secp = Secp256k1::new();
     let load = |name: &str| -> Option<Credential> {
         let v: serde_json::Value =
-            serde_json::from_str(&crate::secrets::read(&format!("link_{name}.json"), &format!("{dir}/link_{name}.json"))?).ok()?;
+            serde_json::from_str(&match crate::secrets::read(&format!("link_{name}.json"), &format!("{dir}/link_{name}.json")) {
+                Ok(t) => t?,
+                Err(e) => crate::stop(3, format!("[{name}] LINK_KEY_UNREADABLE: link_{name}.json exists but cannot be read ({e}); not making a new one")),
+            })
+            .ok()?;
         let sk = SecretKey::from_slice(&hex::decode(v["secret"].as_str()?).ok()?).ok()?;
         let kp = Keypair::from_secret_key(&secp, &sk);
         let stake = v["stake"].as_str()?.to_string();
@@ -316,7 +320,12 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
             .unwrap_or(false)
     };
     let file = format!("link_{name}.json");
-    if let Some(t) = crate::secrets::read(&file, &path) {
+    let kept = match crate::secrets::read(&file, &path) {
+        Ok(t) => t,
+        // never a new key and stake in place of one that may exist
+        Err(e) => crate::stop(3, format!("[{name}] LINK_KEY_UNREADABLE: {file} exists but cannot be read ({e}); not making a new one")),
+    };
+    if let Some(t) = kept {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
             let kp = v["secret"]
                 .as_str()
@@ -339,8 +348,7 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
         Err(e) => {
             // a Core refuses a link without a stake, so dialling on would only loop link up / link
             // down: stop here and say why
-            eprintln!("[{name}] LINK_STAKE_FAILED: cannot lock a link stake of {} sats ({e}); the wallet behind BITAID_RPC needs funds", link_stake());
-            std::process::exit(3);
+            crate::stop(3, format!("[{name}] LINK_STAKE_FAILED: cannot lock a link stake of {} sats ({e}); the wallet behind BITAID_RPC needs funds", link_stake()));
         }
     };
     rpc.confirm(&[txid]);
@@ -349,8 +357,7 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
             .map(|o| o.script_pubkey == spk)
             .unwrap_or(false)
     }) else {
-        eprintln!("[{name}] LINK_STAKE_FAILED: the link stake {txid} was sent but its output cannot be found");
-        std::process::exit(3);
+        crate::stop(3, format!("[{name}] LINK_STAKE_FAILED: the link stake {txid} was sent but its output cannot be found"));
     };
     let stake = format!("{txid}:{vout}");
     let _ = crate::secrets::write(
