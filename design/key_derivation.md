@@ -99,10 +99,14 @@ deterministic keys, a deterministic nonce would reveal the key the second time a
 
 ## Questions for review
 
-1. The spec says messages are signed with the sender's **identity key**, while the identity is the
-   Core's keypair. Does the phone sign alerts and acceptances under its device key (with the policy
-   proving it acts for the identity), or does it need the identity key? This note assumes the device
-   key; if the phone must hold the identity, the identity path would move under the device branches,
-   and a stolen phone would expose it.
+1. ~~Does the phone need the identity key?~~ **Settled (Albert, 2026-11-26): no.** The phone signs
+   with its own device key. The identity stays on the Core, where it binds the user's registered
+   device keys. Anything that puts something at stake (acceptances, seats, votes, money) carries k
+   device signatures under the policy (2-of-2 phone and Core for a responder, required 2-of-2 for an
+   arbitrator, 2-of-3 recommended for a caller). One device alone can send only what costs nothing,
+   such as an alert. The identity is not a MuSig2 2-of-2: every routine message would then need an
+   interactive round with the Core, and a phone cut off from its Core could not even raise an alert.
+   The spec's sentence "signed with the sender's identity key" (§"Messages") is to be read, or
+   reworded, as "the identity key or a device key registered under it".
 2. Is SLIP-39 worth offering in the app, or are a BIP39 passphrase and plain words enough for M4?
 3. The purpose number `1111574852'`: any reason to register a BIP43 purpose instead?
