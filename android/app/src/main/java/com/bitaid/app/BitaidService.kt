@@ -22,6 +22,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -35,7 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class BitaidService : Service() {
 
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newSingleThreadScheduledExecutor()
     private val wantOnDuty = AtomicBoolean(false)
 
     private var secretStore: KeystoreSecretStore? = null
@@ -249,14 +250,7 @@ class BitaidService : Service() {
                                     return
                                 }
                                 val backoffMs = 2_000L shl (consecutiveQuickFails - 1)
-                                worker.execute {
-                                    try {
-                                        Thread.sleep(backoffMs)
-                                    } catch (_: InterruptedException) {
-                                        return@execute
-                                    }
-                                    launchRole(cfg)
-                                }
+                                worker.schedule({ launchRole(cfg) }, backoffMs, TimeUnit.MILLISECONDS)
                             } else {
                                 consecutiveQuickFails = 0
                                 worker.execute { launchRole(cfg) }
