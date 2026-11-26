@@ -270,9 +270,9 @@ pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
         let kps: Vec<Keypair> = missing.iter().map(|_| Keypair::new(&secp, &mut rand::thread_rng())).collect();
         let pay: Vec<(bitcoin::ScriptBuf, u64)> =
             kps.iter().map(|k| (link_spk(&k.x_only_public_key().0), link_stake())).collect();
-        eprintln!("gossip: locking {} link stakes of {} sats in one transaction (once; reused while unspent)", kps.len(), link_stake());
+        crate::say!("gossip: locking {} link stakes of {} sats in one transaction (once; reused while unspent)", kps.len(), link_stake());
         match rpc.pay_many(&pay) {
-            Err(e) => eprintln!("gossip: cannot lock the link stakes ({e})"),
+            Err(e) => crate::say!("gossip: cannot lock the link stakes ({e})"),
             Ok(txid) => {
             rpc.confirm(&[txid]);
             for (i, kp) in missing.iter().zip(kps) {
@@ -342,7 +342,7 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
     }
     let kp = Keypair::new(&secp, &mut rand::thread_rng());
     let spk = link_spk(&kp.x_only_public_key().0);
-    eprintln!("[{name}] gossip: locking a link stake of {} sats (once; reused while unspent)", link_stake());
+    crate::say!("[{name}] gossip: locking a link stake of {} sats (once; reused while unspent)", link_stake());
     let txid = match rpc.pay_many(&[(spk.clone(), link_stake())]) {
         Ok(t) => t,
         Err(e) => {
@@ -378,7 +378,7 @@ impl Node {
         let mut c = Client::new();
         let client = &mut c;
         for r in relays {
-            eprintln!("[{name}] connecting to relay {r} …");
+            crate::say!("[{name}] connecting to relay {r} …");
             let mut ok = false;
             for _ in 0..60 {
                 if client.add_relay(r).is_ok() {
@@ -388,7 +388,7 @@ impl Node {
                 std::thread::sleep(Duration::from_secs(1));
             }
             if !ok {
-                eprintln!("[{name}] could not reach relay {r}");
+                crate::say!("[{name}] could not reach relay {r}");
             }
         }
         Self::with_net(name, Net::Relays(c), rpc, keys)
@@ -427,10 +427,10 @@ impl Node {
         };
         let g = Gossip::start_with(listen, peers, socks, demand, cred).expect("gossip listen");
         if let Some(l) = listen {
-            eprintln!("[{name}] gossip: listening on {l}");
+            crate::say!("[{name}] gossip: listening on {l}");
         }
         for p in peers {
-            eprintln!(
+            crate::say!(
                 "[{name}] gossip: dialling {p}{} …",
                 if socks.is_some() { " through Tor" } else { "" }
             );
@@ -438,7 +438,7 @@ impl Node {
         if !peers.is_empty() {
             let n = g.wait_links(1, wait);
             if n == 0 {
-                eprintln!("[{name}] gossip: no peer reachable yet; continuing, links retry in the background");
+                crate::say!("[{name}] gossip: no peer reachable yet; continuing, links retry in the background");
             }
         }
         Self::with_net(name, Net::Gossip(g), rpc, Self::keypair(secret))
@@ -518,7 +518,7 @@ impl Node {
     }
 
     pub fn log(&self, s: &str) {
-        eprintln!(
+        crate::say!(
             "[{} {:>7.2}s] {s}",
             self.name,
             self.t0.elapsed().as_secs_f64()
