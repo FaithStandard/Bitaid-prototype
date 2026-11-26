@@ -137,9 +137,8 @@ fn fallback_blocks() -> u32 {
 fn keep_case_key(n: &Node, case: &str, what: &str, k: &Scalar) {
     let dir = crate::config::var("BITAID_LINK_DIR")
         .unwrap_or_else(|_| format!("{}/.bitaid", crate::config::var("HOME").unwrap_or(".".into())));
-    let _ = std::fs::create_dir_all(&dir);
-    let path = format!("{dir}/case_{}_{what}_{}.key", crate::pre(case, 16), crate::pre(&n.me(), 8));
-    if std::fs::write(&path, hex::encode(k.serialize())).is_err() {
+    let file = format!("case_{}_{what}_{}.key", crate::pre(case, 16), crate::pre(&n.me(), 8));
+    if crate::secrets::write(&file, &format!("{dir}/{file}"), &hex::encode(k.serialize())).is_err() {
         n.log(&format!("could not keep the {what} key of case {}", crate::pre(case, 8)));
     }
 }
@@ -156,8 +155,11 @@ fn name_of(n: &Node) -> String {
 /// to BITAID_KEYFILE, one JSON line each, so `--role reclaim` can spend what is left under it by the
 /// fallback leaf once its height passes. Never set on a chain with real coins.
 fn keep_keys(kind: &str, who: &str, a: &Scalar, b: &Scalar, oracle: &str, fallback: u32) {
-    let Ok(path) = crate::config::var("BITAID_KEYFILE") else {
-        return;
+    // in an app's store they are always kept (it holds them encrypted); as files only when asked
+    let path = match crate::config::var("BITAID_KEYFILE") {
+        Ok(p) => p,
+        Err(_) if crate::secrets::in_store() => "keys.jsonl".into(),
+        Err(_) => return,
     };
     let line = serde_json::json!({
         "kind": kind, "who": who, "a": hex::encode(a.serialize()), "b": hex::encode(b.serialize()),
@@ -169,10 +171,8 @@ fn keep_keys(kind: &str, who: &str, a: &Scalar, b: &Scalar, oracle: &str, fallba
         Some(stem) => format!("{stem}-{who}.jsonl"),
         None => format!("{path}-{who}"),
     };
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = f.write_all(format!("{line}\n").as_bytes());
-    }
+    let file = std::path::Path::new(&path).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or(path.clone());
+    let _ = crate::secrets::append(&file, &path, &format!("{line}\n"));
 }
 
 /// `--role reclaim --keys FILE`: for each line of a key file, every coin still under that bond's or

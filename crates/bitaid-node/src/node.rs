@@ -252,7 +252,7 @@ pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
     let secp = Secp256k1::new();
     let load = |name: &str| -> Option<Credential> {
         let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(format!("{dir}/link_{name}.json")).ok()?).ok()?;
+            serde_json::from_str(&crate::secrets::read(&format!("link_{name}.json"), &format!("{dir}/link_{name}.json"))?).ok()?;
         let sk = SecretKey::from_slice(&hex::decode(v["secret"].as_str()?).ok()?).ok()?;
         let kp = Keypair::from_secret_key(&secp, &sk);
         let stake = v["stake"].as_str()?.to_string();
@@ -277,9 +277,10 @@ pub fn link_credentials(names: &[&str], rpc: &Rpc) -> Vec<Credential> {
                     rpc.utxo(&bitcoin::OutPoint { txid, vout: *v }).map(|o| o.script_pubkey == spk).unwrap_or(false)
                 }) {
                     let stake = format!("{txid}:{vout}");
-                    let _ = std::fs::write(
-                        format!("{dir}/link_{}.json", names[*i]),
-                        serde_json::json!({"secret": hex::encode(kp.secret_bytes()), "stake": stake, "who": names[*i]}).to_string(),
+                    let _ = crate::secrets::write(
+                        &format!("link_{}.json", names[*i]),
+                        &format!("{dir}/link_{}.json", names[*i]),
+                        &serde_json::json!({"secret": hex::encode(kp.secret_bytes()), "stake": stake, "who": names[*i]}).to_string(),
                     );
                     have[*i] = Some(Credential { keys: kp, stake });
                 }
@@ -314,7 +315,8 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
             })
             .unwrap_or(false)
     };
-    if let Ok(t) = std::fs::read_to_string(&path) {
+    let file = format!("link_{name}.json");
+    if let Some(t) = crate::secrets::read(&file, &path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
             let kp = v["secret"]
                 .as_str()
@@ -351,9 +353,10 @@ pub fn link_credential(name: &str, rpc: &Rpc) -> Option<Credential> {
         std::process::exit(3);
     };
     let stake = format!("{txid}:{vout}");
-    let _ = std::fs::write(
+    let _ = crate::secrets::write(
+        &file,
         &path,
-        serde_json::json!({"secret": hex::encode(kp.secret_bytes()), "stake": stake, "who": name}).to_string(),
+        &serde_json::json!({"secret": hex::encode(kp.secret_bytes()), "stake": stake, "who": name}).to_string(),
     );
     Some(Credential { keys: kp, stake })
 }
