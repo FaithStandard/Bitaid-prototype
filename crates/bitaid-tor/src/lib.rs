@@ -13,8 +13,8 @@
 //!   different names never share a circuit. Ordinary traffic uses one name (`main`); the caller's
 //!   light path (Specification §7.2) uses names starting `q-`, which get a fresh circuit for every
 //!   stream and are never stored (`Isolation`).
-//! - **Bounds.** A handshake must finish in 5 s, at most 16 connections may be unauthenticated and
-//!   128 open at once, and a stream ends when one side has ended and the other has drained, or when
+//! - **Bounds.** A handshake must finish in 1 s; of at most 16 connections not yet authenticated, a
+//!   new one pushes out the oldest; at most 128 are open at once; and a stream ends when one side has ended and the other has drained, or when
 //!   nothing moves for 10 minutes (`Limits`). `Tor::network_changed` closes every open stream.
 //!
 //! The listener's front end (`serve`) is independent of Arti: it takes any connector, so its auth and
@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{oneshot, watch, Semaphore};
 use tokio::time::timeout;
 
 /// A stream to the far side, whatever carries it.
@@ -51,10 +51,13 @@ pub type Connector = Arc<
 pub struct Limits {
     /// Connections at once, authenticated or not.
     pub total: usize,
-    /// Connections at once that have not yet given the secret: a local flood fills these and is
-    /// refused, while authenticated streams keep the rest of `total`.
+    /// Connections at once that have not yet given the secret. When one more arrives, the oldest
+    /// of them is closed: a local app holding silent sockets, however fast it reopens them, cannot
+    /// keep the node's own connections out, since those authenticate within a millisecond of
+    /// connecting (review of step 2, Neon, 2026-11-26: a plain cap let 16 sockets block the node).
     pub unauthenticated: usize,
-    /// The whole SOCKS handshake (greeting, auth, CONNECT request) must arrive within this.
+    /// The whole SOCKS handshake (greeting, auth, CONNECT request) must arrive within this. Over
+    /// loopback it takes well under a millisecond.
     pub handshake: Duration,
     /// Opening the stream through Tor: an onion's rendezvous on a cold start took up to 27 s in the
     /// 2026-11-25 measurement; this is the outer bound, Arti's own timeouts act first.
@@ -70,7 +73,7 @@ impl Default for Limits {
         Limits {
             total: 128,
             unauthenticated: 16,
-            handshake: Duration::from_secs(5),
+            handshake: Duration::from_secs(1),
             connect: Duration::from_secs(180),
             idle: Duration::from_secs(600),
             drain: Duration::from_secs(30),
@@ -116,7 +119,9 @@ pub async fn serve_with(connect: Connector, limits: Limits) -> std::io::Result<L
     let (close, _) = watch::channel(0u64);
     let listener = Listener { addr, secret: secret.clone(), close: close.clone() };
     let total = Arc::new(Semaphore::new(limits.total));
-    let unauth = Arc::new(Semaphore::new(limits.unauthenticated));
+    // the connections still in their handshake, oldest first, each with the means to push it out
+    let pending: Arc<Mutex<VecDeque<(u64, oneshot::Sender<()>)>>> = Default::default();
+    let mut next = 0u64;
     tokio::spawn(async move {
         loop {
             let s = match tcp.accept().await {
@@ -127,13 +132,25 @@ pub async fn serve_with(connect: Connector, limits: Limits) -> std::io::Result<L
                     continue;
                 }
             };
-            // over either cap: closed at once, before a byte is read
+            // over the total: closed at once, before a byte is read
             let Ok(all) = total.clone().try_acquire_owned() else { continue };
-            let Ok(pre) = unauth.clone().try_acquire_owned() else { continue };
-            let (connect, secret, closed) = (connect.clone(), secret.clone(), close.subscribe());
+            let (out, evicted) = oneshot::channel();
+            let id = next;
+            next += 1;
+            {
+                let mut p = pending.lock().unwrap_or_else(|e| e.into_inner());
+                while p.len() >= limits.unauthenticated.max(1) {
+                    if let Some((_, old)) = p.pop_front() {
+                        let _ = old.send(());
+                    }
+                }
+                p.push_back((id, out));
+            }
+            let (connect, secret, closed, pending) = (connect.clone(), secret.clone(), close.subscribe(), pending.clone());
             tokio::spawn(async move {
                 let _all = all;
-                let _ = handle(s, &secret, connect, limits, pre, closed).await;
+                let done = move || pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|(i, _)| *i != id);
+                let _ = handle(s, &secret, connect, limits, evicted, done, closed).await;
             });
         }
     });
@@ -234,18 +251,36 @@ async fn handshake(s: &mut TcpStream, secret: &str) -> std::io::Result<(String, 
     Ok((name, host, u16::from_be_bytes(p)))
 }
 
-/// One client: the handshake within `limits.handshake` (holding one of the unauthenticated permits
-/// until then), one CONNECT, then bytes both ways until either side ends, the stream idles or the
-/// streams are closed.
+/// Ends when the client closes its socket or it fails; never ends if the client sends data early.
+async fn gone(s: &TcpStream) {
+    let mut b = [0u8; 1];
+    match s.peek(&mut b).await {
+        Ok(0) | Err(_) => {}
+        Ok(_) => std::future::pending::<()>().await,
+    }
+}
+
+/// One client: the handshake within `limits.handshake`, unless pushed out by a newer connection
+/// first (`evicted`); then one CONNECT, given up as soon as the client leaves or the streams are
+/// closed; then bytes both ways until either side ends, the stream idles or the streams are closed.
 async fn handle(
     mut s: TcpStream,
     secret: &str,
     connect: Connector,
     limits: Limits,
-    pre: tokio::sync::OwnedSemaphorePermit,
+    evicted: oneshot::Receiver<()>,
+    done: impl FnOnce(),
     mut closed: watch::Receiver<u64>,
 ) -> std::io::Result<()> {
-    let (name, host, port) = match timeout(limits.handshake, handshake(&mut s, secret)).await {
+    let shaken = tokio::select! {
+        r = timeout(limits.handshake, handshake(&mut s, secret)) => r,
+        _ = evicted => {
+            note(|| "pushed out by a newer connection before authenticating".into());
+            return timed_out("evicted");
+        }
+    };
+    done();
+    let (name, host, port) = match shaken {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             note(|| format!("refused: {e}"));
@@ -256,11 +291,23 @@ async fn handle(
             return timed_out("handshake");
         }
     };
-    drop(pre);
     let t0 = Instant::now();
     let what = format!("{host}:{port} as {name}");
     note(|| format!("connecting {what}"));
-    let far = match timeout(limits.connect, connect(host, port, name)).await {
+    // the client may give up first (its own timeout), or the network change: the connect and its
+    // retries stop with it (review of step 2, Neon)
+    let attempt = tokio::select! {
+        r = timeout(limits.connect, connect(host, port, name)) => r,
+        _ = gone(&s) => {
+            note(|| format!("client left while connecting {what} after {:.1} s", t0.elapsed().as_secs_f64()));
+            return Ok(());
+        }
+        _ = closed.changed() => {
+            note(|| format!("streams closed while connecting {what}"));
+            return Ok(());
+        }
+    };
+    let far = match attempt {
         Ok(Ok(far)) => far,
         Ok(Err(e)) => {
             note(|| format!("connect {what} failed after {:.1} s: {e}", t0.elapsed().as_secs_f64()));
@@ -292,8 +339,8 @@ async fn relay(client: TcpStream, far: Box<dyn Stream>, limits: Limits) -> std::
     let (cr, cw) = tokio::io::split(client);
     let (fr, fw) = tokio::io::split(far);
     let last = Mutex::new(Instant::now());
-    let up = pump(cr, fw, &last, limits.idle);
-    let down = pump(fr, cw, &last, limits.idle);
+    let up = pump(cr, fw, &last, limits.idle, limits.drain);
+    let down = pump(fr, cw, &last, limits.idle, limits.drain);
     tokio::pin!(up, down);
     tokio::select! {
         r = &mut up => { r?; let _ = timeout(limits.drain, down).await; }
@@ -309,6 +356,7 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     mut w: W,
     last: &Mutex<Instant>,
     idle: Duration,
+    drain: Duration,
 ) -> std::io::Result<()> {
     let tick = (idle / 4).max(Duration::from_millis(10));
     let quiet = || last.lock().unwrap_or_else(|e| e.into_inner()).elapsed() >= idle;
@@ -320,7 +368,9 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             Err(_) => continue,
         };
         if n == 0 {
-            let _ = w.shutdown().await;
+            // bounded too: shutting a stream on a dead circuit may never complete (review of step
+            // 2, Neon)
+            let _ = timeout(drain, w.shutdown()).await;
             return Ok(());
         }
         // flushed every time: Arti's DataStream holds written bytes until a flush (or a full
@@ -693,22 +743,132 @@ mod tests {
     async fn a_stalled_or_flooding_client_holds_nothing_for_long() {
         let l = serve_with(direct(Default::default()), quick()).await.unwrap();
         let port = echo().await;
-        // two silent connections fill the unauthenticated permits: a third is closed at once
-        let _a = TcpStream::connect(l.addr).await.unwrap();
-        let _b = TcpStream::connect(l.addr).await.unwrap();
+        // two silent connections fill the unauthenticated places
+        let mut a = TcpStream::connect(l.addr).await.unwrap();
+        let mut b = TcpStream::connect(l.addr).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let mut c = TcpStream::connect(l.addr).await.unwrap();
-        let mut b = [0u8; 1];
-        assert!(matches!(timeout(Duration::from_millis(200), c.read(&mut b)).await, Ok(Ok(0)) | Ok(Err(_))));
-        // once the handshake time is up they are dropped, and an authenticated client gets in
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        let mut s = socks(&l, Some(("main", &l.secret)), port).await.unwrap();
+        // the node's own connection still gets in at once: it pushes out the oldest (a)
+        let mut s = timeout(Duration::from_millis(200), socks(&l, Some(("main", &l.secret)), port)).await.expect("kept out").unwrap();
         s.write_all(b"ok").await.unwrap();
         let mut r = [0u8; 2];
         s.read_exact(&mut r).await.unwrap();
-        // the stalled ones were closed by the listener
-        let mut a = _a;
-        assert!(matches!(a.read(&mut b).await, Ok(0) | Err(_)));
+        let mut x = [0u8; 1];
+        assert!(matches!(timeout(Duration::from_millis(200), a.read(&mut x)).await, Ok(Ok(0)) | Ok(Err(_))), "the oldest was not pushed out");
+        // a flood reopening faster than anything else still cannot keep it out
+        let mut flood = vec![];
+        for _ in 0..20 {
+            flood.push(TcpStream::connect(l.addr).await.unwrap());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(timeout(Duration::from_millis(200), socks(&l, Some(("main", &l.secret)), port)).await.expect("kept out").is_ok());
+        // and a silent one is dropped when its handshake time is up
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(matches!(b.read(&mut x).await, Ok(0) | Err(_)));
+    }
+
+    /// A connector that never completes, and counts the attempts still running.
+    fn hanging(running: Arc<std::sync::atomic::AtomicUsize>) -> Connector {
+        struct Running(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Running {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        Arc::new(move |_host: String, _port: u16, _name: String| {
+            running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let r = Running(running.clone());
+            Box::pin(async move {
+                let _r = r;
+                std::future::pending::<std::io::Result<Box<dyn Stream>>>().await
+            })
+        })
+    }
+
+    async fn connect_only(l: &Listener) -> TcpStream {
+        let mut s = TcpStream::connect(l.addr).await.unwrap();
+        s.write_all(&[5, 1, 2]).await.unwrap();
+        let mut m = [0u8; 2];
+        s.read_exact(&mut m).await.unwrap();
+        let mut a = vec![1, 4];
+        a.extend_from_slice(b"main");
+        a.push(l.secret.len() as u8);
+        a.extend_from_slice(l.secret.as_bytes());
+        s.write_all(&a).await.unwrap();
+        s.read_exact(&mut m).await.unwrap();
+        let host = b"x.onion";
+        let mut req = vec![5, 1, 0, 3, host.len() as u8];
+        req.extend_from_slice(host);
+        req.extend_from_slice(&80u16.to_be_bytes());
+        s.write_all(&req).await.unwrap();
+        s
+    }
+
+    #[tokio::test]
+    async fn a_connect_stops_when_the_client_leaves_or_the_network_changes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let running = Arc::new(AtomicUsize::new(0));
+        let l = serve(hanging(running.clone())).await.unwrap();
+        // the client gives up (its own timeout): the attempt stops with it
+        let s = connect_only(&l).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(running.load(Ordering::SeqCst), 1);
+        drop(s);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(running.load(Ordering::SeqCst), 0, "the connect outlived its client");
+        // a network change: the attempt stops too
+        let _s = connect_only(&l).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(running.load(Ordering::SeqCst), 1);
+        l.close_streams();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(running.load(Ordering::SeqCst), 0, "the connect outlived the network change");
+    }
+
+    /// A far stream on a dead circuit: reads never return and neither does a shutdown.
+    struct Dead(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for Dead {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl AsyncRead for Dead {
+        fn poll_read(self: Pin<&mut Self>, _: &mut std::task::Context<'_>, _: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+    impl AsyncWrite for Dead {
+        fn poll_write(self: Pin<&mut Self>, _: &mut std::task::Context<'_>, b: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(b.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_that_never_completes_is_let_go() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let open = Arc::new(AtomicUsize::new(0));
+        let o = open.clone();
+        let dead: Connector = Arc::new(move |_h: String, _p: u16, _n: String| {
+            let o = o.clone();
+            Box::pin(async move {
+                o.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(Dead(o)) as Box<dyn Stream>)
+            })
+        });
+        let limits = Limits { idle: Duration::from_secs(60), ..quick() };
+        let l = serve_with(dead, limits).await.unwrap();
+        let mut s = socks(&l, Some(("main", &l.secret)), 80).await.unwrap();
+        assert_eq!(open.load(Ordering::SeqCst), 1);
+        s.shutdown().await.unwrap();
+        drop(s);
+        // shutdown bounded by drain (0.3 s), then the other side's drain (0.3 s)
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert_eq!(open.load(Ordering::SeqCst), 0, "stuck in the far side's shutdown");
     }
 
     #[tokio::test]
