@@ -93,6 +93,8 @@ print(len(u), json.dumps([{'txid':x['txid'],'vout':x['vout']} for x in u[:400]])
 }
 WIN="/mnt/c/Users/alber/OneDrive/Documentos/Bitaid/10/v6/Files for Claude"
 L=${LOGDIR:-$WIN/pc_logs}; mkdir -p "$L"
+# the app's run: the pool the app looks for by default (bitaid), unless POOL says otherwise
+[ "$APP" = 1 ] && POOL=${POOL:-bitaid}
 case "$1" in
 start)
   pkill -x bitaid-node 2>/dev/null; pkill -x rogue 2>/dev/null; sleep 1
@@ -230,6 +232,7 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
 alert)
   # the app's run (APP=1): a caller on this machine at the position the app was set to, once the app
   # shows on duty. It alerts, takes the app's acceptance and goes on to settlement.
+  POOL=${POOL:-bitaid}
   export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_REPLY_MIN=${REPLY_MIN:-900}
   export BITAID_SELF_ONION=$(cat "$L/onion.txt" 2>/dev/null); [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
   P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
