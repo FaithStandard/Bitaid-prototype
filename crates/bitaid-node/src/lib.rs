@@ -130,6 +130,12 @@ pub struct Stop {
 /// Ends the running role with `code`, saying why. The binary exits with that code as it always has;
 /// in an app (M4) only the role ends, reported as Fatal, where `process::exit` would have killed the
 /// app with its Tor and screen (review of M4 steps 3-5).
+/// `BITAID_ONION_ONLY=1`: nothing but onion addresses, ever (the app sets it, M4): a phone must
+/// never reach a chain node, a peer or a store from its own IP, whatever it was configured with.
+pub fn onion_only() -> bool {
+    crate::config::var("BITAID_ONION_ONLY").map(|v| v == "1").unwrap_or(false)
+}
+
 pub fn stop(code: i32, why: String) -> ! {
     eprintln!("{why}");
     // the binary (no app attached): exactly as before, from whichever thread
@@ -191,6 +197,18 @@ pub fn http_for(url: &str) -> ureq::Agent {
                 *t = Some((p, agent));
             }
             t.as_ref().map(|x| x.1.clone()).expect("set above")
+        }
+        // onion only: no direct agent; one that can reach nothing (a closed local port) instead
+        _ if onion_only() => {
+            static NOWHERE: OnceLock<ureq::Agent> = OnceLock::new();
+            NOWHERE
+                .get_or_init(|| {
+                    ureq::AgentBuilder::new()
+                        .proxy(ureq::Proxy::new("socks5://127.0.0.1:1").expect("a fixed proxy address"))
+                        .timeout(std::time::Duration::from_secs(5))
+                        .build()
+                })
+                .clone()
         }
         _ => DIRECT
             .get_or_init(|| {

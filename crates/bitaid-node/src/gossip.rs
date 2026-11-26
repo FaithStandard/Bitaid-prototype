@@ -475,10 +475,17 @@ fn split_addr(a: &str) -> Option<(String, u16)> {
 
 /// Dials a peer: through SOCKS5 if a proxy is given or the host is an onion address, else directly.
 pub fn dial(addr: &str, socks: Option<&str>) -> std::io::Result<TcpStream> {
+    dial_as(addr, socks, crate::onion_only())
+}
+
+fn dial_as(addr: &str, socks: Option<&str>, onion_only: bool) -> std::io::Result<TcpStream> {
     let (host, port) =
         split_addr(addr).ok_or_else(|| std::io::Error::other("address must be host:port"))?;
     // onion addresses go through Tor; anything else (a Core on the same machine, a LAN test) directly,
     // since Tor refuses to connect to local addresses
+    if onion_only && !host.ends_with(".onion") {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{host}: not an onion address, refused (BITAID_ONION_ONLY)")));
+    }
     match socks {
         Some(p) if host.ends_with(".onion") => socks5_connect(p, &host, port),
         None if host.ends_with(".onion") => {
@@ -1125,6 +1132,17 @@ impl Gossip {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn onion_only_refuses_anything_else() {
+        let e = dial_as("127.0.0.1:9", None, true).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+        let e = dial_as("example.com:80", Some("127.0.0.1:1"), true).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+        // an onion still goes to the proxy (refused here only because none listens)
+        let e = dial_as("abc.onion:80", Some("127.0.0.1:1"), true).unwrap_err();
+        assert_ne!(e.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
     use super::*;
 
     fn ev(id: usize, t: u64, size: usize) -> (Event, Arc<str>) {
