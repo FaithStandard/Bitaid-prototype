@@ -183,7 +183,7 @@ fn reclaim() -> i32 {
     let secp = Secp256k1::new();
     let path = arg("--keys").unwrap_or("bitaid_keys.jsonl".into());
     let Ok(text) = std::fs::read_to_string(&path) else {
-        eprintln!("no key file {path}");
+        crate::say!("no key file {path}");
         return 1;
     };
     // over Tor a freshly published onion can take a few minutes to answer: keep trying for ten
@@ -193,18 +193,18 @@ fn reclaim() -> i32 {
             Ok(s) => break s,
             Err(e) if tries < 20 => {
                 tries += 1;
-                eprintln!("the chain node's wallet does not answer yet ({e}); trying again in 30 s ({tries}/20)");
+                crate::say!("the chain node's wallet does not answer yet ({e}); trying again in 30 s ({tries}/20)");
                 std::thread::sleep(std::time::Duration::from_secs(30));
             }
             Err(e) => {
-                eprintln!("cannot reach the chain node's wallet ({e}); is the PC side up, with DEVICES_MAY_RECLAIM_NOW shown?");
+                crate::say!("cannot reach the chain node's wallet ({e}); is the PC side up, with DEVICES_MAY_RECLAIM_NOW shown?");
                 return 1;
             }
         }
     };
     let tip = rpc.height();
     if tip == 0 {
-        eprintln!("the chain node gives no height; try again");
+        crate::say!("the chain node gives no height; try again");
         return 1;
     }
     let rate = rpc.fee_rate(6).unwrap_or(2.0).max(1.0);

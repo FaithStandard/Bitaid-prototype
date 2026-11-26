@@ -87,7 +87,7 @@ impl Rpc {
                 .send_string(&body.to_string());
             match &r {
                 Err(ureq::Error::Transport(t)) if wait <= 80 && never_sent(t) => {
-                    eprintln!("chain node not reached for {method} ({t}); asking again in {wait} s");
+                    crate::say!("chain node not reached for {method} ({t}); asking again in {wait} s");
                     std::thread::sleep(std::time::Duration::from_secs(wait));
                     wait *= 2;
                 }
@@ -178,7 +178,7 @@ impl Rpc {
             if wait > 300 {
                 crate::stop(3, "CHAIN_UNREACHABLE: the chain node behind BITAID_RPC does not answer getblockchaininfo".into());
             }
-            eprintln!("chain node not answering yet; asking again in {wait} s");
+            crate::say!("chain node not answering yet; asking again in {wait} s");
             std::thread::sleep(std::time::Duration::from_secs(wait));
             wait *= 2;
             c = self.chain();
@@ -399,7 +399,7 @@ impl Rpc {
             Err(e) if e.contains("txindex") || e.contains("No such mempool") => self.indexed(txid),
             Err(e) => {
                 if crate::config::var("BITAID_DEBUG").is_ok() {
-                    eprintln!("raw_tx {txid}: {e}");
+                    crate::say!("raw_tx {txid}: {e}");
                 }
                 None
             }
@@ -473,7 +473,7 @@ impl Rpc {
             }
         }
         if let Some(h) = fork {
-            eprintln!("chain reorganised from block {h}: reading it again");
+            crate::say!("chain reorganised from block {h}: reading it again");
             ledger.truncate(h);
             ix.1.retain(|_, v| v.1 < h);
             ix.0 = h;

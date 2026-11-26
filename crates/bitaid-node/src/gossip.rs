@@ -560,7 +560,7 @@ fn make_room(shared: &Arc<Mutex<Shared>>) -> bool {
     match victim.and_then(|l| l.stream.as_ref()) {
         Some(s) => {
             // the victim's slot passes to the newcomer (its own count is given back when it ends)
-            eprintln!("gossip: making room: closing {:?}, still without a proof", s.peer_addr().ok());
+            crate::say!("gossip: making room: closing {:?}, still without a proof", s.peer_addr().ok());
             let _ = s.shutdown(std::net::Shutdown::Both);
             g.incoming += 1;
             true
@@ -586,10 +586,10 @@ fn recheck(shared: &Arc<Mutex<Shared>>, verify: &Verify) {
             .clone();
         match r {
             Err(e) if e.starts_with(UNAVAILABLE) => {
-                eprintln!("gossip: link {id}: stake {stake} could not be checked ({e}); kept, checked again");
+                crate::say!("gossip: link {id}: stake {stake} could not be checked ({e}); kept, checked again");
             }
             Err(e) => {
-                eprintln!("gossip: link {id}: stake {stake} no longer holds ({e}); closing");
+                crate::say!("gossip: link {id}: stake {stake} no longer holds ({e}); closing");
                 let g = shared.lock().unwrap();
                 if let Some(s) = g.links.get(&id).and_then(|l| l.stream.as_ref()) {
                     let _ = s.shutdown(std::net::Shutdown::Both);
@@ -625,7 +625,7 @@ fn forward(g: &Shared, line: &Arc<str>, except: Option<u64>) {
     for (lid, l) in g.links.iter() {
         if Some(*lid) != except && l.authed {
             if let Err(TrySendError::Full(_)) = l.out.try_send(line.clone()) {
-                eprintln!("gossip: link {lid} not reading (its queue is full); closing it");
+                crate::say!("gossip: link {lid} not reading (its queue is full); closing it");
                 if let Some(s) = &l.stream {
                     let _ = s.shutdown(std::net::Shutdown::Both);
                 }
@@ -720,8 +720,8 @@ fn run_link(
         let got = read_line(&mut r, &mut buf);
         match &got {
             Ok(Some(())) => {}
-            Ok(None) => eprintln!("gossip: {label}: closed before sending a challenge"),
-            Err(e) => eprintln!("gossip: {label}: no challenge within {PROOF_SECS} s ({e})"),
+            Ok(None) => crate::say!("gossip: {label}: closed before sending a challenge"),
+            Err(e) => crate::say!("gossip: {label}: no challenge within {PROOF_SECS} s ({e})"),
         }
         if let Ok(Some(())) = got {
             peer_boot = boot_of(&buf);
@@ -738,7 +738,7 @@ fn run_link(
                         return;
                     }
                 }
-                (Some(_), None) => eprintln!("gossip: {label}: the Core asks for a link stake and this node has none"),
+                (Some(_), None) => crate::say!("gossip: {label}: the Core asks for a link stake and this node has none"),
                 // a Core that opens with a message, not a challenge: keep it
                 (None, _) => first = Some(buf.clone()),
             }
@@ -791,7 +791,7 @@ fn run_link(
     std::thread::spawn(move || {
         for line in orx {
             if let Err(e) = w.write_all(line.as_bytes()).and_then(|_| w.write_all(b"\n")) {
-                eprintln!("gossip: write to {wl} failed ({e}); closing the link");
+                crate::say!("gossip: write to {wl} failed ({e}); closing the link");
                 // the reader side ends with it, so the peer redials and catches up from the replay
                 let _ = w.shutdown(std::net::Shutdown::Both);
                 break;
@@ -846,10 +846,10 @@ fn run_link(
                 l.authed = true;
             }
             drop(g);
-            eprintln!("gossip: link up ({label}), key {}", crate::pre(key.as_deref().unwrap_or(""), 16));
+            crate::say!("gossip: link up ({label}), key {}", crate::pre(key.as_deref().unwrap_or(""), 16));
         }
     } else {
-        eprintln!("gossip: link up ({label})");
+        crate::say!("gossip: link up ({label})");
     }
     drop(otx);
     // an incoming link (a peer we did not choose) is rate-limited: a burst, then RATE new messages a
@@ -972,7 +972,7 @@ fn run_link(
         (Some(k), true) => format!("; key {} banned for {} min", crate::pre(&k, 16), BAN_SECS / 60),
         _ => String::new(),
     };
-    eprintln!("gossip: link down ({label}){why}{banned}");
+    crate::say!("gossip: link down ({label}){why}{banned}");
 }
 
 impl Gossip {
@@ -1038,7 +1038,7 @@ impl Gossip {
                     let t0 = Instant::now();
                     match dial(&p, sx.as_deref()) {
                         Ok(s) => run_link(sh.clone(), t.clone(), s, format!("to {p}"), false, None, c.clone(), p.clone()),
-                        Err(e) => eprintln!("gossip: cannot reach {p}: {e}"),
+                        Err(e) => crate::say!("gossip: cannot reach {p}: {e}"),
                     }
                     if t0.elapsed() > Duration::from_secs(30) {
                         wait = 1;
