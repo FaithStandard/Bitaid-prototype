@@ -119,6 +119,9 @@ pub struct Node {
     pub place_expect: HashMap<String, (String, String)>,
     /// when the node itself read each case's location (it may have arrived earlier, while busy)
     pub places_read: HashMap<String, Instant>,
+    /// When the node last read its links: a long gap means the role was busy elsewhere while
+    /// messages waited (logged, for the phone's slow steps)
+    last_pull: Instant,
     /// every verified message this node has read, in arrival order: replayed by `arb::Replay`
     pub history: Vec<Envelope>,
     /// subscriptions whose messages only go to the history (read by replays), never to the mailbox
@@ -470,6 +473,7 @@ impl Node {
             places: HashMap::new(),
             place_expect: HashMap::new(),
             places_read: HashMap::new(),
+            last_pull: Instant::now(),
             history: vec![],
             observer: None,
             history_only: Default::default(),
@@ -1171,6 +1175,16 @@ impl Node {
     }
 
     fn pull(&mut self, timeout: Duration) -> bool {
+        let gap = self.last_pull.elapsed();
+        if gap >= Duration::from_secs(10) {
+            crate::say!("[{}] no message read for {:.1} s: the role was busy elsewhere", self.name, gap.as_secs_f64());
+        }
+        let r = self.pull_inner(timeout);
+        self.last_pull = Instant::now();
+        r
+    }
+
+    fn pull_inner(&mut self, timeout: Duration) -> bool {
         // BITAID_LAG: what arrives is held back as a slow link would hold it
         let got = match crate::lag() {
             None if self.lagged.is_empty() => self.client.next_event(timeout),
@@ -1199,6 +1213,7 @@ impl Node {
         };
         match got {
             Some((sub, e)) => {
+                let t0 = Instant::now();
                 match self.decode(&e) {
                     Some(env) => {
                         if !self.history_only.contains(&sub) {
@@ -1220,6 +1235,9 @@ impl Node {
                     None => {}
                 }
                 self.tick();
+                if t0.elapsed() >= Duration::from_secs(5) {
+                    crate::say!("[{}] busy {:.1} s on one message (decode and tick) while others waited", self.name, t0.elapsed().as_secs_f64());
+                }
                 true
             }
             None => {

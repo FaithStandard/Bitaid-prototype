@@ -80,6 +80,7 @@ impl Rpc {
         // to about 4 minutes, Tor's worst case for a fresh circuit (public signet run, 2026-11-23:
         // one 30 s timeout on listunspent left the incident unbroadcast and the case without a pot).
         let mut wait = 5;
+        let t0 = std::time::Instant::now();
         let r = loop {
             let r = crate::http_for(&url)
                 .post(&url)
@@ -94,6 +95,11 @@ impl Rpc {
                 _ => break r,
             }
         };
+        // a slow call is named: on a phone the node handles no message while it waits for one
+        // (the first app run: a location read 228 s after it arrived)
+        if t0.elapsed() >= std::time::Duration::from_secs(5) {
+            crate::say!("chain call {method} took {:.1} s", t0.elapsed().as_secs_f64());
+        }
         // a long-lived wallet's listings outgrow the client's default cap of 10 MB: read up to 256 MB
         let body = |resp: ureq::Response| -> Result<String, String> {
             use std::io::Read;
