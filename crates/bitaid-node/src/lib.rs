@@ -120,6 +120,25 @@ pub fn sats(x: u64) -> u64 {
     x / k
 }
 
+/// Why a role stopped itself (a missing link stake, an unreachable chain node), with the exit code
+/// the binary returns for it. Raised by `stop` and caught by `roles::run`.
+pub struct Stop {
+    pub code: i32,
+    pub why: String,
+}
+
+/// Ends the running role with `code`, saying why. The binary exits with that code as it always has;
+/// in an app (M4) only the role ends, reported as Fatal, where `process::exit` would have killed the
+/// app with its Tor and screen (review of M4 steps 3-5).
+pub fn stop(code: i32, why: String) -> ! {
+    eprintln!("{why}");
+    // the binary (no app attached): exactly as before, from whichever thread
+    if !crate::events::attached() {
+        std::process::exit(code);
+    }
+    std::panic::panic_any(Stop { code, why })
+}
+
 pub mod blossom;
 pub mod case;
 pub mod chain;

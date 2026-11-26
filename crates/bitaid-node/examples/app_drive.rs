@@ -17,8 +17,12 @@ use std::collections::HashMap;
 /// node's own files.
 struct DirStore(std::path::PathBuf);
 impl bitaid_node::secrets::SecretStore for DirStore {
-    fn get(&self, name: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.0.join(name)).ok()
+    fn get(&self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
+        match std::fs::read(self.0.join(name)) {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
     }
     fn put(&self, name: &str, data: &[u8]) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.0)?;
