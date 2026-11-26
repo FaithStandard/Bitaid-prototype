@@ -12,6 +12,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync"
 rand = "0.8"
 hex = "0.4"
 # the TLS provider Arti's rustls uses: ring, which cross-compiles to Android without a C toolchain beyond the NDK
+# the test tool's --debug: Arti's logs on stderr
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [dev-dependencies]

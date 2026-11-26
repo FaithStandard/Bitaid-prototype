@@ -140,6 +140,20 @@ pub async fn serve_with(connect: Connector, limits: Limits) -> std::io::Result<L
     Ok(listener)
 }
 
+static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Logs each stream's target, outcome and timing on stderr (the test tool's `--debug`). Never the
+/// secret; the app leaves it off.
+pub fn set_debug(on: bool) {
+    DEBUG.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn note(f: impl FnOnce() -> String) {
+    if DEBUG.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("[bitaid-tor] {}", f());
+    }
+}
+
 fn refuse<T>(why: &str) -> std::io::Result<T> {
     Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, why.to_string()))
 }
@@ -232,27 +246,42 @@ async fn handle(
     mut closed: watch::Receiver<u64>,
 ) -> std::io::Result<()> {
     let (name, host, port) = match timeout(limits.handshake, handshake(&mut s, secret)).await {
-        Ok(r) => r?,
-        Err(_) => return timed_out("handshake"),
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            note(|| format!("refused: {e}"));
+            return Err(e);
+        }
+        Err(_) => {
+            note(|| "handshake timed out".into());
+            return timed_out("handshake");
+        }
     };
     drop(pre);
+    let t0 = Instant::now();
+    let what = format!("{host}:{port} as {name}");
+    note(|| format!("connecting {what}"));
     let far = match timeout(limits.connect, connect(host, port, name)).await {
         Ok(Ok(far)) => far,
         Ok(Err(e)) => {
+            note(|| format!("connect {what} failed after {:.1} s: {e}", t0.elapsed().as_secs_f64()));
             let _ = s.write_all(&[5, 4, 0, 1, 0, 0, 0, 0, 0, 0]).await;
             return Err(e);
         }
         Err(_) => {
+            note(|| format!("connect {what} timed out after {:.1} s", t0.elapsed().as_secs_f64()));
             let _ = s.write_all(&[5, 6, 0, 1, 0, 0, 0, 0, 0, 0]).await;
             return timed_out("connect");
         }
     };
+    note(|| format!("connected {what} in {:.1} s", t0.elapsed().as_secs_f64()));
     s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
     closed.mark_unchanged();
-    tokio::select! {
+    let r = tokio::select! {
         r = relay(s, far, limits) => r,
         _ = closed.changed() => Ok(()),
-    }
+    };
+    note(|| format!("closed {what} after {:.1} s: {r:?}", t0.elapsed().as_secs_f64()));
+    r
 }
 
 /// Bytes both ways. Unlike `copy_bidirectional`, which waits for both directions to end, this ends
@@ -294,13 +323,69 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             let _ = w.shutdown().await;
             return Ok(());
         }
-        // a write that cannot drain (the other side stopped reading) is bounded the same way
-        match timeout(idle, w.write_all(&buf[..n])).await {
+        // flushed every time: Arti's DataStream holds written bytes until a flush (or a full
+        // cell), so without it a request never leaves (the first device run, 2026-11-26). A write
+        // that cannot drain (the other side stopped reading) is bounded the same way.
+        let send = async {
+            w.write_all(&buf[..n]).await?;
+            w.flush().await
+        };
+        match timeout(idle, send).await {
             Ok(r) => r?,
             Err(_) => return timed_out("write"),
         }
         *last.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
     }
+}
+
+/// Tries `attempt` again while it fails with an error that a retry can mend, waiting 0.5 s, then
+/// doubling up to 8 s, until `budget` would be passed. Arti gives up on an onion within a few
+/// seconds when every descriptor fetch is cut by its learned circuit-build timeout, which on a phone
+/// was 3 of 10 connects in the first device run (2026-11-26), while the next connect usually works.
+pub async fn retrying<T, E: std::fmt::Display, F, Fut>(budget: Duration, mut attempt: F, permanent: impl Fn(&E) -> bool) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let start = Instant::now();
+    let mut wait = Duration::from_millis(500);
+    let mut n = 1;
+    loop {
+        match attempt().await {
+            Ok(t) => return Ok(t),
+            Err(e) => {
+                if permanent(&e) || start.elapsed() + wait >= budget {
+                    return Err(e);
+                }
+                note(|| format!("attempt {n} failed after {:.1} s, again in {:.1} s: {e}", start.elapsed().as_secs_f64(), wait.as_secs_f64()));
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(8));
+                n += 1;
+            }
+        }
+    }
+}
+
+/// Arti's errors that another attempt cannot mend: the target or its auth is wrong, or Arti itself
+/// is stopping. Everything else (timeouts, circuits, descriptors, a refused connection while a Core
+/// restarts) is retried within the budget.
+fn permanent(e: &arti_client::Error) -> bool {
+    use arti_client::{ErrorKind as K, HasKind};
+    matches!(
+        e.kind(),
+        K::InvalidStreamTarget
+            | K::ForbiddenStreamTarget
+            | K::OnionServiceAddressInvalid
+            | K::OnionServiceMissingClientAuth
+            | K::OnionServiceWrongClientAuth
+            | K::ExitPolicyRejected
+            | K::BadApiUsage
+            | K::FeatureDisabled
+            | K::NotImplemented
+            | K::InvalidConfig
+            | K::ArtiShuttingDown
+            | K::ReactorShuttingDown
+    )
 }
 
 /// Which Arti isolation token each SOCKS name gets (review of bitaid-tor, Neon, Q1). A name
@@ -408,10 +493,14 @@ impl Tor {
                 Box::pin(async move {
                     let mut prefs = arti_client::StreamPrefs::new();
                     prefs.set_isolation(token);
-                    let s = client
-                        .connect_with_prefs((host.as_str(), port), &prefs)
-                        .await
-                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    // inside the listener's own bound (Limits::connect, 180 s), so it ends first
+                    let s = retrying(
+                        Duration::from_secs(170),
+                        || client.connect_with_prefs((host.as_str(), port), &prefs),
+                        permanent,
+                    )
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
                     Ok(Box::new(s) as Box<dyn Stream>)
                 })
             });
@@ -677,6 +766,27 @@ mod tests {
         assert!(matches!(s.read(&mut b).await, Ok(0) | Err(_)));
     }
 
+    /// A far stream that, like Arti's, sends nothing until flushed.
+    fn buffered() -> Connector {
+        Arc::new(move |host: String, port: u16, _name: String| {
+            Box::pin(async move {
+                let s = TcpStream::connect((host.as_str(), port)).await?;
+                Ok(Box::new(tokio::io::BufWriter::with_capacity(4096, s)) as Box<dyn Stream>)
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn bytes_are_flushed_to_a_buffering_far_side() {
+        let l = serve(buffered()).await.unwrap();
+        let port = echo().await;
+        let mut s = socks(&l, Some(("main", &l.secret)), port).await.unwrap();
+        s.write_all(b"GET / HTTP/1.0\r\n\r\n").await.unwrap();
+        let mut b = [0u8; 18];
+        timeout(Duration::from_secs(3), s.read_exact(&mut b)).await.expect("held in the far side's buffer").unwrap();
+        assert_eq!(&b, b"GET / HTTP/1.0\r\n\r\n");
+    }
+
     #[tokio::test]
     async fn a_network_change_closes_open_streams() {
         let l = serve(direct(Default::default())).await.unwrap();
@@ -689,6 +799,35 @@ mod tests {
         let mut s = socks(&l, Some(("main", &l.secret)), port).await.unwrap();
         s.write_all(b"x").await.unwrap();
         s.read_exact(&mut b).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connects_are_retried_unless_the_error_is_permanent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let n = AtomicUsize::new(0);
+        // two quick failures, then through
+        let r: Result<u32, String> = retrying(
+            Duration::from_secs(10),
+            || async {
+                if n.fetch_add(1, Ordering::SeqCst) < 2 { Err("cut".to_string()) } else { Ok(7) }
+            },
+            |_| false,
+        )
+        .await;
+        assert_eq!(r, Ok(7));
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+        // permanent: one attempt only
+        let m = AtomicUsize::new(0);
+        let r: Result<u32, String> = retrying(Duration::from_secs(10), || async { m.fetch_add(1, Ordering::SeqCst); Err("bad".to_string()) }, |_| true).await;
+        assert!(r.is_err());
+        assert_eq!(m.load(Ordering::SeqCst), 1);
+        // the budget ends it: 0.5 + 1 s of waits fit in 2 s, the next 2 s wait does not
+        let k = AtomicUsize::new(0);
+        let t = Instant::now();
+        let r: Result<u32, String> = retrying(Duration::from_secs(2), || async { k.fetch_add(1, Ordering::SeqCst); Err("cut".to_string()) }, |_| false).await;
+        assert!(r.is_err());
+        assert_eq!(k.load(Ordering::SeqCst), 3);
+        assert!(t.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

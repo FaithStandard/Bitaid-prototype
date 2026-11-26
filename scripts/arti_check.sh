@@ -5,7 +5,7 @@
 #   PC=<pc onion> sh scripts/arti_check.sh 10       10 trials, Arti restarted each time, its cache kept
 # Each trial: T1 = Arti bootstrapped (TOR_READY), T4 = the PC's archive answered through Arti's
 # authenticated SOCKS listener; plus a check that the listener refuses a client without its secret.
-# Results appended to $HOME/arti_check.txt.
+# Results appended to $HOME/arti_check.txt; a failed trial's Arti log is kept as $HOME/arti_fail_<n>.log.
 cd "$(dirname "$0")/.."
 N=${1:-10}
 PC=${PC:-$CORE}; [ -n "$PC" ] || { echo "set PC to the PC's onion address"; exit 1; }
@@ -18,7 +18,7 @@ echo "# $(date -u +%FT%TZ) arti restart" >> $OUT
 for i in $(seq 1 $N); do
   pkill -f "$BIN" 2>/dev/null; sleep 2
   T0=$(now)
-  $BIN > $LOG 2>&1 &
+  $BIN --debug > $LOG 2>&1 &
   for j in $(seq 1 600); do grep -q "TOR_READY\|TOR_FAILED" $LOG 2>/dev/null && break; sleep 0.3; done
   T1=$(since $T0)
   SOCKS=$(grep -o "BITAID_SOCKS=.*" $LOG | cut -d= -f2)
@@ -29,6 +29,8 @@ for i in $(seq 1 $N); do
   REFUSED=$(curl -s -o /dev/null --max-time 20 --socks5-hostname "$ADDR" -w '%{http_code}' "http://$PC:7480/" 2>/dev/null)
   LINE="trial $i mode=arti T1=$T1 T3=- T4=$T4 http=$CODE without_secret=$REFUSED"
   echo "$LINE"; echo "$LINE" >> $OUT
+  # a failed trial (no answer at all; the archive answers / with 404) keeps Arti's log, which has no secret
+  [ "$CODE" = 000 ] && cp $LOG $HOME/arti_fail_$i.log
 done
 pkill -f "$BIN" 2>/dev/null
 tail -n $N $OUT | awk '
