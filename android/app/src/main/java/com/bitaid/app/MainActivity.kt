@@ -6,10 +6,15 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.CancellationSignal
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
@@ -26,17 +31,15 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONArray
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * M4 step 3: Minimal Kotlin shell around `bitaid-node` + `bitaid-tor`.
  *
- * Covers both app roles (responder and caller):
- * - On-duty switch (starts/stops `BitaidService` foreground service)
- * - Caller prepare + SOS alert button (uses live GPS fix when pressed)
- * - Incoming alert card (Accept / Decline)
- * - Verified location card (Open in Maps)
- * - Ballot card (one I/D/N per seat, achieved, misuse)
- * - Live PASS/FAIL checks and log stream
+ * - No hardcoded fallback coordinates: responder requires a real GPS fix (or explicit test coords).
+ * - Caller SOS requests a fresh GPS fix (10 s timeout), falling back to last-known only if < 5 min
+ *   old (with age logged), else raises without a position rather than sending a stale one.
+ * - RPC URL (with `user:pass`) is stored in `KeystoreSecretStore`, never plain `SharedPreferences`.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -72,9 +75,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var checksView: TextView
     private lateinit var logsView: TextView
 
+    private var secretStore: KeystoreSecretStore? = null
     private var suppressSwitch = false
     private var renderedBallotCase: String? = null
     private val seatSpinners = mutableListOf<Spinner>()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val stateListener: (AppSnapshot) -> Unit = { snap ->
         runOnUiThread { render(snap) }
@@ -84,6 +89,13 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         requestRuntimePermissions()
         setContentView(buildUi())
+        try {
+            secretStore = KeystoreSecretStore(applicationContext)
+        } catch (e: Exception) {
+            BitaidState.update {
+                it.copy(status = ServiceStatus.FAULT, statusDetail = "The secure store cannot be opened: ${e.message}")
+            }
+        }
         loadPrefs()
     }
 
@@ -145,16 +157,18 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             isEnabled = false
             setOnClickListener {
-                val gps = currentGpsFix()
-                if (gps != null) {
-                    NativeBridge.sendRaiseAlert(true, gps.first, gps.second)
-                } else {
-                    val la = latEdit.text.toString().toDoubleOrNull()
-                    val lo = lonEdit.text.toString().toDoubleOrNull()
-                    if (la != null && lo != null) {
-                        NativeBridge.sendRaiseAlert(true, la, lo)
+                sosBtn.isEnabled = false
+                BitaidState.update { it.copy(statusDetail = "Getting fresh GPS fix (up to 10 s)...") }
+                requestFreshFix { fix ->
+                    if (fix != null) {
+                        NativeBridge.sendRaiseAlert(true, fix.first, fix.second)
                     } else {
-                        NativeBridge.sendRaiseAlert(false, 0.0, 0.0)
+                        val manual = manualCoords()
+                        if (manual != null) {
+                            NativeBridge.sendRaiseAlert(true, manual.first, manual.second)
+                        } else {
+                            NativeBridge.sendRaiseAlert(false, 0.0, 0.0)
+                        }
                     }
                 }
             }
@@ -242,8 +256,12 @@ class MainActivity : AppCompatActivity() {
                 for (sp in seatSpinners) {
                     arr.put(sp.selectedItem.toString())
                 }
-                NativeBridge.sendVote(prompt.caseId, arr.toString(), achievedCheck.isChecked, misuseCheck.isChecked)
-                BitaidState.update { it.copy(ballotDue = null) }
+                val ok = NativeBridge.sendVote(prompt.caseId, arr.toString(), achievedCheck.isChecked, misuseCheck.isChecked)
+                if (ok) {
+                    BitaidState.update { it.copy(ballotDue = null) }
+                } else {
+                    BitaidState.update { it.copy(logs = (it.logs + "[app] Vote not sent (invalid ballot)").takeLast(200)) }
+                }
             }
         }
         ballotCard.addView(ballotSeatsBox)
@@ -252,14 +270,14 @@ class MainActivity : AppCompatActivity() {
         ballotCard.addView(voteBtn)
         root.addView(ballotCard)
 
-        // Settings section (non-secret test-chain configuration)
-        root.addView(sectionHeader("Signet Settings (non-secret)"))
+        // Settings section
+        root.addView(sectionHeader("Signet Settings"))
         nameEdit = labeledEdit(root, "Node name", "phone1")
         peerEdit = labeledEdit(root, "Core peer (.onion:port)", "")
-        rpcEdit = labeledEdit(root, "Trusted bitcoind RPC (http://user:pass@onion:port)", "")
+        rpcEdit = labeledEdit(root, "Trusted bitcoind RPC (http://user:pass@onion:port — stored encrypted)", "")
         walletEdit = labeledEdit(root, "RPC wallet", "w")
-        latEdit = labeledEdit(root, "Default latitude", "13.6929")
-        lonEdit = labeledEdit(root, "Default longitude", "-89.2182")
+        latEdit = labeledEdit(root, "Override latitude (optional; blank uses GPS)", "")
+        lonEdit = labeledEdit(root, "Override longitude (optional; blank uses GPS)", "")
 
         // Live checks and logs
         root.addView(sectionHeader("Live Checks"))
@@ -356,14 +374,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRoleService(action: String) {
+        val pos = manualCoords() ?: recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L)?.first
+        if (action == BitaidService.ACTION_START_RESPONDER && pos == null) {
+            BitaidState.update {
+                it.copy(status = ServiceStatus.OFF_DUTY, statusDetail = "No position — enable GPS or enter coordinates")
+            }
+            return
+        }
         val intent = Intent(this, BitaidService::class.java).apply {
             this.action = action
             putExtra(BitaidService.EXTRA_NAME, nameEdit.text.toString().trim().ifEmpty { "phone1" })
             putExtra(BitaidService.EXTRA_PEER, peerEdit.text.toString().trim())
-            putExtra(BitaidService.EXTRA_RPC, rpcEdit.text.toString().trim())
             putExtra(BitaidService.EXTRA_WALLET, walletEdit.text.toString().trim().ifEmpty { "w" })
-            putExtra(BitaidService.EXTRA_LAT, latEdit.text.toString().toDoubleOrNull() ?: 13.6929)
-            putExtra(BitaidService.EXTRA_LON, lonEdit.text.toString().toDoubleOrNull() ?: -89.2182)
+            if (pos != null) {
+                putExtra(BitaidService.EXTRA_HAS_LOC, true)
+                putExtra(BitaidService.EXTRA_LAT, pos.first)
+                putExtra(BitaidService.EXTRA_LON, pos.second)
+            } else {
+                putExtra(BitaidService.EXTRA_HAS_LOC, false)
+            }
         }
         ContextCompat.startForegroundService(this, intent)
     }
@@ -372,14 +401,93 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, BitaidService::class.java).apply { this.action = action })
     }
 
-    private fun currentGpsFix(): Pair<Double, Double>? {
+    private fun manualCoords(): Pair<Double, Double>? {
+        val la = latEdit.text.toString().trim().toDoubleOrNull() ?: return null
+        val lo = lonEdit.text.toString().trim().toDoubleOrNull() ?: return null
+        if (!la.isFinite() || !lo.isFinite() || la !in -90.0..90.0 || lo !in -180.0..180.0) return null
+        return Pair(la, lo)
+    }
+
+    /**
+     * Requests a fresh GPS fix with a 10 s timeout. Only falls back to a last-known fix if it is
+     * under 5 minutes old (logging its age); never silently sends an hours-old position.
+     */
+    @Suppress("DEPRECATION")
+    private fun requestFreshFix(onDone: (Pair<Double, Double>?) -> Unit) {
+        val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine) {
+            onDone(null)
+            return
+        }
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val provider = when {
+            lm.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+            lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+            else -> null
+        }
+        if (provider == null) {
+            onDone(fallbackRecentFix())
+            return
+        }
+        val finished = AtomicBoolean(false)
+        val finish: (Location?) -> Unit = { loc ->
+            if (finished.compareAndSet(false, true)) {
+                if (loc != null) {
+                    onDone(Pair(loc.latitude, loc.longitude))
+                } else {
+                    onDone(fallbackRecentFix())
+                }
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val cs = CancellationSignal()
+            mainHandler.postDelayed({
+                cs.cancel()
+                finish(null)
+            }, 10_000L)
+            lm.getCurrentLocation(provider, cs, mainExecutor) { loc -> finish(loc) }
+        } else {
+            val listener = object : LocationListener {
+                override fun onLocationChanged(loc: Location) {
+                    lm.removeUpdates(this)
+                    finish(loc)
+                }
+            }
+            mainHandler.postDelayed({
+                lm.removeUpdates(listener)
+                finish(null)
+            }, 10_000L)
+            lm.requestSingleUpdate(provider, listener, Looper.getMainLooper())
+        }
+    }
+
+    private fun fallbackRecentFix(): Pair<Double, Double>? {
+        val recent = recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L)
+        if (recent != null) {
+            val ageSec = recent.second / 1000L
+            BitaidState.update {
+                it.copy(logs = (it.logs + "[app] No fresh GPS fix; using cached fix (${ageSec}s old)").takeLast(200))
+            }
+            return recent.first
+        }
+        BitaidState.update {
+            it.copy(logs = (it.logs + "[app] No recent GPS fix (<5 min); raising alert without position").takeLast(200))
+        }
+        return null
+    }
+
+    private fun recentLastKnownFix(maxAgeMs: Long): Pair<Pair<Double, Double>, Long>? {
         val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (!hasFine) return null
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-            ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            ?: return null
-        return Pair(loc.latitude, loc.longitude)
+        val best = listOfNotNull(
+            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER),
+            lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER),
+        ).maxByOrNull { it.time } ?: return null
+        val age = (System.currentTimeMillis() - best.time).coerceAtLeast(0L)
+        if (age > maxAgeMs) return null
+        return Pair(Pair(best.latitude, best.longitude), age)
     }
 
     private fun requestRuntimePermissions() {
@@ -431,21 +539,28 @@ class MainActivity : AppCompatActivity() {
         val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         nameEdit.setText(p.getString("name", "phone1"))
         peerEdit.setText(p.getString("peer", ""))
-        rpcEdit.setText(p.getString("rpc", ""))
         walletEdit.setText(p.getString("wallet", "w"))
-        latEdit.setText(p.getString("lat", "13.6929"))
-        lonEdit.setText(p.getString("lon", "-89.2182"))
+        latEdit.setText(p.getString("lat", ""))
+        lonEdit.setText(p.getString("lon", ""))
+        try {
+            rpcEdit.setText(secretStore?.getRpcUrl() ?: "")
+        } catch (e: Exception) {
+            BitaidState.update {
+                it.copy(status = ServiceStatus.FAULT, statusDetail = "RPC credentials unreadable: ${e.message}")
+            }
+        }
     }
 
     private fun savePrefs() {
         getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("name", nameEdit.text.toString().trim())
             .putString("peer", peerEdit.text.toString().trim())
-            .putString("rpc", rpcEdit.text.toString().trim())
             .putString("wallet", walletEdit.text.toString().trim())
             .putString("lat", latEdit.text.toString().trim())
             .putString("lon", lonEdit.text.toString().trim())
+            .remove("rpc") // never keep RPC credentials in plain SharedPreferences
             .apply()
+        secretStore?.putRpcUrl(rpcEdit.text.toString().trim())
     }
 
     companion object {

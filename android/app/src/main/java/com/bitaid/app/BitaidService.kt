@@ -28,10 +28,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * M4 step 4: Foreground service keeping Arti Tor and the active role alive with screen off.
  *
  * - Declares `specialUse` while on duty (and adds `location` when granted).
- * - Filters `ConnectivityManager.NetworkCallback` by `Network.networkHandle` so
- *   `NativeBridge.torNetworkChanged()` runs ONLY when the default network actually switches.
- * - Calls `NativeBridge.setTorDormant(false/true)` on duty transitions.
- * - Never leaves the UI showing "on duty" after a `Fatal` event.
+ * - Filters `ConnectivityManager.NetworkCallback` by `lastNetworkHandle` (never cleared in
+ *   `onLost`) so Wi-Fi -> gap -> cellular triggers `torNetworkChanged()`.
+ * - Fails closed on Keystore errors, missing position, or non-.onion targets.
+ * - Backs off and halts after repeated quick non-zero exits instead of tight-looping.
  */
 class BitaidService : Service() {
 
@@ -39,47 +39,70 @@ class BitaidService : Service() {
     private val wantOnDuty = AtomicBoolean(false)
 
     private var secretStore: KeystoreSecretStore? = null
+    private var storeInitError: String? = null
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var activeNetworkHandle: Long? = null
+
+    @Volatile
+    private var lastNetworkHandle: Long? = null
+
     private var wakeLock: PowerManager.WakeLock? = null
-    private var currentRole: String = "responder"
-    private var lastConfig: RoleLaunchConfig? = null
+    private var roleStartedAtMs: Long = 0L
+    private var consecutiveQuickFails: Int = 0
 
     data class RoleLaunchConfig(
         val role: String,
         val nodeName: String,
         val peerOnion: String,
-        val rpcUrl: String,
         val wallet: String,
-        val lat: Double,
-        val lon: Double,
+        val lat: Double?,
+        val lon: Double?,
     )
 
     override fun onCreate() {
         super.onCreate()
         createChannels()
-        val store = KeystoreSecretStore(applicationContext)
-        secretStore = store
-        NativeBridge.installSecretStore(store)
+        try {
+            val store = KeystoreSecretStore(applicationContext)
+            secretStore = store
+            if (!NativeBridge.installSecretStore(store)) {
+                storeInitError = "Failed to install SecretStore in native layer"
+            }
+        } catch (e: Exception) {
+            storeInitError = "The secure store cannot be opened: ${e.message}"
+        }
         registerFilteredNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START_RESPONDER, ACTION_START_CALLER -> {
+                val initErr = storeInitError
+                if (initErr != null || secretStore == null) {
+                    faultAndStop(initErr ?: "The secure store cannot be opened")
+                    return START_NOT_STICKY
+                }
                 val role = if (intent.action == ACTION_START_CALLER) "caller" else "responder"
+                val hasLoc = intent.getBooleanExtra(EXTRA_HAS_LOC, false)
+                val lat = if (hasLoc) intent.getDoubleExtra(EXTRA_LAT, Double.NaN) else null
+                val lon = if (hasLoc) intent.getDoubleExtra(EXTRA_LON, Double.NaN) else null
+                val validLoc = lat != null && lon != null && lat.isFinite() && lon.isFinite() &&
+                    lat in -90.0..90.0 && lon in -180.0..180.0
+
+                if (role == "responder" && !validLoc) {
+                    faultAndStop("No position — cannot go on duty")
+                    return START_NOT_STICKY
+                }
+
                 val cfg = RoleLaunchConfig(
                     role = role,
                     nodeName = intent.getStringExtra(EXTRA_NAME) ?: role,
                     peerOnion = intent.getStringExtra(EXTRA_PEER) ?: "",
-                    rpcUrl = intent.getStringExtra(EXTRA_RPC) ?: "",
                     wallet = intent.getStringExtra(EXTRA_WALLET) ?: "w",
-                    lat = intent.getDoubleExtra(EXTRA_LAT, 13.6929),
-                    lon = intent.getDoubleExtra(EXTRA_LON, -89.2182),
+                    lat = if (validLoc) lat else null,
+                    lon = if (validLoc) lon else null,
                 )
-                currentRole = role
-                lastConfig = cfg
+                consecutiveQuickFails = 0
                 wantOnDuty.set(true)
                 promoteForeground("Starting Tor ($role)...")
                 acquireWakeLock()
@@ -101,6 +124,21 @@ class BitaidService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun faultAndStop(reason: String) {
+        wantOnDuty.set(false)
+        BitaidState.update {
+            it.copy(
+                status = ServiceStatus.FAULT,
+                statusDetail = reason,
+                alert = null,
+                ballotDue = null,
+            )
+        }
+        updateNotification("FAULT: $reason")
+        releaseWakeLock()
+        stopSelf()
+    }
+
     private fun startTorAndRole(cfg: RoleLaunchConfig) {
         BitaidState.update {
             it.copy(
@@ -112,13 +150,7 @@ class BitaidService : Service() {
         val cacheDir = File(cacheDir, "arti/cache").absolutePath
         val err = NativeBridge.startTor(stateDir, cacheDir)
         if (err.isNotEmpty()) {
-            wantOnDuty.set(false)
-            BitaidState.update {
-                it.copy(status = ServiceStatus.FAULT, statusDetail = "Tor failed: $err")
-            }
-            updateNotification("Tor failed: $err")
-            releaseWakeLock()
-            stopSelf()
+            faultAndStop("Tor failed: $err")
             return
         }
         NativeBridge.setTorDormant(false)
@@ -130,12 +162,26 @@ class BitaidService : Service() {
             finishOffDuty()
             return
         }
-        val store = secretStore ?: return
-        val identityHex = store.getOrCreateIdentityHex(cfg.nodeName)
+        val store = secretStore ?: run {
+            faultAndStop("The secure store cannot be opened")
+            return
+        }
+        val identityHex = try {
+            store.getOrCreateIdentityHex(cfg.nodeName)
+        } catch (e: Exception) {
+            faultAndStop("Identity key unreadable: ${e.message}")
+            return
+        }
+        val rpcUrl = try {
+            store.getRpcUrl()
+        } catch (e: Exception) {
+            faultAndStop("RPC credentials unreadable: ${e.message}")
+            return
+        }
 
         val settings = JSONObject().apply {
             put("HOME", filesDir.absolutePath)
-            put("BITAID_RPC", cfg.rpcUrl)
+            put("BITAID_RPC", rpcUrl)
             put("BITAID_WALLET", cfg.wallet)
             put("BITAID_REPLY_MIN", "900")
             put("BITAID_TIME_SCALE", "1")
@@ -149,8 +195,10 @@ class BitaidService : Service() {
             if (cfg.peerOnion.isNotBlank()) {
                 put("--peer"); put(cfg.peerOnion)
             }
-            put("--lat"); put(cfg.lat.toString())
-            put("--lon"); put(cfg.lon.toString())
+            if (cfg.lat != null && cfg.lon != null) {
+                put("--lat"); put(cfg.lat.toString())
+                put("--lon"); put(cfg.lon.toString())
+            }
             if (cfg.role == "responder") {
                 put("--ask-accept")
                 put("--ask-vote")
@@ -166,6 +214,7 @@ class BitaidService : Service() {
             )
         }
         updateNotification(if (cfg.role == "responder") "On duty — listening for alerts" else "Caller active")
+        roleStartedAtMs = System.currentTimeMillis()
 
         val started = NativeBridge.startRole(
             settings.toString(),
@@ -183,11 +232,34 @@ class BitaidService : Service() {
                             stopSelf()
                         }
                         "RoleExited" -> {
-                            if (wantOnDuty.get() && cfg.role == "responder" && BitaidState.snapshot.status != ServiceStatus.FAULT) {
-                                // Case completed cleanly; loop to listen for next alert.
-                                worker.execute { launchRole(cfg) }
-                            } else {
+                            val code = try {
+                                JSONObject(json).optInt("code", 1)
+                            } catch (_: Exception) {
+                                1
+                            }
+                            if (!wantOnDuty.get() || cfg.role != "responder" || BitaidState.snapshot.status == ServiceStatus.FAULT) {
                                 finishOffDuty()
+                                return
+                            }
+                            val ranMs = System.currentTimeMillis() - roleStartedAtMs
+                            if (code != 0 && ranMs < QUICK_FAIL_MS) {
+                                consecutiveQuickFails += 1
+                                if (consecutiveQuickFails >= MAX_QUICK_FAILS) {
+                                    faultAndStop("Responder exited repeatedly (code $code)")
+                                    return
+                                }
+                                val backoffMs = 2_000L shl (consecutiveQuickFails - 1)
+                                worker.execute {
+                                    try {
+                                        Thread.sleep(backoffMs)
+                                    } catch (_: InterruptedException) {
+                                        return@execute
+                                    }
+                                    launchRole(cfg)
+                                }
+                            } else {
+                                consecutiveQuickFails = 0
+                                worker.execute { launchRole(cfg) }
                             }
                         }
                     }
@@ -195,12 +267,7 @@ class BitaidService : Service() {
             },
         )
         if (!started) {
-            wantOnDuty.set(false)
-            BitaidState.update {
-                it.copy(status = ServiceStatus.FAULT, statusDetail = "Failed to start role (already running?)")
-            }
-            releaseWakeLock()
-            stopSelf()
+            faultAndStop("Refused to start role (check Tor and .onion peer/RPC settings)")
         }
     }
 
@@ -215,9 +282,9 @@ class BitaidService : Service() {
     }
 
     /**
-     * Filters Android's default-network callback by `networkHandle` so `torNetworkChanged()` is
-     * only invoked when the active default network genuinely switches (e.g. Wi-Fi <-> cellular),
-     * not on initial registration or secondary-network / capability churn.
+     * Tracks the last seen default `Network.networkHandle` without clearing it in `onLost`, so
+     * Wi-Fi lost -> (gap) -> cellular available still sees `prev != handle` and calls
+     * `torNetworkChanged()`.
      */
     private fun registerFilteredNetworkCallback() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -225,16 +292,10 @@ class BitaidService : Service() {
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 val handle = network.networkHandle
-                val prev = activeNetworkHandle
-                activeNetworkHandle = handle
+                val prev = lastNetworkHandle
+                lastNetworkHandle = handle
                 if (prev != null && prev != handle && wantOnDuty.get()) {
                     worker.execute { NativeBridge.torNetworkChanged() }
-                }
-            }
-
-            override fun onLost(network: Network) {
-                if (activeNetworkHandle == network.networkHandle) {
-                    activeNetworkHandle = null
                 }
             }
         }
@@ -324,6 +385,9 @@ class BitaidService : Service() {
     }
 
     override fun onDestroy() {
+        wantOnDuty.set(false)
+        NativeBridge.sendOffDuty()
+        NativeBridge.setTorDormant(true)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         releaseWakeLock()
         worker.shutdownNow()
@@ -339,8 +403,8 @@ class BitaidService : Service() {
 
         const val EXTRA_NAME = "name"
         const val EXTRA_PEER = "peer"
-        const val EXTRA_RPC = "rpc"
         const val EXTRA_WALLET = "wallet"
+        const val EXTRA_HAS_LOC = "has_loc"
         const val EXTRA_LAT = "lat"
         const val EXTRA_LON = "lon"
 
@@ -348,5 +412,7 @@ class BitaidService : Service() {
         private const val CHANNEL_ALERT = "bitaid_alert"
         private const val NOTIF_ID = 1001
         private const val ALERT_NOTIF_ID = 1002
+        private const val QUICK_FAIL_MS = 10_000L
+        private const val MAX_QUICK_FAILS = 3
     }
 }

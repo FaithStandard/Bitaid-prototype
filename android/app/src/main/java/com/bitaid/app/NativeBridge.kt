@@ -1,10 +1,17 @@
 package com.bitaid.app
 
+import java.io.IOException
+
 /**
  * Callback invoked synchronously from Rust (`bitaid_node::secrets::SecretStore`).
  * Method names and signatures are matched by `crates/bitaid-jni/src/lib.rs`.
  */
 interface SecretStoreCallback {
+    /**
+     * Returns `null` ONLY when `name` does not exist.
+     * Throws `IOException` if the file exists but cannot be read or decrypted.
+     */
+    @Throws(IOException::class)
     fun get(name: String): ByteArray?
     fun put(name: String, data: ByteArray): Boolean
     fun append(name: String, line: String): Boolean
@@ -46,6 +53,6 @@ object NativeBridge {
         classesJson: String,
         achieved: Boolean,
         misuse: Boolean,
-    )
+    ): Boolean
     external fun sendOffDuty()
 }
