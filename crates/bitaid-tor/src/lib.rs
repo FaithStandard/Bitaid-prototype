@@ -338,6 +338,56 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     }
 }
 
+/// Tries `attempt` again while it fails with an error that a retry can mend, waiting 0.5 s, then
+/// doubling up to 8 s, until `budget` would be passed. Arti gives up on an onion within a few
+/// seconds when every descriptor fetch is cut by its learned circuit-build timeout, which on a phone
+/// was 3 of 10 connects in the first device run (2026-11-26), while the next connect usually works.
+pub async fn retrying<T, E: std::fmt::Display, F, Fut>(budget: Duration, mut attempt: F, permanent: impl Fn(&E) -> bool) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let start = Instant::now();
+    let mut wait = Duration::from_millis(500);
+    let mut n = 1;
+    loop {
+        match attempt().await {
+            Ok(t) => return Ok(t),
+            Err(e) => {
+                if permanent(&e) || start.elapsed() + wait >= budget {
+                    return Err(e);
+                }
+                note(|| format!("attempt {n} failed after {:.1} s, again in {:.1} s: {e}", start.elapsed().as_secs_f64(), wait.as_secs_f64()));
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(8));
+                n += 1;
+            }
+        }
+    }
+}
+
+/// Arti's errors that another attempt cannot mend: the target or its auth is wrong, or Arti itself
+/// is stopping. Everything else (timeouts, circuits, descriptors, a refused connection while a Core
+/// restarts) is retried within the budget.
+fn permanent(e: &arti_client::Error) -> bool {
+    use arti_client::{ErrorKind as K, HasKind};
+    matches!(
+        e.kind(),
+        K::InvalidStreamTarget
+            | K::ForbiddenStreamTarget
+            | K::OnionServiceAddressInvalid
+            | K::OnionServiceMissingClientAuth
+            | K::OnionServiceWrongClientAuth
+            | K::ExitPolicyRejected
+            | K::BadApiUsage
+            | K::FeatureDisabled
+            | K::NotImplemented
+            | K::InvalidConfig
+            | K::ArtiShuttingDown
+            | K::ReactorShuttingDown
+    )
+}
+
 /// Which Arti isolation token each SOCKS name gets (review of bitaid-tor, Neon, Q1). A name
 /// starting `q-` is one-shot (the caller's light path, one per worker query, §7.2): a fresh token
 /// every stream, never stored. Other names are kept, at most `CAP` of them, the oldest dropped
@@ -443,10 +493,14 @@ impl Tor {
                 Box::pin(async move {
                     let mut prefs = arti_client::StreamPrefs::new();
                     prefs.set_isolation(token);
-                    let s = client
-                        .connect_with_prefs((host.as_str(), port), &prefs)
-                        .await
-                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    // inside the listener's own bound (Limits::connect, 180 s), so it ends first
+                    let s = retrying(
+                        Duration::from_secs(170),
+                        || client.connect_with_prefs((host.as_str(), port), &prefs),
+                        permanent,
+                    )
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
                     Ok(Box::new(s) as Box<dyn Stream>)
                 })
             });
@@ -745,6 +799,35 @@ mod tests {
         let mut s = socks(&l, Some(("main", &l.secret)), port).await.unwrap();
         s.write_all(b"x").await.unwrap();
         s.read_exact(&mut b).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connects_are_retried_unless_the_error_is_permanent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let n = AtomicUsize::new(0);
+        // two quick failures, then through
+        let r: Result<u32, String> = retrying(
+            Duration::from_secs(10),
+            || async {
+                if n.fetch_add(1, Ordering::SeqCst) < 2 { Err("cut".to_string()) } else { Ok(7) }
+            },
+            |_| false,
+        )
+        .await;
+        assert_eq!(r, Ok(7));
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+        // permanent: one attempt only
+        let m = AtomicUsize::new(0);
+        let r: Result<u32, String> = retrying(Duration::from_secs(10), || async { m.fetch_add(1, Ordering::SeqCst); Err("bad".to_string()) }, |_| true).await;
+        assert!(r.is_err());
+        assert_eq!(m.load(Ordering::SeqCst), 1);
+        // the budget ends it: 0.5 + 1 s of waits fit in 2 s, the next 2 s wait does not
+        let k = AtomicUsize::new(0);
+        let t = Instant::now();
+        let r: Result<u32, String> = retrying(Duration::from_secs(2), || async { k.fetch_add(1, Ordering::SeqCst); Err("cut".to_string()) }, |_| false).await;
+        assert!(r.is_err());
+        assert_eq!(k.load(Ordering::SeqCst), 3);
+        assert!(t.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
