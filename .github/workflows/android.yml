@@ -30,10 +30,10 @@ jobs:
             ~/.cargo/registry
             target
           key: ndk-${{ hashFiles('Cargo.lock') }}
-      - name: Native library (Cargo.lock as committed: cc stays at 1.7.0)
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+      - name: Native library (Cargo.lock as committed, cc stays at 1.7.0)
         run: |
+          # the runner's newest NDK
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           grep -A1 '^name = "cc"' Cargo.lock | grep -q '"1.7.0"'
           cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build --release --locked -p bitaid-jni
       - name: Debug APK
