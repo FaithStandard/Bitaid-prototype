@@ -4,6 +4,9 @@
 # signature). One onion address carries
 # the Core (7700), the archive (7480) and the chain's RPC (18443); nothing is opened on the router.
 #   sh scripts/net_pc.sh start | report | stop | balances | sweep (CHAIN=public: where the test coins are, and back to the faucet)
+#   APP=1 CHAIN=signet BLOCK=20 sh scripts/net_pc.sh start   for the Android app (M4): the whole pool
+#     (members 1-4, none stalling) and three arbitrators here, no responder of the PC's own, so the
+#     phone's app is the one that accepts; then  sh scripts/net_pc.sh alert  starts the caller
 # Logs also go to LOGDIR (default: the Windows "Files for Claude\pc_logs" folder) so they can be read there.
 cd "$(dirname "$0")/.."
 . "$HOME/.cargo/env" 2>/dev/null
@@ -170,8 +173,16 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
   BITAID_LINK_NAMES="${ONION%.onion}.onion:7700" BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
   sleep 1
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
+  if [ "$APP" = 1 ]; then
+    # the app's run: the whole pool on this machine, none stalling (the devices run none of it)
+    for m in 2 3 4; do
+      BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool$m-pc --id $m --n 4 --t 3 --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool$m.log" </dev/null &
+    done
+  else
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
+  fi
   BITAID_WALLET=w nohup target/release/bitaid-node --role archivist --name archivist-pc --listen 127.0.0.1:7480 --public-url http://$ONION:7480 $P $X >"$L/archivist.out" 2>"$L/archivist.log" </dev/null &
+  [ "$APP" = 1 ] && { ARBS=${ARBS:-3}; CAPTURE=0; CHALLENGE=0; STALL=0; CORRUPT=""; }
   for i in $(seq 1 ${ARBS:-10}); do
     extra=""; for c in ${CORRUPT:-4 8}; do [ $i = $c ] && extra="--corrupt"; done
     # CAPTURE=1 (default; CAPTURE=0 for a random draw): a captured first panel, deterministically — only arb1 (honest), arb4 and arb8 (corrupt)
@@ -196,8 +207,9 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
   done
   sleep 2
   R3APPEAL="--appeal --greedy"; [ "${CHALLENGE:-1}" = 1 ] && R3APPEAL=""; [ "$REVIEW" = 1 ] && R3APPEAL=""
-  BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D $R3APPEAL --offer-window 40 --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
-  BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
+  # (APP=1: no responder here; the app's is the only one, so the alert reaches it and it accepts)
+  [ "$APP" = 1 ] || BITAID_WALLET=r3 nohup target/release/bitaid-node --role responder --name r3-pc $P --mine --act I --claim I --others D $R3APPEAL --offer-window 40 --settle-wait 1800 --lat 13.6920 --lon -89.2170 $X >"$L/r3.out" 2>"$L/r3.log" </dev/null &
+  [ "$APP" = 1 ] || BITAID_WALLET=r4 nohup target/release/bitaid-node --role responder --name r4-pc-cheat $P --mine --claim I --others D --bad-partial --accept-delay-ms 800 $X >"$L/r4.out" 2>"$L/r4.log" </dev/null &
   sleep 3
   # ROGUE=1: a hostile stranger attacks the Core's gossip port ROGUE_WAIT seconds in, while the case
   # runs (examples/rogue.rs): oversized and malformed messages, stale and future-dated ones, a replay,
@@ -212,7 +224,19 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
   fi
   echo "$ONION" > "$L/onion.txt"; echo "$BITAID_INDEX_FROM" > "$L/index_from.txt"
   echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE INDEX_FROM=$BITAID_INDEX_FROM"
+  [ "$APP" = 1 ] && echo "APP_SETTINGS  peer: $ONION:7700  rpc: http://bitaid:$PASS@$ONION:18443  wallet: r1  pool: ${POOL:-tor1}  lat: ${APP_LAT:-13.6929}  lon: ${APP_LON:--89.2182}"
   [ "$CHAIN" = public ] && echo "RPC_PASS=$PASS"
+  ;;
+alert)
+  # the app's run (APP=1): a caller on this machine at the position the app was set to, once the app
+  # shows on duty. It alerts, takes the app's acceptance and goes on to settlement.
+  export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_REPLY_MIN=${REPLY_MIN:-900}
+  export BITAID_SELF_ONION=$(cat "$L/onion.txt" 2>/dev/null); [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
+  P="--peer 127.0.0.1:7700 --pool ${POOL:-tor1}"
+  BITAID_WALLET=caller target/release/bitaid-node --role caller --name caller-pc $P --mine --window ${WINDOW:-120} \
+      --dispute-blocks ${DISPUTE_BLOCKS:-3} --commit-blocks ${COMMIT_BLOCKS:-20} --reveal-blocks ${REVEAL_BLOCKS:-6} \
+      --settle-wait 1800 --min-arbs 0 --lat ${APP_LAT:-13.6929} --lon ${APP_LON:--89.2182} \
+      2>"$L/caller.log" | tee "$L/caller.out"
   ;;
 audit)
   # two nodes that saw nothing of the run read every arbitrator's record: one from its links, one from
