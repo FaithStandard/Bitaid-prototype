@@ -45,11 +45,11 @@ COMMON="$R $RELAY --archivists 2 --mine"
 # alert raised on the ready event), with its settings passed in rather than read from the environment
 R1=$BIN/bitaid-node; CALLER=$BIN/bitaid-node; R1X=""; CX=""
 [ -n "$APP" ] && { R1=$BIN/examples/app_drive; CALLER=$BIN/examples/app_drive; R1X="--ask-accept --ask-vote"; CX="--ask-alert"; export BITAID_APP_BALLOT=I,D; }
-BITAID_WALLET=r1 $R1 $R1X --role responder --name r1 $COMMON --ballot I,D --lat 13.6935 --lon -89.2190 --broadcast > m3logs/r1.out 2>m3logs/r1.log & RP="$!"
+BITAID_RPC_DELAY_MS=${R1_RPC_DELAY_MS:-0} BITAID_WALLET=r1 $R1 $R1X --role responder --name r1 $COMMON --ballot I,D --lat 13.6935 --lon -89.2190 --broadcast > m3logs/r1.out 2>m3logs/r1.log & RP="$!"
 BITAID_WALLET=r2 $BIN/bitaid-node --role responder --name r2 $COMMON --ballot I,D --lat 13.6920 --lon -89.2170 > m3logs/r2.out 2>m3logs/r2.log & RP="$RP $!"
 BITAID_WALLET=r3 $BIN/bitaid-node --role responder --name r3 $COMMON --ballot I,D --bad-partial --accept-delay-ms 300 > m3logs/r3.out 2>m3logs/r3.log & RP="$RP $!"
 sleep 2
-BITAID_WALLET=caller $CALLER $CX --role caller --name caller $COMMON --alert-delay 3 --window ${WINDOW:-6} --dispute-blocks 3 --commit-blocks ${COMMIT_BLOCKS:-30} --reveal-blocks ${REVEAL_BLOCKS:-6} > m3logs/caller.out 2>m3logs/caller.log
+BITAID_WALLET=caller $CALLER $CX --role caller --name caller $COMMON --alert-delay ${ALERT_DELAY:-3} --window ${WINDOW:-6} --dispute-blocks 3 --commit-blocks ${COMMIT_BLOCKS:-30} --reveal-blocks ${REVEAL_BLOCKS:-6} > m3logs/caller.out 2>m3logs/caller.log
 for p in $RP; do wait $p; done
 kill $PIDS 2>/dev/null
 cat m3logs/caller.out m3logs/r1.out m3logs/r2.out m3logs/r3.out | tee m3_result.txt

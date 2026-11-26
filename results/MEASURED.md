@@ -143,3 +143,25 @@ the authenticated listener, both measured from the start. The network type was n
 - The listener refused a client without the secret in all 30 trials.
 - With the retry, reaching the Core from a cold app takes about the same as C Tor (median 9.2 s
   against 9.8 s), worst 21 s.
+
+## The Android app, end to end, 2026-11-26 (M4)
+
+APK `628ea73`, built by the GitHub workflow, on the Redmi. The PC ran `PC_20_APP_RUN.bat`
+(`APP=1 CHAIN=signet BLOCK=20`: a custom signet with a block every 20 s, the whole oracle pool, the
+archivist and three arbitrators, no responder of its own) and then `PC_21_APP_ALERT.bat`, a caller at
+the position the app was set to.
+
+- The app's responder: in-process Arti, its link to the PC's Core over Tor, its bond posted, then
+  listening. Wi-Fi was switched off and on while it listened; it stayed on duty.
+- The alert came up as a notification. Albert accepted it in the app, and the **acceptance reached
+  the caller 7.57 s after the alert**. The verified location opened in Maps.
+- **The caller passed all 11 checks, 0 failed:** the pool found and checked; registration; the app's
+  acceptance with its bond checked on chain; the pre-signed set complete across the PC and the phone
+  (8 payouts and 3 refunds, 2 signers); the FROST co-signature (3 of 4); the incident transaction;
+  the evidence pinned; the deposit returned, the reward paid and the bounty split, all three settled
+  on chain.
+- Found on the way and fixed:
+  - the pool name the app was not given;
+  - an empty log, because the node's progress went to stderr;
+  - "on duty" shown before the node listened;
+  - the responder's 10-minute exit and a new bond on each relaunch (fix in the app pending).
