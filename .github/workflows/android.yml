@@ -1,0 +1,46 @@
+# Builds the M4 test app (signet only): libbitaid_jni.so with cargo-ndk, then a debug APK, kept as
+# an artifact to download on the phone. GitHub's Ubuntu runners carry the Android SDK and NDK.
+name: android
+on:
+  push:
+    branches: [main, "m4-*"]
+    paths: ["android/**", "crates/**", "Cargo.lock", "Cargo.toml", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Rust targets and cargo-ndk
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install cargo-ndk --locked
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ndk-${{ hashFiles('Cargo.lock') }}
+      - name: Native library (Cargo.lock as committed: cc stays at 1.7.0)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          grep -A1 '^name = "cc"' Cargo.lock | grep -q '"1.7.0"'
+          cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build --release --locked -p bitaid-jni
+      - name: Debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bitaid-signet-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
