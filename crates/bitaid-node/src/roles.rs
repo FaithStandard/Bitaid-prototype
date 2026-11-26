@@ -7493,6 +7493,7 @@ fn responder(mut n: Node) -> i32 {
         &bond.to_string()[..12],
         cells.len()
     ));
+    crate::events::emit(crate::events::Event::Listening { node: n.name.clone(), home: home.to_string(), cells: cells.len() });
     let min_bounty = num("--min-bounty", 1u64);
     let delay = num("--accept-delay-ms", 0u64);
     let me = n.me();

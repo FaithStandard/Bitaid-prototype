@@ -6,6 +6,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Event {
     /// a line of the role's log
     Log { node: String, text: String },
@@ -24,6 +25,9 @@ pub enum Event {
     BallotDue { node: String, case: String, seats: usize, my_seat: usize },
     /// the caller's pool is ready: with `--ask-alert` the role waits for RaiseAlert
     ReadyToAlert { node: String },
+    /// the responder has found the pool, posted its bond and now listens for alerts in these cells:
+    /// what an app shows as on duty (before it, the node is still connecting)
+    Listening { node: String, home: String, cells: usize },
 }
 
 static SINK: Mutex<Option<Sender<Event>>> = Mutex::new(None);
