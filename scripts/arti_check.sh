@@ -29,8 +29,8 @@ for i in $(seq 1 $N); do
   REFUSED=$(curl -s -o /dev/null --max-time 20 --socks5-hostname "$ADDR" -w '%{http_code}' "http://$PC:7480/" 2>/dev/null)
   LINE="trial $i mode=arti T1=$T1 T3=- T4=$T4 http=$CODE without_secret=$REFUSED"
   echo "$LINE"; echo "$LINE" >> $OUT
-  # a failed trial keeps Arti's log (no secret in it)
-  [ "$CODE" = 200 ] || cp $LOG $HOME/arti_fail_$i.log
+  # a failed trial (no answer at all; the archive answers / with 404) keeps Arti's log, which has no secret
+  [ "$CODE" = 000 ] && cp $LOG $HOME/arti_fail_$i.log
 done
 pkill -f "$BIN" 2>/dev/null
 tail -n $N $OUT | awk '
