@@ -12,6 +12,25 @@ use bitaid_node::commands::{self, Command};
 use bitaid_node::events::{self, Event};
 use std::collections::HashMap;
 
+/// The app's secret store, as a stand-in: a folder of its own (the real app encrypts under the
+/// Keystore). Installing it shows every secret the role makes goes through the store, none to the
+/// node's own files.
+struct DirStore(std::path::PathBuf);
+impl bitaid_node::secrets::SecretStore for DirStore {
+    fn get(&self, name: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.0.join(name)).ok()
+    }
+    fn put(&self, name: &str, data: &[u8]) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.0)?;
+        std::fs::write(self.0.join(name), data)
+    }
+    fn append(&self, name: &str, line: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        std::fs::create_dir_all(&self.0)?;
+        std::fs::OpenOptions::new().create(true).append(true).open(self.0.join(name))?.write_all(line.as_bytes())
+    }
+}
+
 fn main() {
     // the settings, as the app would hand them over (here from this process's environment, once,
     // before any role thread exists)
@@ -24,6 +43,11 @@ fn main() {
         .split(',')
         .map(|x| x.trim().to_string())
         .collect();
+    let store = settings
+        .get("BITAID_LINK_DIR")
+        .cloned()
+        .unwrap_or_else(|| format!("{}/.bitaid", settings.get("HOME").cloned().unwrap_or(".".into())));
+    bitaid_node::secrets::set_store(std::sync::Arc::new(DirStore(std::path::Path::new(&store).join("app-store"))));
     bitaid_node::config::set(settings);
     let (tx, rx) = std::sync::mpsc::channel();
     events::set_sink(tx);

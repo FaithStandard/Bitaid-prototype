@@ -139,6 +139,8 @@ pub mod relay;
 /// Every role the node runs (caller, responder, pool member, archivist, arbitrator, audit), driven by
 /// its arguments: the binary's whole program, callable from an app (M4).
 pub mod roles;
+/// Where secrets made while running are kept: files, or an app's encrypted store (M4).
+pub mod secrets;
 pub mod settle;
 pub mod wire;
 
