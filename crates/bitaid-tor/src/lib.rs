@@ -323,8 +323,14 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             let _ = w.shutdown().await;
             return Ok(());
         }
-        // a write that cannot drain (the other side stopped reading) is bounded the same way
-        match timeout(idle, w.write_all(&buf[..n])).await {
+        // flushed every time: Arti's DataStream holds written bytes until a flush (or a full
+        // cell), so without it a request never leaves (the first device run, 2026-11-26). A write
+        // that cannot drain (the other side stopped reading) is bounded the same way.
+        let send = async {
+            w.write_all(&buf[..n]).await?;
+            w.flush().await
+        };
+        match timeout(idle, send).await {
             Ok(r) => r?,
             Err(_) => return timed_out("write"),
         }
@@ -704,6 +710,27 @@ mod tests {
         assert_eq!(open.load(Ordering::SeqCst), 0, "an idle stream was kept");
         let mut b = [0u8; 1];
         assert!(matches!(s.read(&mut b).await, Ok(0) | Err(_)));
+    }
+
+    /// A far stream that, like Arti's, sends nothing until flushed.
+    fn buffered() -> Connector {
+        Arc::new(move |host: String, port: u16, _name: String| {
+            Box::pin(async move {
+                let s = TcpStream::connect((host.as_str(), port)).await?;
+                Ok(Box::new(tokio::io::BufWriter::with_capacity(4096, s)) as Box<dyn Stream>)
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn bytes_are_flushed_to_a_buffering_far_side() {
+        let l = serve(buffered()).await.unwrap();
+        let port = echo().await;
+        let mut s = socks(&l, Some(("main", &l.secret)), port).await.unwrap();
+        s.write_all(b"GET / HTTP/1.0\r\n\r\n").await.unwrap();
+        let mut b = [0u8; 18];
+        timeout(Duration::from_secs(3), s.read_exact(&mut b)).await.expect("held in the far side's buffer").unwrap();
+        assert_eq!(&b, b"GET / HTTP/1.0\r\n\r\n");
     }
 
     #[tokio::test]
