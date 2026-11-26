@@ -17,6 +17,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.InputType
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -36,18 +37,26 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * M4 step 3: Minimal Kotlin shell around `bitaid-node` + `bitaid-tor`.
  *
- * - No hardcoded fallback coordinates: responder requires a real GPS fix (or explicit test coords).
- * - Caller SOS requests a fresh GPS fix (10 s timeout), falling back to last-known only if < 5 min
- *   old (with age logged), else raises without a position rather than sending a stale one.
- * - RPC URL (with `user:pass`) is stored in `KeystoreSecretStore`, never plain `SharedPreferences`.
+ * - Masked RPC URL: once stored encrypted in Keystore, never repopulated into a plaintext EditText.
+ * - Live progress line under status while `BOOTSTRAPPING_TOR` / `CONNECTING`.
+ * - Configurable `--pool`, `BITAID_SAT_SCALE`, `BITAID_TIME_SCALE`.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusView: TextView
+    private lateinit var progressView: TextView
     private lateinit var dutySwitch: Switch
     private lateinit var peerEdit: EditText
+    private lateinit var rpcStatusView: TextView
+    private lateinit var rpcReplaceBtn: Button
+    private lateinit var rpcInputRow: LinearLayout
     private lateinit var rpcEdit: EditText
+    private lateinit var rpcShowCheck: CheckBox
+    private lateinit var rpcSaveBtn: Button
     private lateinit var walletEdit: EditText
+    private lateinit var poolEdit: EditText
+    private lateinit var satScaleEdit: EditText
+    private lateinit var timeScaleEdit: EditText
     private lateinit var nameEdit: EditText
     private lateinit var latEdit: EditText
     private lateinit var lonEdit: EditText
@@ -120,9 +129,16 @@ class MainActivity : AppCompatActivity() {
         statusView = TextView(this).apply {
             textSize = 18f
             setTypeface(null, Typeface.BOLD)
+            setPadding(0, 0, 0, 2)
+        }
+        progressView = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.DKGRAY)
             setPadding(0, 0, 0, pad / 2)
+            visibility = View.GONE
         }
         root.addView(statusView)
+        root.addView(progressView)
 
         dutySwitch = Switch(this).apply {
             text = "Responder On Duty (Foreground Service)"
@@ -200,6 +216,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             setOnClickListener {
                 BitaidState.snapshot.alert?.let { a ->
+                    BitaidState.markAcceptedNow()
                     NativeBridge.sendAccept(a.caseId)
                     BitaidState.update { it.copy(alert = null, status = ServiceStatus.ACTIVE_CASE, statusDetail = "Accepted — awaiting verified location") }
                 }
@@ -274,8 +291,63 @@ class MainActivity : AppCompatActivity() {
         root.addView(sectionHeader("Signet Settings"))
         nameEdit = labeledEdit(root, "Node name", "phone1")
         peerEdit = labeledEdit(root, "Core peer (.onion:port)", "")
-        rpcEdit = labeledEdit(root, "Trusted bitcoind RPC (http://user:pass@onion:port — stored encrypted)", "")
+
+        // Masked RPC URL (never repopulated into plaintext once stored)
+        root.addView(TextView(this).apply { text = "Trusted bitcoind RPC (http://user:pass@onion:port)"; textSize = 12f })
+        val rpcStatusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        rpcStatusView = TextView(this).apply { text = "Not set"; textSize = 13f }
+        rpcReplaceBtn = Button(this).apply {
+            text = "Set / Replace"
+            setOnClickListener {
+                rpcEdit.setText("")
+                rpcInputRow.visibility = View.VISIBLE
+            }
+        }
+        rpcStatusRow.addView(rpcStatusView)
+        rpcStatusRow.addView(rpcReplaceBtn)
+        root.addView(rpcStatusRow)
+
+        rpcInputRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        rpcEdit = EditText(this).apply {
+            isSingleLine = true
+            hint = "http://user:pass@....onion:38332"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        rpcShowCheck = CheckBox(this).apply {
+            text = "Show RPC URL"
+            setOnCheckedChangeListener { _, show ->
+                rpcEdit.inputType = if (show) {
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                } else {
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                }
+                rpcEdit.setSelection(rpcEdit.text.length)
+            }
+        }
+        rpcSaveBtn = Button(this).apply {
+            text = "Save RPC (Encrypted)"
+            setOnClickListener {
+                val url = rpcEdit.text.toString().trim()
+                if (url.isNotEmpty()) {
+                    secretStore?.putRpcUrl(url)
+                    rpcEdit.setText("")
+                    rpcInputRow.visibility = View.GONE
+                    refreshRpcStatus()
+                }
+            }
+        }
+        rpcInputRow.addView(rpcEdit)
+        rpcInputRow.addView(rpcShowCheck)
+        rpcInputRow.addView(rpcSaveBtn)
+        root.addView(rpcInputRow)
+
         walletEdit = labeledEdit(root, "RPC wallet", "w")
+        poolEdit = labeledEdit(root, "Pool name (bitaid or tor1)", "bitaid")
+        satScaleEdit = labeledEdit(root, "BITAID_SAT_SCALE (1 for local/custom signet, 100 for anchored)", "1")
+        timeScaleEdit = labeledEdit(root, "BITAID_TIME_SCALE (1 for local/custom signet, 30 for anchored)", "1")
         latEdit = labeledEdit(root, "Override latitude (optional; blank uses GPS)", "")
         lonEdit = labeledEdit(root, "Override longitude (optional; blank uses GPS)", "")
 
@@ -299,19 +371,45 @@ class MainActivity : AppCompatActivity() {
         return ScrollView(this).apply { addView(root) }
     }
 
+    private fun refreshRpcStatus() {
+        try {
+            val stored = secretStore?.getRpcUrl().orEmpty()
+            if (stored.isNotEmpty()) {
+                rpcStatusView.text = "Stored (encrypted)  "
+                rpcReplaceBtn.text = "Replace"
+            } else {
+                rpcStatusView.text = "Not set  "
+                rpcReplaceBtn.text = "Set"
+            }
+        } catch (e: Exception) {
+            rpcStatusView.text = "Unreadable (${e.message})  "
+        }
+    }
+
     private fun render(snap: AppSnapshot) {
         statusView.text = "${snap.status.name}: ${snap.statusDetail}"
         statusView.setTextColor(
             when (snap.status) {
                 ServiceStatus.FAULT -> Color.parseColor("#B71C1C")
                 ServiceStatus.ON_DUTY, ServiceStatus.ACTIVE_CASE, ServiceStatus.CALLER_READY -> Color.parseColor("#1B5E20")
+                ServiceStatus.CONNECTING, ServiceStatus.BOOTSTRAPPING_TOR -> Color.parseColor("#E65100")
                 else -> Color.DKGRAY
             }
         )
 
+        if ((snap.status == ServiceStatus.CONNECTING || snap.status == ServiceStatus.BOOTSTRAPPING_TOR) &&
+            snap.lastProgress.isNotBlank()
+        ) {
+            progressView.visibility = View.VISIBLE
+            progressView.text = snap.lastProgress
+        } else {
+            progressView.visibility = View.GONE
+        }
+
         suppressSwitch = true
         dutySwitch.isChecked = snap.status == ServiceStatus.ON_DUTY ||
             snap.status == ServiceStatus.ACTIVE_CASE ||
+            snap.status == ServiceStatus.CONNECTING ||
             (snap.status == ServiceStatus.BOOTSTRAPPING_TOR && dutySwitch.isChecked)
         suppressSwitch = false
 
@@ -386,6 +484,9 @@ class MainActivity : AppCompatActivity() {
             putExtra(BitaidService.EXTRA_NAME, nameEdit.text.toString().trim().ifEmpty { "phone1" })
             putExtra(BitaidService.EXTRA_PEER, peerEdit.text.toString().trim())
             putExtra(BitaidService.EXTRA_WALLET, walletEdit.text.toString().trim().ifEmpty { "w" })
+            putExtra(BitaidService.EXTRA_POOL, poolEdit.text.toString().trim().ifEmpty { "bitaid" })
+            putExtra(BitaidService.EXTRA_SAT_SCALE, satScaleEdit.text.toString().trim().ifEmpty { "1" })
+            putExtra(BitaidService.EXTRA_TIME_SCALE, timeScaleEdit.text.toString().trim().ifEmpty { "1" })
             if (pos != null) {
                 putExtra(BitaidService.EXTRA_HAS_LOC, true)
                 putExtra(BitaidService.EXTRA_LAT, pos.first)
@@ -408,10 +509,6 @@ class MainActivity : AppCompatActivity() {
         return Pair(la, lo)
     }
 
-    /**
-     * Requests a fresh GPS fix with a 10 s timeout. Only falls back to a last-known fix if it is
-     * under 5 minutes old (logging its age); never silently sends an hours-old position.
-     */
     @Suppress("DEPRECATION")
     private fun requestFreshFix(onDone: (Pair<Double, Double>?) -> Unit) {
         val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -540,15 +637,12 @@ class MainActivity : AppCompatActivity() {
         nameEdit.setText(p.getString("name", "phone1"))
         peerEdit.setText(p.getString("peer", ""))
         walletEdit.setText(p.getString("wallet", "w"))
+        poolEdit.setText(p.getString("pool", "bitaid"))
+        satScaleEdit.setText(p.getString("sat_scale", "1"))
+        timeScaleEdit.setText(p.getString("time_scale", "1"))
         latEdit.setText(p.getString("lat", ""))
         lonEdit.setText(p.getString("lon", ""))
-        try {
-            rpcEdit.setText(secretStore?.getRpcUrl() ?: "")
-        } catch (e: Exception) {
-            BitaidState.update {
-                it.copy(status = ServiceStatus.FAULT, statusDetail = "RPC credentials unreadable: ${e.message}")
-            }
-        }
+        refreshRpcStatus()
     }
 
     private fun savePrefs() {
@@ -556,11 +650,20 @@ class MainActivity : AppCompatActivity() {
             .putString("name", nameEdit.text.toString().trim())
             .putString("peer", peerEdit.text.toString().trim())
             .putString("wallet", walletEdit.text.toString().trim())
+            .putString("pool", poolEdit.text.toString().trim())
+            .putString("sat_scale", satScaleEdit.text.toString().trim())
+            .putString("time_scale", timeScaleEdit.text.toString().trim())
             .putString("lat", latEdit.text.toString().trim())
             .putString("lon", lonEdit.text.toString().trim())
-            .remove("rpc") // never keep RPC credentials in plain SharedPreferences
+            .remove("rpc")
             .apply()
-        secretStore?.putRpcUrl(rpcEdit.text.toString().trim())
+        val typedRpc = rpcEdit.text.toString().trim()
+        if (rpcInputRow.visibility == View.VISIBLE && typedRpc.isNotEmpty()) {
+            secretStore?.putRpcUrl(typedRpc)
+            rpcEdit.setText("")
+            rpcInputRow.visibility = View.GONE
+            refreshRpcStatus()
+        }
     }
 
     companion object {

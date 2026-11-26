@@ -6,6 +6,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 enum class ServiceStatus {
     OFF_DUTY,
     BOOTSTRAPPING_TOR,
+    CONNECTING,
     ON_DUTY,
     CALLER_READY,
     ACTIVE_CASE,
@@ -42,6 +43,7 @@ data class CheckLine(
 data class AppSnapshot(
     val status: ServiceStatus = ServiceStatus.OFF_DUTY,
     val statusDetail: String = "Off duty",
+    val lastProgress: String = "",
     val alert: AlertPrompt? = null,
     val location: VerifiedLocation? = null,
     val ballotDue: BallotPrompt? = null,
@@ -62,6 +64,9 @@ object BitaidState {
     private val listeners = CopyOnWriteArrayList<(AppSnapshot) -> Unit>()
 
     @Volatile
+    private var acceptedAtMs: Long = 0L
+
+    @Volatile
     var snapshot: AppSnapshot = AppSnapshot()
         private set
 
@@ -74,6 +79,10 @@ object BitaidState {
         listeners.remove(l)
     }
 
+    fun markAcceptedNow() {
+        acceptedAtMs = System.currentTimeMillis()
+    }
+
     fun update(transform: (AppSnapshot) -> AppSnapshot) {
         val next = synchronized(lock) {
             snapshot = transform(snapshot)
@@ -82,10 +91,6 @@ object BitaidState {
         for (l in listeners) {
             l(next)
         }
-    }
-
-    fun clearCasePrompts() {
-        update { it.copy(alert = null, location = null, ballotDue = null) }
     }
 
     fun applyNativeEvent(json: String): String {
@@ -98,8 +103,13 @@ object BitaidState {
         update { cur ->
             when (type) {
                 "Log" -> {
-                    val line = "[${obj.optString("node")}] ${obj.optString("text")}"
-                    cur.copy(logs = (cur.logs + line).takeLast(MAX_LOGS))
+                    val node = obj.optString("node")
+                    val text = obj.optString("text")
+                    val line = if (node.isEmpty()) text else "[$node] $text"
+                    cur.copy(
+                        lastProgress = text,
+                        logs = (cur.logs + line).takeLast(MAX_LOGS),
+                    )
                 }
                 "Check" -> {
                     val c = CheckLine(
@@ -134,6 +144,14 @@ object BitaidState {
                         logs = (cur.logs + "[FATAL] $text").takeLast(MAX_LOGS),
                     )
                 }
+                "Listening" -> {
+                    val home = obj.optString("home")
+                    val cells = obj.optInt("cells")
+                    cur.copy(
+                        status = ServiceStatus.ON_DUTY,
+                        statusDetail = "On duty — listening on $cells cells ($home)",
+                    )
+                }
                 "Alert" -> {
                     cur.copy(
                         alert = AlertPrompt(
@@ -146,14 +164,22 @@ object BitaidState {
                     )
                 }
                 "Location" -> {
+                    val dt = if (acceptedAtMs > 0L) {
+                        val s = (System.currentTimeMillis() - acceptedAtMs) / 1000.0
+                        " (%.1f s after accept)".format(s)
+                    } else {
+                        ""
+                    }
+                    val locLine = "[app] Verified location arrived$dt"
                     cur.copy(
                         status = ServiceStatus.ACTIVE_CASE,
-                        statusDetail = "Responding — location verified",
+                        statusDetail = "Responding — location verified$dt",
                         location = VerifiedLocation(
                             caseId = obj.optString("case"),
                             lat = obj.optDouble("lat"),
                             lon = obj.optDouble("lon"),
                         ),
+                        logs = (cur.logs + locLine).takeLast(MAX_LOGS),
                     )
                 }
                 "BallotDue" -> {

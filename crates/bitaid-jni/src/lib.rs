@@ -393,6 +393,7 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_torNetworkChanged(
 }
 
 /// Starts one `bitaid-node` role on a background thread.
+/// Returns `""` on success, or a human-readable refusal reason on failure.
 /// Fail-closed: refuses to start unless `Tor` is running and every `BITAID_RPC` and `--peer`
 /// targets a `.onion` host.
 #[no_mangle]
@@ -402,31 +403,31 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_startRole(
     settings_json: JString,
     args_json: JString,
     listener: JObject,
-) -> jboolean {
+) -> jstring {
     catch_unwind(AssertUnwindSafe(|| {
         if listener.is_null() {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "missing event listener");
         }
         let Some(tor) = TOR.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "Tor is not running");
         };
         let Some(s_json) = get_string(&mut env, &settings_json) else {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "invalid settings JSON");
         };
         let Some(a_json) = get_string(&mut env, &args_json) else {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "invalid args JSON");
         };
         let Ok(mut settings) = serde_json::from_str::<HashMap<String, String>>(&s_json) else {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "malformed settings JSON");
         };
         let Ok(args) = serde_json::from_str::<Vec<String>>(&a_json) else {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "malformed args JSON");
         };
 
         // Fail closed against clearnet leaks: RPC and every peer must be .onion.
         if let Some(rpc) = settings.get("BITAID_RPC") {
             if !rpc.is_empty() && !is_onion_target(rpc) {
-                return JNI_FALSE;
+                return to_jstring(&mut env, "RPC URL must be .onion");
             }
         }
         let mut iter = args.iter();
@@ -434,22 +435,22 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_startRole(
             if a == "--peer" {
                 match iter.next() {
                     Some(p) if is_onion_target(p) => {}
-                    _ => return JNI_FALSE,
+                    _ => return to_jstring(&mut env, "peer address must be .onion"),
                 }
             }
         }
 
         let Ok(vm_events) = env.get_java_vm() else {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "JVM unavailable");
         };
         let Ok(cb_events) = env.new_global_ref(listener) else {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "failed to retain listener");
         };
         if ROLE_RUNNING
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return JNI_FALSE;
+            return to_jstring(&mut env, "role still running");
         }
 
         // Inject the authenticated loopback SOCKS proxy directly in Rust so the secret never
@@ -480,7 +481,7 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_startRole(
         if pump_res.is_err() {
             events::clear_sink();
             ROLE_RUNNING.store(false, Ordering::Release);
-            return JNI_FALSE;
+            return to_jstring(&mut env, "failed to start event thread");
         }
 
         let role_res = std::thread::Builder::new()
@@ -494,11 +495,11 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_startRole(
         if role_res.is_err() {
             events::clear_sink();
             ROLE_RUNNING.store(false, Ordering::Release);
-            return JNI_FALSE;
+            return to_jstring(&mut env, "failed to start role thread");
         }
-        JNI_TRUE
+        to_jstring(&mut env, "")
     }))
-    .unwrap_or(JNI_FALSE)
+    .unwrap_or(std::ptr::null_mut())
 }
 
 #[no_mangle]

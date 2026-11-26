@@ -39,11 +39,12 @@ object NativeBridge {
     external fun setTorDormant(soft: Boolean)
     external fun torNetworkChanged()
 
+    /** Returns `""` on success or a refusal reason on failure. */
     external fun startRole(
         settingsJson: String,
         argsJson: String,
         listener: EventCallback,
-    ): Boolean
+    ): String
 
     external fun sendRaiseAlert(hasLoc: Boolean, lat: Double, lon: Double)
     external fun sendAccept(caseId: String)

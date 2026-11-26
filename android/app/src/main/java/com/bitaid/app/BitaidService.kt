@@ -28,11 +28,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * M4 step 4: Foreground service keeping Arti Tor and the active role alive with screen off.
  *
- * - Declares `specialUse` while on duty (and adds `location` when granted).
- * - Filters `ConnectivityManager.NetworkCallback` by `lastNetworkHandle` (never cleared in
- *   `onLost`) so Wi-Fi -> gap -> cellular triggers `torNetworkChanged()`.
- * - Fails closed on Keystore errors, missing position, or non-.onion targets.
- * - Backs off and halts after repeated quick non-zero exits instead of tight-looping.
+ * - Flips to `ON_DUTY` only on `Event::Listening` (shows `CONNECTING` until then).
+ * - Passes `--exit-after 86400`, `--settle-wait 1800`, `--pool`, `BITAID_SAT_SCALE`, `BITAID_TIME_SCALE`.
+ * - If `startRole` reports `"role still running"`, queues the config and relaunches on `RoleExited`
+ *   instead of reporting a fault.
  */
 class BitaidService : Service() {
 
@@ -47,6 +46,9 @@ class BitaidService : Service() {
     @Volatile
     private var lastNetworkHandle: Long? = null
 
+    @Volatile
+    private var pendingRelaunch: RoleLaunchConfig? = null
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var roleStartedAtMs: Long = 0L
     private var consecutiveQuickFails: Int = 0
@@ -56,6 +58,9 @@ class BitaidService : Service() {
         val nodeName: String,
         val peerOnion: String,
         val wallet: String,
+        val pool: String,
+        val satScale: String,
+        val timeScale: String,
         val lat: Double?,
         val lon: Double?,
     )
@@ -100,6 +105,9 @@ class BitaidService : Service() {
                     nodeName = intent.getStringExtra(EXTRA_NAME) ?: role,
                     peerOnion = intent.getStringExtra(EXTRA_PEER) ?: "",
                     wallet = intent.getStringExtra(EXTRA_WALLET) ?: "w",
+                    pool = intent.getStringExtra(EXTRA_POOL) ?: "bitaid",
+                    satScale = intent.getStringExtra(EXTRA_SAT_SCALE) ?: "1",
+                    timeScale = intent.getStringExtra(EXTRA_TIME_SCALE) ?: "1",
                     lat = if (validLoc) lat else null,
                     lon = if (validLoc) lon else null,
                 )
@@ -111,6 +119,7 @@ class BitaidService : Service() {
             }
             ACTION_STOP -> {
                 wantOnDuty.set(false)
+                pendingRelaunch = null
                 NativeBridge.sendOffDuty()
                 BitaidState.update {
                     it.copy(
@@ -127,6 +136,7 @@ class BitaidService : Service() {
 
     private fun faultAndStop(reason: String) {
         wantOnDuty.set(false)
+        pendingRelaunch = null
         BitaidState.update {
             it.copy(
                 status = ServiceStatus.FAULT,
@@ -185,7 +195,8 @@ class BitaidService : Service() {
             put("BITAID_RPC", rpcUrl)
             put("BITAID_WALLET", cfg.wallet)
             put("BITAID_REPLY_MIN", "900")
-            put("BITAID_TIME_SCALE", "1")
+            put("BITAID_SAT_SCALE", cfg.satScale.ifBlank { "1" })
+            put("BITAID_TIME_SCALE", cfg.timeScale.ifBlank { "1" })
         }
 
         val args = JSONArray().apply {
@@ -193,6 +204,9 @@ class BitaidService : Service() {
             put("--role"); put(cfg.role)
             put("--name"); put(cfg.nodeName)
             put("--secret"); put(identityHex)
+            if (cfg.pool.isNotBlank()) {
+                put("--pool"); put(cfg.pool)
+            }
             if (cfg.peerOnion.isNotBlank()) {
                 put("--peer"); put(cfg.peerOnion)
             }
@@ -200,6 +214,8 @@ class BitaidService : Service() {
                 put("--lat"); put(cfg.lat.toString())
                 put("--lon"); put(cfg.lon.toString())
             }
+            put("--exit-after"); put("86400")
+            put("--settle-wait"); put("1800")
             if (cfg.role == "responder") {
                 put("--ask-accept")
                 put("--ask-vote")
@@ -210,29 +226,37 @@ class BitaidService : Service() {
 
         BitaidState.update {
             it.copy(
-                status = if (cfg.role == "responder") ServiceStatus.ON_DUTY else ServiceStatus.BOOTSTRAPPING_TOR,
-                statusDetail = if (cfg.role == "responder") "On duty — listening for alerts" else "Preparing caller...",
+                status = ServiceStatus.CONNECTING,
+                statusDetail = if (cfg.role == "responder") "Connecting to Core & chain over Tor..." else "Preparing caller...",
             )
         }
-        updateNotification(if (cfg.role == "responder") "On duty — listening for alerts" else "Caller active")
+        updateNotification(if (cfg.role == "responder") "Connecting over Tor..." else "Preparing caller...")
         roleStartedAtMs = System.currentTimeMillis()
 
-        val started = NativeBridge.startRole(
+        val err = NativeBridge.startRole(
             settings.toString(),
             args.toString(),
             object : EventCallback {
                 override fun onEvent(json: String) {
                     val type = BitaidState.applyNativeEvent(json)
                     when (type) {
+                        "Listening" -> updateNotification("On duty — listening for alerts")
                         "Alert" -> postAlertNotification()
                         "Location" -> updateNotification("Responding — location verified")
                         "Fatal" -> {
                             wantOnDuty.set(false)
+                            pendingRelaunch = null
                             updateNotification("Node fault — stopped")
                             releaseWakeLock()
                             stopSelf()
                         }
                         "RoleExited" -> {
+                            val pending = pendingRelaunch
+                            if (pending != null && wantOnDuty.get()) {
+                                pendingRelaunch = null
+                                worker.execute { launchRole(pending) }
+                                return
+                            }
                             val code = try {
                                 JSONObject(json).optInt("code", 1)
                             } catch (_: Exception) {
@@ -260,8 +284,16 @@ class BitaidService : Service() {
                 }
             },
         )
-        if (!started) {
-            faultAndStop("Refused to start role (check Tor and .onion peer/RPC settings)")
+        if (err == "role still running") {
+            // Previous role is still winding down; wait for RoleExited rather than faulting.
+            pendingRelaunch = cfg
+            BitaidState.update {
+                it.copy(status = ServiceStatus.CONNECTING, statusDetail = "Waiting for previous role to finish...")
+            }
+            return
+        }
+        if (err.isNotEmpty()) {
+            faultAndStop("Refused to start role: $err")
         }
     }
 
@@ -275,11 +307,6 @@ class BitaidService : Service() {
         stopSelf()
     }
 
-    /**
-     * Tracks the last seen default `Network.networkHandle` without clearing it in `onLost`, so
-     * Wi-Fi lost -> (gap) -> cellular available still sees `prev != handle` and calls
-     * `torNetworkChanged()`.
-     */
     private fun registerFilteredNetworkCallback() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         connectivityManager = cm
@@ -380,6 +407,7 @@ class BitaidService : Service() {
 
     override fun onDestroy() {
         wantOnDuty.set(false)
+        pendingRelaunch = null
         NativeBridge.sendOffDuty()
         NativeBridge.setTorDormant(true)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
@@ -398,6 +426,9 @@ class BitaidService : Service() {
         const val EXTRA_NAME = "name"
         const val EXTRA_PEER = "peer"
         const val EXTRA_WALLET = "wallet"
+        const val EXTRA_POOL = "pool"
+        const val EXTRA_SAT_SCALE = "sat_scale"
+        const val EXTRA_TIME_SCALE = "time_scale"
         const val EXTRA_HAS_LOC = "has_loc"
         const val EXTRA_LAT = "lat"
         const val EXTRA_LON = "lon"
