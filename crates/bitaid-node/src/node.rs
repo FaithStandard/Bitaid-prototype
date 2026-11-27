@@ -103,7 +103,7 @@ pub struct Node {
     pub name: String,
     pub keys: Keypair,
     pub client: Net,
-    pub rpc: Rpc,
+    pub rpc: std::sync::Arc<Rpc>,
     pub case_keys: HashMap<String, [u8; 32]>,
     /// verified messages not yet asked for
     backlog: VecDeque<(Envelope, Event)>,
@@ -187,6 +187,9 @@ pub struct Node {
     tick_gap: Duration,
     /// A message already taken from the links to see whether more were waiting (see `pull_inner`)
     peeked: Option<(String, Event)>,
+    /// When the archives were last asked for unread cases (in an app, at most once a minute: each
+    /// ask crosses Tor, on the message thread)
+    cases_asked: Option<Instant>,
     /// cases whose messages other traffic never pushes out, with their per-sender counts
     kept: HashMap<String, Kept>,
     pub t0: Instant,
@@ -462,6 +465,10 @@ impl Node {
 
     fn with_net(name: &str, client: Net, rpc: Rpc, keys: Keypair) -> Node {
         let mut n = Self::bare(name, client, rpc, keys);
+        // in an app the chain is read by a thread of its own, never on the message thread
+        if crate::events::attached() {
+            Rpc::follow(&n.rpc);
+        }
         // every node reads the checkpoints: they say which messages each anchor on chain timestamps
         n.client.subscribe("anchors", vec![Filter::kinds(&[kind::ANCHOR])]);
         n
@@ -472,7 +479,7 @@ impl Node {
             name: name.into(),
             keys,
             client,
-            rpc,
+            rpc: std::sync::Arc::new(rpc),
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
             places: HashMap::new(),
@@ -510,6 +517,7 @@ impl Node {
             ticked: Instant::now(),
             tick_gap: Duration::from_secs(1),
             peeked: None,
+            cases_asked: None,
             kept: HashMap::new(),
             t0: Instant::now(),
             last_sent: Instant::now() - Duration::from_secs(10),
@@ -949,6 +957,10 @@ impl Node {
         if self.archives.is_empty() {
             return;
         }
+        if crate::events::attached() && self.cases_asked.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+            return;
+        }
+        self.cases_asked = Some(Instant::now());
         let tip = self.rpc.ledger(|l| l.tip()).unwrap_or(0);
         if tip == self.synced_tip {
             return;

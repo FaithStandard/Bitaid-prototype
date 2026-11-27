@@ -23,6 +23,8 @@ pub struct Rpc {
     /// Bitaid's records as the blocks read so far give them (see `ledger`)
     ledger: Mutex<crate::ledger::Ledger>,
     synced: Mutex<Option<std::time::Instant>>,
+    /// held for the whole of one refresh (`sync_now`), so two never interleave
+    syncing: Mutex<()>,
     /// transactions this node has broadcast and not yet seen confirmed: `mine` waits for them
     sent: Mutex<Vec<Txid>>,
 }
@@ -46,6 +48,7 @@ impl Rpc {
             tip: Mutex::new((0, None)),
             ledger: Mutex::new(Default::default()),
             synced: Mutex::new(None),
+            syncing: Mutex::new(()),
             sent: Mutex::new(vec![]),
         }
     }
@@ -446,8 +449,33 @@ impl Rpc {
     /// Reads the chain up to its tip into the transaction index and the ledger. A reorganisation
     /// (the hash recorded for a block read no longer the chain's) cuts both back to the fork first.
     /// Every node that must agree on the ledger starts from the same height: BITAID_INDEX_FROM.
+    /// Brings the index and the ledger up to the chain. The binary does it here, on the caller's
+    /// thread. In an app (M4) a follower thread does it every 2 s (`follow`), and this returns at
+    /// once: on a phone each read crosses Tor, and a refresh on the message thread held a location
+    /// back 87 s behind one tick (third app run, 2026-11-27).
     pub fn sync(&self) {
-        let mut ix = self.index.lock().unwrap();
+        if crate::events::attached() {
+            return;
+        }
+        self.sync_now();
+    }
+
+    /// A follower thread for an app: keeps the chain read every 2 s while the node lives.
+    pub fn follow(rpc: &std::sync::Arc<Rpc>) {
+        let w = std::sync::Arc::downgrade(rpc);
+        let _ = std::thread::Builder::new().name("bitaid-chain".into()).spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            match w.upgrade() {
+                Some(r) => r.sync_now(),
+                None => break,
+            }
+        });
+    }
+
+    /// One refresh, whoever asks: one at a time, and no lock on the index or the ledger held across
+    /// a call to the chain node, so a reader is never kept waiting on the network.
+    pub fn sync_now(&self) {
+        let _one = self.syncing.lock().unwrap_or_else(|e| e.into_inner());
         // at most every two seconds: a replay asks many times in a row, and over Tor each look costs
         {
             let mut at = self.synced.lock().unwrap();
@@ -457,17 +485,27 @@ impl Rpc {
             *at = Some(std::time::Instant::now());
         }
         let tip = self.height();
-        let mut ledger = self.ledger.lock().unwrap();
-        if ix.0 == 0 {
-            let env = |k: &str| crate::config::var(k).ok().and_then(|v| v.parse::<u32>().ok());
-            ix.0 = env("BITAID_INDEX_FROM")
-                .unwrap_or_else(|| tip.saturating_sub(env("BITAID_INDEX_BACK").unwrap_or(36)))
-                .max(1);
+        {
+            let mut ix = self.index.lock().unwrap();
+            if ix.0 == 0 {
+                let env = |k: &str| crate::config::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+                ix.0 = env("BITAID_INDEX_FROM")
+                    .unwrap_or_else(|| tip.saturating_sub(env("BITAID_INDEX_BACK").unwrap_or(36)))
+                    .max(1);
+            }
         }
         // the last blocks read, newest first, against the chain as it stands (asked afresh: a hash
         // is remembered only once buried)
+        let back: Vec<(u32, String)> = self
+            .ledger
+            .lock()
+            .unwrap()
+            .blocks_back()
+            .take(REORG_DEPTH as usize + 4)
+            .map(|(h, hash)| (*h, hash.clone()))
+            .collect();
         let mut fork = None;
-        for (h, hash) in ledger.blocks_back().take(REORG_DEPTH as usize + 4) {
+        for (h, hash) in &back {
             let now = self
                 .call("getblockhash", json!([h]))
                 .ok()
@@ -480,13 +518,17 @@ impl Rpc {
         }
         if let Some(h) = fork {
             crate::say!("chain reorganised from block {h}: reading it again");
-            ledger.truncate(h);
+            let mut ix = self.index.lock().unwrap();
+            self.ledger.lock().unwrap().truncate(h);
             ix.1.retain(|_, v| v.1 < h);
             ix.0 = h;
             self.memo.lock().unwrap().retain(|k, _| !k.starts_with("bh:") && !k.starts_with("tx:"));
         }
-        while ix.0 <= tip {
-            let h = ix.0;
+        loop {
+            let h = self.index.lock().unwrap().0;
+            if h > tip {
+                break;
+            }
             let Some(bh) = self
                 .call("getblockhash", json!([h]))
                 .ok()
@@ -498,18 +540,20 @@ impl Rpc {
                 Ok(b) => b,
                 // pruned away (or otherwise not kept): nothing of the run's can be in it
                 Err(e) if e.contains("pruned") || e.contains("not found on disk") => {
-                    ix.0 = h + 1;
+                    self.index.lock().unwrap().0 = h + 1;
                     continue;
                 }
                 Err(_) => break,
             };
             let txs = b["tx"].as_array().cloned().unwrap_or_default();
+            // read without a lock; applied under both, in one step
+            let mut ix = self.index.lock().unwrap();
             for t in &txs {
                 if let Some(id) = t["txid"].as_str() {
                     ix.1.insert(id.to_string(), (t["vout"].clone(), h, bh.clone()));
                 }
             }
-            ledger.absorb(h, &bh, &txs);
+            self.ledger.lock().unwrap().absorb(h, &bh, &txs);
             ix.0 = h + 1;
         }
     }
