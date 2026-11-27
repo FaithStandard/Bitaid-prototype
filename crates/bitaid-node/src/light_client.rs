@@ -350,6 +350,7 @@ struct LightState {
 /// anti-omission & unspent-quorum sign gate.
 pub struct CoreLight {
     core_pubkey: String,
+    core_link_id: Mutex<Option<u64>>,
     link: LocalLink,
     keys: Keypair,
     state: Mutex<LightState>,
@@ -377,6 +378,7 @@ impl CoreLight {
         let (h, bh) = headers.tip();
         Ok(Self {
             core_pubkey,
+            core_link_id: Mutex::new(None),
             link,
             keys,
             state: Mutex::new(LightState {
@@ -391,6 +393,35 @@ impl CoreLight {
             }),
             tip_sources: Mutex::new(Vec::new()),
         })
+    }
+
+    pub fn set_core_link(&self, link_id: u64) {
+        *self.core_link_id.lock().unwrap() = Some(link_id);
+    }
+
+    /// Spawns a lightweight background header-sync thread that sends one locator-only `LightAsk`
+    /// every `interval` instead of reading whole blocks over RPC.
+    pub fn follow(light: &std::sync::Arc<CoreLight>, interval: Duration) {
+        let w = std::sync::Arc::downgrade(light);
+        let _ = std::thread::Builder::new()
+            .name("bitaid-light-follow".into())
+            .spawn(move || loop {
+                std::thread::sleep(interval);
+                let Some(cl) = w.upgrade() else {
+                    break;
+                };
+                if cl.is_distrusted() {
+                    break;
+                }
+                let _ = cl.sync_once_at(
+                    vec![],
+                    vec![],
+                    None,
+                    0,
+                    Duration::from_secs(REFRESH_TIMEOUT_SECS),
+                    Self::now_secs(),
+                );
+            });
     }
 
     pub fn core_pubkey(&self) -> &str {
@@ -840,7 +871,13 @@ impl CoreLight {
         let ask_hash = light_ask_hash(&ask);
         let tip_h = self.height();
         let raw = wire::sign(&self.keys, tip_h, ask);
-        let link_id = self.link.send_outbound(&raw)?;
+        let link_id = match *self.core_link_id.lock().unwrap() {
+            Some(id) => {
+                self.link.send_to(id, &raw)?;
+                id
+            }
+            None => self.link.send_outbound(&raw)?,
+        };
 
         let deadline = Instant::now() + timeout;
         loop {
