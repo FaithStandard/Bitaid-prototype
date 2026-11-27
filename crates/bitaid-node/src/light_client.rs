@@ -5,8 +5,10 @@
 //!   signed `LightAnswer` data as `Trust::Credible` as soon as it arrives while proofs check.
 //! - **Verified before signing:** `sign_set` and `Msg::Forfeits` call `sign_gate`, which requires
 //!   every needed transaction and output to be `Trust::Verified` (PoW header chain + Merkle path,
-//!   still on the active chain after any reorg) AND the verified tip to match at least 2 independent
-//!   `TipSource`s (anti-omission check). Any proof failure distrusts the Core and blocks signing.
+//!   still on the active chain after any reorg), the verified tip to match at least 2 independent
+//!   `TipSource`s (anti-omission check, with a single Core refresh on fresh block / brief fork),
+//!   and at least 2 independent `TipSource`s to agree that every required output is unspent.
+//!   Any proof failure permanently distrusts the Core and blocks signing.
 
 use crate::chain::Rpc;
 use crate::gossip::LocalLink;
@@ -24,10 +26,12 @@ use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Minimum number of independent tip sources required to pass the anti-omission sign gate.
+/// Minimum number of independent tip/unspent sources required to pass the sign gate.
 pub const MIN_TIP_SOURCES: usize = 2;
-/// How long an independent tip reading stays fresh before being re-queried.
+/// How long a tip-only reading stays fresh before being re-queried (if still at >= verified tip).
 pub const TIP_FRESH_SECS: u64 = 60;
+/// Timeout for a single refresh `LightAsk` to the Core when a tip source is ahead or forked.
+pub const REFRESH_TIMEOUT_SECS: u64 = 30;
 
 /// Trust level of a chain fact held by a `ChainSource`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,8 +97,9 @@ pub trait ChainSource: Send + Sync {
     /// Verifies that the current tip is cross-checked against independent sources (no omission).
     fn tip_cross_checked(&self) -> Result<(u32, BlockHash), String>;
     /// Gate in front of `sign_set` and `Msg::Forfeits`: requires the Core not to be distrusted,
-    /// tip cross-checked against 2 independent sources, every required tx Merkle-proven on the
-    /// active chain, and every required output proven and unspent.
+    /// tip cross-checked against >= 2 independent sources (with one Core refresh on fresh block),
+    /// every required tx Merkle-proven on the active chain, and every required output proven AND
+    /// confirmed unspent by >= 2 independent sources.
     fn sign_gate(&self, required_txids: &[Txid], required_ops: &[OutPoint]) -> Result<(), String>;
 }
 
@@ -198,56 +203,64 @@ impl ChainSource for Rpc {
     }
 }
 
-/// Independent source of the current chain tip `(height, hash)` for anti-omission cross-checking.
-pub trait TipSource: Send + Sync {
-    /// Stable identifier (e.g. worker pubkey hex or peer label), distinct from the Core's key.
-    fn id(&self) -> &str;
-    fn tip(&self) -> Result<(u32, BlockHash), String>;
+/// Result of querying an independent worker (`TipSource`) for tip + output unspent status.
+#[derive(Clone, Debug)]
+pub struct TipCheck {
+    pub height: u32,
+    pub hash: BlockHash,
+    /// For each requested outpoint, whether this independent source reports it unspent.
+    pub unspent: HashMap<OutPoint, bool>,
 }
 
-/// Queries a specific bonded worker link (`LocalLink` + `link_id`) with an empty-locator `LightAsk`
-/// to obtain its signed tip `(tip_height, tip_hash)`.
+/// Independent source of the current chain tip and output unspent status (§7.2 anti-omission
+/// and anti-spent-output-lie cross-checking).
+pub trait TipSource: Send + Sync {
+    /// Verified x-only public key (hex) of this independent source; checked to differ from the
+    /// Core's pinned key and from every other `TipSource`.
+    fn pubkey(&self) -> &str;
+    fn check(&self, outpoints: &[OutPoint]) -> Result<TipCheck, String>;
+}
+
+/// Queries a specific bonded worker link (`LocalLink` + `link_id`) with `LightAsk { outpoints }`
+/// and verifies that the signed answer comes from the pinned `signer_pubkey`.
 pub struct LinkTipSource {
-    id: String,
+    signer_pubkey: String,
     link: LocalLink,
     link_id: u64,
     keys: Keypair,
-    expected_signer: Option<String>,
     timeout: Duration,
 }
 
 impl LinkTipSource {
     pub fn new(
-        id: String,
+        signer_pubkey: String,
         link: LocalLink,
         link_id: u64,
         keys: Keypair,
-        expected_signer: Option<String>,
         timeout: Duration,
     ) -> Self {
         Self {
-            id,
+            signer_pubkey: signer_pubkey.to_ascii_lowercase(),
             link,
             link_id,
             keys,
-            expected_signer,
             timeout,
         }
     }
 }
 
 impl TipSource for LinkTipSource {
-    fn id(&self) -> &str {
-        &self.id
+    fn pubkey(&self) -> &str {
+        &self.signer_pubkey
     }
 
-    fn tip(&self) -> Result<(u32, BlockHash), String> {
+    fn check(&self, outpoints: &[OutPoint]) -> Result<TipCheck, String> {
         let req_id = hex::encode(rand::random::<[u8; 16]>());
         let ask = Msg::LightAsk {
             id: req_id.clone(),
             locator: vec![],
             txids: vec![],
-            outpoints: vec![],
+            outpoints: outpoints.iter().map(|o| o.to_string()).collect(),
             case_id: None,
             from_height: 0,
         };
@@ -258,32 +271,45 @@ impl TipSource for LinkTipSource {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(format!("tip source {} timed out", self.id));
+                return Err(format!("tip source {} timed out", crate::pre(&self.signer_pubkey, 12)));
             }
             let Some((lid, env)) = self.link.recv_answer(left) else {
-                return Err(format!("tip source {} timed out", self.id));
+                return Err(format!("tip source {} timed out", crate::pre(&self.signer_pubkey, 12)));
             };
             if lid != self.link_id {
                 continue;
             }
-            if let Some(exp) = &self.expected_signer {
-                if env.sender != *exp {
-                    return Err(format!("tip source {} wrong signer {}", self.id, env.sender));
-                }
+            if env.sender.to_ascii_lowercase() != self.signer_pubkey {
+                return Err(format!(
+                    "tip source wrong signer: got {}, expected {}",
+                    crate::pre(&env.sender, 12),
+                    crate::pre(&self.signer_pubkey, 12)
+                ));
             }
             if let Msg::LightAnswer {
                 id,
                 ask_hash: ah,
                 tip_height,
                 tip_hash,
+                outputs,
                 ..
             } = env.msg
             {
                 if id != req_id || ah != ask_hash {
                     continue;
                 }
-                let bh = BlockHash::from_str(&tip_hash).map_err(|e| e.to_string())?;
-                return Ok((tip_height, bh));
+                let hash = BlockHash::from_str(&tip_hash).map_err(|e| e.to_string())?;
+                let mut unspent = HashMap::new();
+                for o in outputs {
+                    if let Ok(op) = OutPoint::from_str(&o.outpoint) {
+                        unspent.insert(op, o.unspent);
+                    }
+                }
+                return Ok(TipCheck {
+                    height: tip_height,
+                    hash,
+                    unspent,
+                });
             }
         }
     }
@@ -319,10 +345,11 @@ struct LightState {
     tip_checks: HashMap<String, (u32, BlockHash, Instant)>,
 }
 
-/// Phone-side light client backed by a `LocalLink` to its Core, a verified `HeaderChain`,
-/// a credible/verified cache, and independent `TipSource`s for the anti-omission sign gate.
+/// Phone-side light client backed by a `LocalLink` to its Core (with pinned `core_pubkey`),
+/// a verified `HeaderChain`, a credible/verified cache, and independent `TipSource`s for the
+/// anti-omission & unspent-quorum sign gate.
 pub struct CoreLight {
-    core_pubkey: Option<String>,
+    core_pubkey: String,
     link: LocalLink,
     keys: Keypair,
     state: Mutex<LightState>,
@@ -330,21 +357,26 @@ pub struct CoreLight {
 }
 
 impl CoreLight {
-    /// Creates a `CoreLight` anchored at `(anchor_height, anchor_header)`.
+    /// Creates a `CoreLight` anchored at `(anchor_height, anchor_header)` with a pinned
+    /// `core_pubkey` (required: answers from any other key are rejected).
     /// On retargeting networks, `anchor_height` must sit on a 2,016-block boundary.
     pub fn new(
         network: Network,
         anchor_height: u32,
         anchor_header: Header,
-        core_pubkey: Option<String>,
+        core_pubkey: String,
         link: LocalLink,
         keys: Keypair,
     ) -> Result<Self, String> {
+        let core_pubkey = core_pubkey.trim().to_ascii_lowercase();
+        if core_pubkey.len() != 64 || hex::decode(&core_pubkey).is_err() {
+            return Err("CoreLight requires a valid 32-byte hex core_pubkey".into());
+        }
         let headers =
             HeaderChain::new(network, anchor_height, anchor_header).map_err(|e| e.to_string())?;
         let (h, bh) = headers.tip();
         Ok(Self {
-            core_pubkey: core_pubkey.map(|k| k.to_ascii_lowercase()),
+            core_pubkey,
             link,
             keys,
             state: Mutex::new(LightState {
@@ -361,6 +393,10 @@ impl CoreLight {
         })
     }
 
+    pub fn core_pubkey(&self) -> &str {
+        &self.core_pubkey
+    }
+
     pub fn add_tip_source(&self, src: Box<dyn TipSource>) {
         self.tip_sources.lock().unwrap().push(src);
     }
@@ -375,6 +411,13 @@ impl CoreLight {
 
     pub fn verified_tip(&self) -> (u32, BlockHash) {
         self.state.lock().unwrap().headers.tip()
+    }
+
+    /// Returns cached `(unspent, spent_by, height, trust)` for an outpoint, if known.
+    pub fn output_status(&self, op: &OutPoint) -> Option<(bool, Option<Txid>, u32, Trust)> {
+        let st = self.state.lock().unwrap();
+        let c = st.outputs.get(op)?;
+        Some((c.unspent, c.spent_by, c.height, c.trust))
     }
 
     /// Builds a Bitcoin block locator (tip, last 10 hashes, then exponentially sparser down to the
@@ -420,13 +463,11 @@ impl CoreLight {
         env: &wire::Envelope,
         raw_len: usize,
     ) -> Result<(), String> {
-        if let Some(ref pk) = self.core_pubkey {
-            if env.sender.to_ascii_lowercase() != *pk {
-                return Err(format!(
-                    "LightAnswer signed by unexpected key {} (expected {pk})",
-                    env.sender
-                ));
-            }
+        if env.sender.to_ascii_lowercase() != self.core_pubkey {
+            return Err(format!(
+                "LightAnswer signed by unexpected key {} (expected {})",
+                env.sender, self.core_pubkey
+            ));
         }
         env.msg.check_light_bounds(raw_len)?;
         let Msg::LightAnswer {
@@ -490,17 +531,23 @@ impl CoreLight {
                 .and_then(|c| c.tx.output.get(op.vout as usize).cloned());
             let spent_by = o.spent_by.as_deref().and_then(|s| Txid::from_str(s).ok());
             let bh = st.txs.get(&op.txid).map(|c| c.block_hash);
-            st.outputs.insert(
-                op,
-                CachedOutput {
-                    txout,
-                    unspent: o.unspent,
-                    spent_by,
-                    height: o.height,
-                    block_hash: bh,
-                    trust: Trust::Credible,
-                },
-            );
+            let keep_verified = st
+                .outputs
+                .get(&op)
+                .is_some_and(|c| c.trust == Trust::Verified && c.unspent == o.unspent);
+            if !keep_verified {
+                st.outputs.insert(
+                    op,
+                    CachedOutput {
+                        txout,
+                        unspent: o.unspent,
+                        spent_by,
+                        height: o.height,
+                        block_hash: bh,
+                        trust: Trust::Credible,
+                    },
+                );
+            }
         }
 
         for r in records {
@@ -531,7 +578,7 @@ impl CoreLight {
 
     /// Stage 2 (Verified): cryptographically verifies headers (PoW, MTP, 2h bound, retargets,
     /// reorg work), evicts any orphaned cache entries on reorg, and verifies every tx, output, and
-    /// record Merkle proof against `HeaderChain`. Any failure distrusts the Core.
+    /// record Merkle proof against `HeaderChain`. Any failure permanently distrusts the Core.
     pub fn verify_answer_at(
         &self,
         expected_ask_hash: &str,
@@ -539,10 +586,8 @@ impl CoreLight {
         raw_len: usize,
         now_secs: u32,
     ) -> Result<(), String> {
-        if let Some(ref pk) = self.core_pubkey {
-            if env.sender.to_ascii_lowercase() != *pk {
-                return Err(format!("LightAnswer signed by unexpected key {}", env.sender));
-            }
+        if env.sender.to_ascii_lowercase() != self.core_pubkey {
+            return Err(format!("LightAnswer signed by unexpected key {}", env.sender));
         }
         env.msg.check_light_bounds(raw_len)?;
         let Msg::LightAnswer {
@@ -651,10 +696,7 @@ impl CoreLight {
                         format!("outpoint {op} vout out of range for proven tx"),
                     ));
                 }
-                None if !o.unspent && o.height == 0 => {
-                    // Non-existent / never-confirmed output: no creating tx exists on chain.
-                    (None, None, 0)
-                }
+                None if !o.unspent && o.height == 0 => (None, None, 0),
                 None => {
                     return Err(Self::mark_distrusted(
                         &mut st,
@@ -826,10 +868,26 @@ impl CoreLight {
         }
     }
 
-    /// Queries independent `TipSource`s and checks that at least `MIN_TIP_SOURCES` (2) distinct
-    /// sources (none matching `core_pubkey`) agree exactly on our verified `(tip_height, tip_hash)`,
-    /// and that no independent source reports a higher height or a conflicting hash.
-    pub fn check_tip_sources(&self) -> Result<(u32, BlockHash), String> {
+    /// Queries independent `TipSource`s (distinct verified keys, none equal to `core_pubkey`) for
+    /// tip agreement and — when `outpoints` is non-empty — independent unspent confirmation (§7.2).
+    ///
+    /// Survives a fresh block or brief two-way race: if any independent source is ahead or has a
+    /// different hash at our verified tip height, refreshes from the Core ONCE and re-checks.
+    /// Fails only if the Core is still behind or still disagrees after that refresh.
+    pub fn check_tip_and_unspent_at(
+        &self,
+        outpoints: &[OutPoint],
+        now_secs: u32,
+    ) -> Result<(u32, BlockHash), String> {
+        self.check_tip_and_unspent_inner(outpoints, true, now_secs)
+    }
+
+    fn check_tip_and_unspent_inner(
+        &self,
+        outpoints: &[OutPoint],
+        allow_refresh: bool,
+        now_secs: u32,
+    ) -> Result<(u32, BlockHash), String> {
         let (v_h, v_hash) = {
             let st = self.state.lock().unwrap();
             if st.distrusted {
@@ -842,82 +900,169 @@ impl CoreLight {
         };
 
         let sources = self.tip_sources.lock().unwrap();
-        let mut agreed: HashSet<String> = HashSet::new();
+        let mut seen_keys: HashSet<String> = HashSet::new();
+        let mut agreed_tip: HashSet<String> = HashSet::new();
+        let mut unspent_votes: HashMap<OutPoint, HashSet<String>> = HashMap::new();
         let mut errors: Vec<String> = Vec::new();
+        let mut needs_refresh: Option<String> = None;
         let now = Instant::now();
 
         for src in sources.iter() {
-            let sid = src.id().to_ascii_lowercase();
-            if self.core_pubkey.as_deref() == Some(sid.as_str()) {
+            let pk = src.pubkey().trim().to_ascii_lowercase();
+            if pk.is_empty() || pk == self.core_pubkey || !seen_keys.insert(pk.clone()) {
                 continue;
             }
-            let reading = {
+            // Tip-only calls may reuse a cached reading ONLY if it is fresh AND at >= v_h
+            // (a cached reading below a newer verified tip is refetched, not treated as lagging).
+            let cached_tip = if outpoints.is_empty() {
                 let st = self.state.lock().unwrap();
                 st.tip_checks
-                    .get(&sid)
-                    .filter(|(_, _, at)| now.saturating_duration_since(*at) < Duration::from_secs(TIP_FRESH_SECS))
+                    .get(&pk)
+                    .filter(|(h, _, at)| {
+                        *h >= v_h
+                            && now.saturating_duration_since(*at)
+                                < Duration::from_secs(TIP_FRESH_SECS)
+                    })
                     .map(|(h, bh, _)| (*h, *bh))
+            } else {
+                None
             };
-            let (sh, sbh) = match reading {
-                Some(r) => r,
-                None => match src.tip() {
-                    Ok(r) => {
+
+            let check = match cached_tip {
+                Some((height, hash)) => TipCheck {
+                    height,
+                    hash,
+                    unspent: HashMap::new(),
+                },
+                None => match src.check(outpoints) {
+                    Ok(c) => {
                         self.state
                             .lock()
                             .unwrap()
                             .tip_checks
-                            .insert(sid.clone(), (r.0, r.1, now));
-                        r
+                            .insert(pk.clone(), (c.height, c.hash, now));
+                        c
                     }
                     Err(e) => {
-                        errors.push(format!("{sid}: {e}"));
+                        errors.push(format!("{}: {e}", crate::pre(&pk, 12)));
                         continue;
                     }
                 },
             };
 
-            if sh > v_h {
-                let msg = format!(
-                    "tip cross-check FAILED: independent source {sid} is ahead at {sh} ({sbh}), Core at {v_h} ({v_hash}) — possible omission"
-                );
-                crate::say!("FAIL: {msg}");
-                return Err(msg);
+            if check.height > v_h {
+                needs_refresh = Some(format!(
+                    "independent source {} is ahead at {} ({}), Core at {v_h} ({v_hash})",
+                    crate::pre(&pk, 12),
+                    check.height,
+                    check.hash
+                ));
+                break;
             }
-            if sh == v_h && sbh != v_hash {
-                let msg = format!(
-                    "tip cross-check FAILED: independent source {sid} disagrees at height {v_h}: {sbh} vs Core {v_hash}"
-                );
-                crate::say!("FAIL: {msg}");
-                return Err(msg);
+            if check.height == v_h && check.hash != v_hash {
+                needs_refresh = Some(format!(
+                    "independent source {} disagrees at height {v_h}: {} vs Core {v_hash}",
+                    crate::pre(&pk, 12),
+                    check.hash
+                ));
+                break;
             }
-            if sh == v_h && sbh == v_hash {
-                agreed.insert(sid);
+            if check.height == v_h && check.hash == v_hash {
+                agreed_tip.insert(pk.clone());
+                for op in outpoints {
+                    match check.unspent.get(op) {
+                        Some(&true) => {
+                            unspent_votes.entry(*op).or_default().insert(pk.clone());
+                        }
+                        Some(&false) => {
+                            let msg = format!(
+                                "sign gate FAILED: independent source {} reports output {op} SPENT",
+                                crate::pre(&pk, 12)
+                            );
+                            crate::say!("FAIL: {msg}");
+                            return Err(msg);
+                        }
+                        None => {
+                            errors.push(format!(
+                                "{}: omitted status for {op}",
+                                crate::pre(&pk, 12)
+                            ));
+                        }
+                    }
+                }
             } else {
-                // Source is behind; check it is at least on our chain, but do not count it as
-                // confirming our tip is latest.
                 let st = self.state.lock().unwrap();
-                if st.headers.hash_at(sh).is_some_and(|h| h != sbh) {
+                if st.headers.hash_at(check.height).is_some_and(|h| h != check.hash) {
                     let msg = format!(
-                        "tip cross-check FAILED: independent source {sid} forks at {sh}: {sbh}"
+                        "tip cross-check FAILED: independent source {} forks at {}: {}",
+                        crate::pre(&pk, 12),
+                        check.height,
+                        check.hash
                     );
                     crate::say!("FAIL: {msg}");
                     return Err(msg);
                 }
-                errors.push(format!("{sid}: lagging at {sh} < {v_h}"));
+                errors.push(format!(
+                    "{}: lagging at {} < {v_h}",
+                    crate::pre(&pk, 12),
+                    check.height
+                ));
             }
         }
+        drop(sources);
 
-        if agreed.len() < MIN_TIP_SOURCES {
+        if let Some(reason) = needs_refresh {
+            if allow_refresh {
+                let op_strs: Vec<String> = outpoints.iter().map(|o| o.to_string()).collect();
+                if let Err(e) = self.sync_once_at(
+                    vec![],
+                    op_strs,
+                    None,
+                    0,
+                    Duration::from_secs(REFRESH_TIMEOUT_SECS),
+                    now_secs,
+                ) {
+                    let msg = format!("tip cross-check FAILED ({reason}); Core refresh failed: {e}");
+                    crate::say!("FAIL: {msg}");
+                    return Err(msg);
+                }
+                return self.check_tip_and_unspent_inner(outpoints, false, now_secs);
+            }
+            let msg = format!("tip cross-check FAILED after refresh: {reason}");
+            crate::say!("FAIL: {msg}");
+            return Err(msg);
+        }
+
+        if agreed_tip.len() < MIN_TIP_SOURCES {
             let msg = format!(
                 "tip cross-check incomplete: {}/{} independent sources agree on ({v_h}, {v_hash}) [{}]",
-                agreed.len(),
+                agreed_tip.len(),
                 MIN_TIP_SOURCES,
                 errors.join("; ")
             );
             crate::say!("FAIL: {msg}");
             return Err(msg);
         }
+
+        for op in outpoints {
+            let votes = unspent_votes.get(op).map(|s| s.len()).unwrap_or(0);
+            if votes < MIN_TIP_SOURCES {
+                let msg = format!(
+                    "sign gate FAILED: only {votes}/{MIN_TIP_SOURCES} independent sources confirm {op} unspent"
+                );
+                crate::say!("FAIL: {msg}");
+                return Err(msg);
+            }
+        }
+
         Ok((v_h, v_hash))
+    }
+
+    fn now_secs() -> u32 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32
     }
 }
 
@@ -1085,12 +1230,14 @@ impl ChainSource for CoreLight {
     }
 
     fn tip_cross_checked(&self) -> Result<(u32, BlockHash), String> {
-        self.check_tip_sources()
+        self.check_tip_and_unspent_at(&[], Self::now_secs())
     }
 
     fn sign_gate(&self, required_txids: &[Txid], required_ops: &[OutPoint]) -> Result<(), String> {
-        // 1. Anti-omission: verified tip must match >= 2 independent sources.
-        self.tip_cross_checked()?;
+        // 1. Anti-omission + independent unspent quorum: >= 2 independent sources agree on tip
+        //    (refreshing from Core once if a fresh block landed) AND confirm every required output
+        //    is unspent.
+        self.check_tip_and_unspent_at(required_ops, Self::now_secs())?;
         // 2. Every required transaction must be Merkle-proven on the active HeaderChain.
         for txid in required_txids {
             self.verified_confirmations(txid)?;
@@ -1291,26 +1438,43 @@ mod tests {
         }
     }
 
-    struct StaticTip {
-        id: String,
-        tip: Mutex<(u32, BlockHash)>,
+    struct StaticSource {
+        pubkey: String,
+        state: Mutex<(u32, BlockHash, HashMap<OutPoint, bool>)>,
     }
 
-    impl TipSource for StaticTip {
-        fn id(&self) -> &str {
-            &self.id
+    impl TipSource for StaticSource {
+        fn pubkey(&self) -> &str {
+            &self.pubkey
         }
-        fn tip(&self) -> Result<(u32, BlockHash), String> {
-            Ok(*self.tip.lock().unwrap())
+        fn check(&self, outpoints: &[OutPoint]) -> Result<TipCheck, String> {
+            let g = self.state.lock().unwrap();
+            let mut unspent = HashMap::new();
+            for op in outpoints {
+                if let Some(&u) = g.2.get(op) {
+                    unspent.insert(*op, u);
+                }
+            }
+            Ok(TipCheck {
+                height: g.0,
+                hash: g.1,
+                unspent,
+            })
         }
     }
 
     #[test]
-    fn credible_verified_sign_gate_omission_and_reorg_eviction() {
+    fn credible_verified_sign_gate_unspent_quorum_fresh_block_and_reorg() {
         let secp = Secp256k1::new();
         let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
         let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
-        let core_pk_hex = hex::encode(core_kp.x_only_public_key().0.serialize());
+        let w1_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let w2_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let w3_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+        let w1_pk = hex::encode(w1_kp.x_only_public_key().0.serialize());
+        let w2_pk = hex::encode(w2_kp.x_only_public_key().0.serialize());
+        let w3_pk = hex::encode(w3_kp.x_only_public_key().0.serialize());
 
         let base_time = 1_700_000_000u32;
         let gen_tx = make_tx(0, vec![]);
@@ -1330,7 +1494,7 @@ mod tests {
             txid: fund_txid,
             vout: 0,
         };
-        let (_h1, _, _h1_hash) = chain.push(vec![fund_tx], base_time + 60);
+        let (_h1, _, _) = chain.push(vec![fund_tx], base_time + 60);
 
         let tx_to_orphan = make_tx(2, vec![]);
         let orphan_txid = tx_to_orphan.compute_txid();
@@ -1338,23 +1502,34 @@ mod tests {
         assert_eq!(h2, 2);
         chain.unspent.lock().unwrap().insert(fund_op, 2);
 
+        // Live Core responder thread so fresh-block refresh actually round-trips over LocalLink!
         let core_g = Gossip::start(Some("127.0.0.1:0"), &[], None).unwrap();
         let addr = core_g.listen_addr().unwrap().to_string();
         let phone_g = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
         assert_eq!(core_g.wait_links(1, Duration::from_secs(5)), 1);
         assert_eq!(phone_g.wait_links(1, Duration::from_secs(5)), 1);
 
+        let core_link = core_g.local_link();
+        let chain_srv = chain.clone();
+        std::thread::spawn(move || loop {
+            if let Some((lid, env)) = core_link.recv_ask(Duration::from_secs(5)) {
+                if let Ok((_, signed)) = answer_ask(&*chain_srv, &core_kp, &env.msg) {
+                    let _ = core_link.send_to(lid, &signed);
+                }
+            }
+        });
+
         let light = CoreLight::new(
             Network::Regtest,
             0,
             genesis,
-            Some(core_pk_hex.clone()),
+            core_pk.clone(),
             phone_g.local_link(),
             phone_kp,
         )
         .unwrap();
 
-        // Build an answer from the Core and test Stage 1 (Credible) vs Stage 2 (Verified).
+        // Stage 1 (Credible) vs Stage 2 (Verified).
         let ask = Msg::LightAsk {
             id: "aa".repeat(16),
             locator: light.build_locator(),
@@ -1364,103 +1539,124 @@ mod tests {
             from_height: 0,
         };
         let ask_hash = light_ask_hash(&ask);
-        let (_ans, signed) = answer_ask(&*chain, &core_kp, &ask).unwrap();
+        let (_, signed) = answer_ask(&*chain, &core_kp, &ask).unwrap();
         let env = wire::verify(&signed).unwrap();
 
-        // Stage 1: Credible only -> fast reads work, sign_gate REFUSES.
         light.ingest_credible(&ask_hash, &env, signed.len()).unwrap();
-        let cred_u = light.utxo(&fund_op).unwrap();
-        assert_eq!(cred_u.trust, Trust::Credible);
-        assert_eq!(cred_u.value.value.to_sat(), 300_000);
+        assert_eq!(light.utxo(&fund_op).unwrap().trust, Trust::Credible);
+        assert_eq!(light.output_status(&fund_op).unwrap().3, Trust::Credible);
         assert!(light.verified_utxo(&fund_op).is_err());
         assert!(light.sign_gate(&[fund_txid], &[fund_op]).is_err());
 
-        // Stage 2: Verify proofs -> utxo & tx become Verified, still blocked without 2 tip sources.
         light
             .verify_answer_at(&ask_hash, &env, signed.len(), base_time + 300)
             .unwrap();
         assert_eq!(light.utxo(&fund_op).unwrap().trust, Trust::Verified);
         assert_eq!(light.verified_utxo(&fund_op).unwrap().script_pubkey, bond_spk);
-        assert_eq!(light.verified_confirmations(&fund_txid).unwrap(), 2);
-        assert_eq!(light.verified_confirmations(&orphan_txid).unwrap(), 1);
-        assert!(
-            light.sign_gate(&[fund_txid], &[fund_op]).is_err(),
-            "0 tip sources must block signing"
-        );
-
-        // Add 1 independent source (still < 2) -> still blocked.
-        light.add_tip_source(Box::new(StaticTip {
-            id: "worker-1".into(),
-            tip: Mutex::new((h2, h2_hash)),
-        }));
-        assert!(
-            light.sign_gate(&[fund_txid], &[fund_op]).is_err(),
-            "1 tip source must block signing"
-        );
-
-        // Add Core's own key as a fake second source -> ignored, still blocked.
-        light.add_tip_source(Box::new(StaticTip {
-            id: core_pk_hex,
-            tip: Mutex::new((h2, h2_hash)),
-        }));
         assert!(light.sign_gate(&[fund_txid], &[fund_op]).is_err());
 
-        // Add genuine 2nd independent source agreeing on tip -> sign_gate PASSES!
-        light.add_tip_source(Box::new(StaticTip {
-            id: "worker-2".into(),
-            tip: Mutex::new((h2, h2_hash)),
-        }));
-        light.sign_gate(&[fund_txid, orphan_txid], &[fund_op]).unwrap();
-
-        // Add a 3rd source reporting a higher height (Core omission!) -> sign_gate BLOCKS!
-        light.add_tip_source(Box::new(StaticTip {
-            id: "worker-3".into(),
-            tip: Mutex::new((h2 + 1, BlockHash::all_zeros())),
-        }));
+        // Add 2 independent sources agreeing on tip AND unspent status (plus Core's own key ignored).
+        let mut unspent_map = HashMap::new();
+        unspent_map.insert(fund_op, true);
+        let s1 = Arc::new(StaticSource {
+            pubkey: w1_pk,
+            state: Mutex::new((h2, h2_hash, unspent_map.clone())),
+        });
+        let s2 = Arc::new(StaticSource {
+            pubkey: w2_pk,
+            state: Mutex::new((h2, h2_hash, unspent_map.clone())),
+        });
+        let fake_core_src = StaticSource {
+            pubkey: core_pk,
+            state: Mutex::new((h2, h2_hash, unspent_map.clone())),
+        };
+        struct ArcSrc(Arc<StaticSource>);
+        impl TipSource for ArcSrc {
+            fn pubkey(&self) -> &str {
+                self.0.pubkey()
+            }
+            fn check(&self, ops: &[OutPoint]) -> Result<TipCheck, String> {
+                self.0.check(ops)
+            }
+        }
+        light.add_tip_source(Box::new(ArcSrc(s1.clone())));
+        light.add_tip_source(Box::new(fake_core_src));
         assert!(
             light.sign_gate(&[fund_txid], &[fund_op]).is_err(),
-            "independent source ahead of Core must block signing"
+            "Core's own key must not count as a 2nd independent source"
+        );
+        light.add_tip_source(Box::new(ArcSrc(s2.clone())));
+        light
+            .check_tip_and_unspent_at(&[fund_op], base_time + 300)
+            .unwrap();
+
+        // Compromised Core still says unspent, but 1 independent source says SPENT -> BLOCKED!
+        s2.state.lock().unwrap().2.insert(fund_op, false);
+        assert!(
+            light
+                .check_tip_and_unspent_at(&[fund_op], base_time + 300)
+                .is_err(),
+            "independent source reporting SPENT must block sign_gate"
+        );
+        s2.state.lock().unwrap().2.insert(fund_op, true);
+
+        // Fresh block lands (height 3) between Core's last answer and the tip sources:
+        // Tip sources are at height 3 while phone is at height 2 -> triggers 1 Core refresh -> PASSES!
+        let (h3, _, h3_hash) = chain.push(vec![make_tx(3, vec![])], base_time + 180);
+        assert_eq!(h3, 3);
+        *s1.state.lock().unwrap() = (h3, h3_hash, unspent_map.clone());
+        *s2.state.lock().unwrap() = (h3, h3_hash, unspent_map.clone());
+        let (checked_h, checked_bh) = light
+            .check_tip_and_unspent_at(&[fund_op], base_time + 360)
+            .expect("fresh block must survive via single Core refresh");
+        assert_eq!((checked_h, checked_bh), (h3, h3_hash));
+        assert!(!light.is_distrusted());
+
+        // True Core omission: a 3rd source is ahead at height 4 that Core does NOT have -> BLOCKS
+        // after refresh, without permanently distrusting the Core.
+        light.add_tip_source(Box::new(StaticSource {
+            pubkey: w3_pk,
+            state: Mutex::new((h3 + 1, BlockHash::all_zeros(), unspent_map)),
+        }));
+        assert!(light
+            .check_tip_and_unspent_at(&[fund_op], base_time + 400)
+            .is_err());
+        assert!(
+            !light.is_distrusted(),
+            "omission / ahead source must block signing without permanently distrusting Core"
         );
 
-        // Now test reorg eviction: Core reorgs from height 2, dropping `orphan_txid`.
+        // Reorg eviction: Core reorgs from height 2, dropping `orphan_txid`.
         chain.reorg_from(
             2,
             vec![
                 (vec![make_tx(10, vec![])], base_time + 130),
                 (vec![make_tx(11, vec![])], base_time + 190),
+                (vec![make_tx(12, vec![])], base_time + 250),
             ],
         );
-        let ask2 = Msg::LightAsk {
-            id: "bb".repeat(16),
-            locator: light.build_locator(),
-            txids: vec![],
-            outpoints: vec![],
-            case_id: None,
-            from_height: 0,
-        };
-        let ask2_hash = light_ask_hash(&ask2);
-        let (_, signed2) = answer_ask(&*chain, &core_kp, &ask2).unwrap();
-        let env2 = wire::verify(&signed2).unwrap();
         light
-            .apply_answer_at(&ask2_hash, &env2, signed2.len(), base_time + 400)
+            .sync_once_at(
+                vec![],
+                vec![],
+                None,
+                0,
+                Duration::from_secs(5),
+                base_time + 420,
+            )
             .unwrap();
-        assert_eq!(light.verified_tip().0, 3);
-        assert!(
-            light.verified_confirmations(&orphan_txid).is_err(),
-            "orphaned tx must be evicted on reorg"
-        );
-        assert_eq!(
-            light.verified_confirmations(&fund_txid).unwrap(),
-            3,
-            "tx before fork stays verified"
-        );
+        assert_eq!(light.verified_tip().0, 4);
+        assert!(light.verified_confirmations(&orphan_txid).is_err());
+        assert_eq!(light.verified_confirmations(&fund_txid).unwrap(), 4);
     }
 
     #[test]
-    fn bad_merkle_proof_distrusts_core_permanently() {
+    fn bad_merkle_proof_distrusts_core_permanently_and_wrong_signer_rejected() {
         let secp = Secp256k1::new();
         let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let wrong_kp = Keypair::new(&secp, &mut rand::thread_rng());
         let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
 
         let base_time = 1_700_000_000u32;
         let gen_tx = make_tx(0, vec![]);
@@ -1475,7 +1671,7 @@ mod tests {
             Network::Regtest,
             0,
             genesis,
-            None,
+            core_pk,
             g.local_link(),
             phone_kp,
         )
@@ -1492,7 +1688,15 @@ mod tests {
         let ask_hash = light_ask_hash(&ask);
         let (mut ans, _) = answer_ask(&*chain, &core_kp, &ask).unwrap();
 
-        // Corrupt the Merkle path and re-sign with the Core's key (compromised Core).
+        // Answer signed by wrong key is rejected without distrusting the real Core.
+        let wrong_signed = wire::sign(&wrong_kp, 1, ans.clone());
+        let wrong_env = wire::verify(&wrong_signed).unwrap();
+        assert!(light
+            .apply_answer_at(&ask_hash, &wrong_env, wrong_signed.len(), base_time + 120)
+            .is_err());
+        assert!(!light.is_distrusted());
+
+        // Corrupt the Merkle path and sign with the real Core's key -> permanent distrust.
         if let Msg::LightAnswer { ref mut txs, .. } = ans {
             txs[0].merkle_path = vec![0xde, 0xad, 0xbe, 0xef];
         }
