@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Bitaid: the split cross, void centre, in white inside the orange shield (design canvas "Bitaid mark variants", board "Final"). 108 dp adaptive canvas; the shield sits in the 66 dp safe zone. -->
+<!-- Bitaid: the split cross, void centre, in white inside the orange shield (design canvas "Bitaid mark variants", board "Final"). 108 dp adaptive canvas; the shield sits a little past the 66 dp safe zone, still inside the circle crop. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:translateX="21"
-        android:translateY="21"
-        android:scaleX="1.375"
-        android:scaleY="1.375">
+        android:translateX="19.2"
+        android:translateY="19.2"
+        android:scaleX="1.45"
+        android:scaleY="1.45">
         <path
             android:fillColor="#F7931A"
             android:pathData="M24,2l18,6v14c0,12 -8,20 -18,24C14,42 6,34 6,22V8z" />
