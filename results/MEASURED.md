@@ -165,3 +165,18 @@ the position the app was set to.
   - an empty log, because the node's progress went to stderr;
   - "on duty" shown before the node listened;
   - the responder's 10-minute exit and a new bond on each relaunch (fix in the app pending).
+
+## The app's location after accepting: 226 s → 0.6 s (2026-11-27)
+
+The same end-to-end test (`PC_20_APP_RUN.bat`, then `PC_21_APP_ALERT.bat`) was run four times on the Redmi. The exact location always reached the phone's link about 0.6 s after accepting; what changed between runs was when the node read it:
+
+| APK | Location read after accepting | Pre-signed set | Cause found and fixed |
+| --- | --- | --- | --- |
+| `628ea73` (26 Nov) | 228.8 s | 90.9 s | the node's progress was invisible on Android (`say!`) |
+| `5b45d46` | 226.4 s | 110.5 s | a tick (chain refresh over Tor, 12–24 s) after every message: `drain-first` |
+| `3fb9c44` | 105.8 s | 1.23 s | one 87 s tick on the message thread: `chain-follower` |
+| `af254ad` | **0.6 s** (the app: 2.1 s from the tap) | **1.20 s** | — |
+
+The fix (`chain-follower`): in an app the chain is read by a thread of its own every 2 s, without holding a lock across a call to the chain node, and the archives are asked at most once a minute. On a phone each chain call crosses Tor, so the message thread must never wait on one. The local suites did not show any of this: there a chain call takes milliseconds.
+
+The last run passed all 9 checks on the phone (the shares, 900,000 sats, arrived at its payout address). One `no message read for 34.1 s` remained, after the evidence step, while the role was busy; it does not touch the response.

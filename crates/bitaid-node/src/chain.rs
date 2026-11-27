@@ -463,12 +463,13 @@ impl Rpc {
     /// A follower thread for an app: keeps the chain read every 2 s while the node lives.
     pub fn follow(rpc: &std::sync::Arc<Rpc>) {
         let w = std::sync::Arc::downgrade(rpc);
+        // read at once, then every 2 s (Neon: the first read waited 2 s at start)
         let _ = std::thread::Builder::new().name("bitaid-chain".into()).spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(2));
             match w.upgrade() {
                 Some(r) => r.sync_now(),
                 None => break,
             }
+            std::thread::sleep(std::time::Duration::from_secs(2));
         });
     }
 
