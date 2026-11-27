@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- dark grey, as Bitcoin themes use -->
-    <color name="ic_launcher_background">#19191C</color>
+    <!-- the warm off-white of the Bitaid logo panels -->
+    <color name="ic_launcher_background">#F5F4F1</color>
 </resources>
