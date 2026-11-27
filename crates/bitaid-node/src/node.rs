@@ -43,6 +43,12 @@ impl Net {
             Net::Relays(c) => c.relay_count(),
         }
     }
+    pub fn local_link(&self) -> Option<crate::gossip::LocalLink> {
+        match self {
+            Net::Gossip(g) => Some(g.local_link()),
+            Net::Relays(_) => None,
+        }
+    }
 }
 
 /// Bounds on what a hostile peer can make a node hold (see `gossip` for the link-level limits).

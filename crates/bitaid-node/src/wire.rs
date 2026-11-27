@@ -553,6 +553,192 @@ pub enum Msg {
         pot: u8,
         share: String,
     },
+    /// Light client (§7.2, `design/phone_light.md`) asking its Core (or a sampled bonded worker)
+    /// for new headers, proven transactions, output spend status, and a case's on-chain records
+    /// in one exchange. Carried link-locally (never flooded or stored in gossip replay logs).
+    LightAsk {
+        id: Hex32,
+        /// Block locator (newest-first block hashes known to the requester: tip, last 10, then
+        /// exponentially sparser). Empty means no headers requested.
+        locator: Vec<Hex32>,
+        txids: Vec<Hex32>,
+        outpoints: Vec<String>,
+        case_id: Option<Hex32>,
+        from_height: u32,
+    },
+    /// Signed answer to `LightAsk` (§7.2): carries new 80-byte headers, Merkle-proven transactions,
+    /// output status, and case records. `ask_hash` binds the answer to the exact question, and
+    /// `covers` lists the typed IDs of everything the answer claims is the complete set (empty
+    /// included), so a later proof of omission convicts the sender.
+    LightAnswer {
+        id: Hex32,
+        ask_hash: Hex32,
+        tip_height: u32,
+        tip_hash: Hex32,
+        /// Height of `headers[0]` (or `tip_height` when `headers` is empty), so the requester can
+        /// apply the batch across a reorg via `HeaderChain::apply_fork_at`.
+        headers_from: u32,
+        headers: Vec<Vec<u8>>,
+        txs: Vec<LightTxProof>,
+        outputs: Vec<LightOutput>,
+        records: Vec<LightRecord>,
+        covers: Vec<LightCover>,
+    },
+}
+
+/// Hard bounds on `LightAsk` / `LightAnswer` payloads so a hostile peer cannot exhaust memory or
+/// bandwidth (all answers also fit comfortably inside `gossip::MAX_LINE`).
+pub const LIGHT_MAX_LOCATOR: usize = 64;
+pub const LIGHT_MAX_HEADERS: usize = 2_016;
+pub const LIGHT_MAX_TXS: usize = 64;
+pub const LIGHT_MAX_OUTPUTS: usize = 64;
+pub const LIGHT_MAX_RECORDS: usize = 64;
+pub const LIGHT_MAX_ANSWER_BYTES: usize = 1 << 20;
+
+/// One item listed in `LightAnswer.covers` (§7.2 omission accountability): typed so a transaction
+/// id, an outpoint, and a record transaction id cannot collide.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LightCover {
+    Tx(Hex32),
+    Output(String),
+    Record(Hex32),
+}
+
+/// One transaction proven to be in a block (`LightAnswer.txs`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LightTxProof {
+    /// Raw consensus-encoded Bitcoin transaction bytes.
+    pub raw: Vec<u8>,
+    pub height: u32,
+    pub block_hash: Hex32,
+    /// Consensus-encoded `PartialMerkleTree` proving `raw` is in `block_hash`.
+    pub merkle_path: Vec<u8>,
+}
+
+/// One output's unspent/spent status (`LightAnswer.outputs`). Value and script are never taken on
+/// the server's word: the creating transaction's `LightTxProof` is returned in `LightAnswer.txs`
+/// (and listed in `covers`) so the client derives value and scriptPubKey from the proven tx.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LightOutput {
+    pub outpoint: String,
+    pub unspent: bool,
+    pub spent_by: Option<Hex32>,
+    pub height: u32,
+}
+
+/// One on-chain Bitaid record of a case (`LightAnswer.records`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LightRecord {
+    pub txid: Hex32,
+    pub height: u32,
+    pub block_hash: Hex32,
+    /// Consensus-encoded `PartialMerkleTree` proving `txid` is in `block_hash`.
+    pub merkle_path: Vec<u8>,
+    /// Raw consensus-encoded transaction carrying the record's OP_RETURN.
+    pub record: Vec<u8>,
+}
+
+/// Tagged hash of a `LightAsk` message, echoed in `LightAnswer.ask_hash` so the sender's signature
+/// binds the answer to the exact question (§7.2).
+pub fn light_ask_hash(ask: &Msg) -> Hex32 {
+    let mut b = Vec::new();
+    ciborium::into_writer(ask, &mut b).unwrap();
+    hex::encode(tagged("Bitaid/light-ask", &b))
+}
+
+/// True if `content` (base64-encoded signed `Envelope` or raw `Envelope`) carries a `LightAsk`
+/// or `LightAnswer`. Used by gossip admission to drop any light message that a hostile peer
+/// attempts to flood inside a normal gossip event.
+pub fn is_light_b64(content: &str) -> bool {
+    let Some(raw) = unb64(content) else {
+        return false;
+    };
+    let env: Envelope = if let Ok(sb) = ciborium::from_reader::<SignedBytes, _>(raw.as_slice()) {
+        match ciborium::from_reader::<Envelope, _>(sb.body.as_slice()) {
+            Ok(e) => e,
+            Err(_) => return false,
+        }
+    } else if let Ok(e) = ciborium::from_reader::<Envelope, _>(raw.as_slice()) {
+        e
+    } else {
+        return false;
+    };
+    matches!(env.msg, Msg::LightAsk { .. } | Msg::LightAnswer { .. })
+}
+
+impl Msg {
+    /// Checks hard size/count bounds on `LightAsk` and `LightAnswer` messages.
+    pub fn check_light_bounds(&self, raw_len: usize) -> Result<(), String> {
+        if raw_len > LIGHT_MAX_ANSWER_BYTES {
+            return Err(format!(
+                "light message too large: {raw_len} > {LIGHT_MAX_ANSWER_BYTES}"
+            ));
+        }
+        match self {
+            Msg::LightAsk {
+                locator,
+                txids,
+                outpoints,
+                ..
+            } => {
+                if locator.len() > LIGHT_MAX_LOCATOR {
+                    return Err(format!(
+                        "locator too long: {} > {LIGHT_MAX_LOCATOR}",
+                        locator.len()
+                    ));
+                }
+                if txids.len() > LIGHT_MAX_TXS {
+                    return Err(format!("too many txids: {} > {LIGHT_MAX_TXS}", txids.len()));
+                }
+                if outpoints.len() > LIGHT_MAX_OUTPUTS {
+                    return Err(format!(
+                        "too many outpoints: {} > {LIGHT_MAX_OUTPUTS}",
+                        outpoints.len()
+                    ));
+                }
+                Ok(())
+            }
+            Msg::LightAnswer {
+                headers,
+                txs,
+                outputs,
+                records,
+                covers,
+                ..
+            } => {
+                if headers.len() > LIGHT_MAX_HEADERS {
+                    return Err(format!(
+                        "too many headers: {} > {LIGHT_MAX_HEADERS}",
+                        headers.len()
+                    ));
+                }
+                if let Some((i, h)) = headers.iter().enumerate().find(|(_, h)| h.len() != 80) {
+                    return Err(format!("header {i} has {} bytes, expected 80", h.len()));
+                }
+                if txs.len() > LIGHT_MAX_TXS {
+                    return Err(format!("too many txs: {} > {LIGHT_MAX_TXS}", txs.len()));
+                }
+                if outputs.len() > LIGHT_MAX_OUTPUTS {
+                    return Err(format!(
+                        "too many outputs: {} > {LIGHT_MAX_OUTPUTS}",
+                        outputs.len()
+                    ));
+                }
+                if records.len() > LIGHT_MAX_RECORDS {
+                    return Err(format!(
+                        "too many records: {} > {LIGHT_MAX_RECORDS}",
+                        records.len()
+                    ));
+                }
+                let max_covers = LIGHT_MAX_TXS + LIGHT_MAX_OUTPUTS + LIGHT_MAX_RECORDS;
+                if covers.len() > max_covers {
+                    return Err(format!("too many covers: {} > {max_covers}", covers.len()));
+                }
+                Ok(())
+            }
+            _ => Err("not a light message".into()),
+        }
+    }
 }
 
 impl Msg {
@@ -629,6 +815,8 @@ impl Msg {
             Msg::Checkpoint { .. } => "checkpoint",
             Msg::SeizureRequest { .. } => "seizure-request",
             Msg::SeizureSig { .. } => "seizure-sig",
+            Msg::LightAsk { .. } => "light-ask",
+            Msg::LightAnswer { .. } => "light-answer",
         }
     }
     pub fn case_id(&self) -> Option<&str> {
@@ -643,7 +831,9 @@ impl Msg {
             | Msg::PoolNonceShare { .. }
             | Msg::PoolNonceStatus { .. }
             | Msg::PoolNonceReveal { .. }
-            | Msg::PoolReady { .. } => None,
+            | Msg::PoolReady { .. }
+            | Msg::LightAsk { .. }
+            | Msg::LightAnswer { .. } => None,
             Msg::Alert { case_id, .. }
             | Msg::Accept { case_id, .. }
             | Msg::Place { case_id, .. }
@@ -847,5 +1037,124 @@ mod tests {
             );
             assert!(unseal(&b, &a.x_only_public_key().0, b"other", &ct).is_none());
         }
+    }
+
+    #[test]
+    fn light_ask_and_answer_sign_verify_and_tamper() {
+        let phone = kp();
+        let core = kp();
+        let ask = Msg::LightAsk {
+            id: "01".repeat(16),
+            locator: vec!["10".repeat(32), "00".repeat(32)],
+            txids: vec!["aa".repeat(32)],
+            outpoints: vec![format!("{}:0", "bb".repeat(32))],
+            case_id: Some("cc".repeat(32)),
+            from_height: 90,
+        };
+        let ask_hash = light_ask_hash(&ask);
+        let ask_bytes = sign(&phone, 100, ask.clone());
+        let ask_env = verify(&ask_bytes).unwrap();
+        assert_eq!(ask_env.msg, ask);
+        assert_eq!(ask_env.msg.name(), "light-ask");
+        assert_eq!(ask_env.msg.case_id(), None);
+        assert!(!ask_env.msg.timed());
+        assert!(ask_env.msg.check_light_bounds(ask_bytes.len()).is_ok());
+        assert!(is_light_b64(&b64(&ask_bytes)));
+
+        // Non-empty answer covering tx, output, and record.
+        let ans = Msg::LightAnswer {
+            id: "01".repeat(16),
+            ask_hash: ask_hash.clone(),
+            tip_height: 102,
+            tip_hash: "dd".repeat(32),
+            headers_from: 101,
+            headers: vec![vec![0x11; 80], vec![0x22; 80]],
+            txs: vec![LightTxProof {
+                raw: vec![1, 2, 3, 4],
+                height: 101,
+                block_hash: "ee".repeat(32),
+                merkle_path: vec![5, 6, 7],
+            }],
+            outputs: vec![LightOutput {
+                outpoint: format!("{}:0", "bb".repeat(32)),
+                unspent: true,
+                spent_by: None,
+                height: 101,
+            }],
+            records: vec![LightRecord {
+                txid: "ff".repeat(32),
+                height: 102,
+                block_hash: "dd".repeat(32),
+                merkle_path: vec![8, 9],
+                record: vec![10, 11, 12],
+            }],
+            covers: vec![
+                LightCover::Tx("aa".repeat(32)),
+                LightCover::Output(format!("{}:0", "bb".repeat(32))),
+                LightCover::Record("ff".repeat(32)),
+            ],
+        };
+        let ans_bytes = sign(&core, 102, ans.clone());
+        let ans_env = verify(&ans_bytes).unwrap();
+        assert_eq!(ans_env.msg, ans);
+        assert_eq!(ans_env.msg.name(), "light-answer");
+        assert_eq!(ans_env.msg.case_id(), None);
+        assert!(ans_env.msg.check_light_bounds(ans_bytes.len()).is_ok());
+        assert!(is_light_b64(&b64(&ans_bytes)));
+
+        // Bounds checks reject oversized header counts, malformed header lengths, and byte caps.
+        assert!(ans_env
+            .msg
+            .check_light_bounds(LIGHT_MAX_ANSWER_BYTES + 1)
+            .is_err());
+        let bad_hdr_len = Msg::LightAnswer {
+            id: "01".repeat(16),
+            ask_hash: ask_hash.clone(),
+            tip_height: 102,
+            tip_hash: "dd".repeat(32),
+            headers_from: 101,
+            headers: vec![vec![0x11; 79]],
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            covers: vec![],
+        };
+        assert!(bad_hdr_len.check_light_bounds(100).is_err());
+
+        let too_many_hdrs = Msg::LightAnswer {
+            id: "01".repeat(16),
+            ask_hash: ask_hash.clone(),
+            tip_height: 3000,
+            tip_hash: "dd".repeat(32),
+            headers_from: 1,
+            headers: vec![vec![0u8; 80]; LIGHT_MAX_HEADERS + 1],
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            covers: vec![],
+        };
+        assert!(too_many_hdrs.check_light_bounds(200_000).is_err());
+
+        // Tampering with any byte (e.g. covers or outputs) breaks signature verification.
+        let mut tampered = ans_bytes.clone();
+        let mid = tampered.len() / 2;
+        tampered[mid] ^= 0xff;
+        assert!(verify(&tampered).is_err());
+
+        // Empty-set answer still signs and verifies cleanly (§7.2 omission accountability).
+        let empty = Msg::LightAnswer {
+            id: "01".repeat(16),
+            ask_hash,
+            tip_height: 102,
+            tip_hash: "dd".repeat(32),
+            headers_from: 102,
+            headers: vec![],
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            covers: vec![],
+        };
+        let empty_bytes = sign(&core, 102, empty.clone());
+        assert_eq!(verify(&empty_bytes).unwrap().msg, empty);
     }
 }
