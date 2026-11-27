@@ -182,6 +182,11 @@ pub struct Node {
     pub from_archive: (u32, u32),
     anchored_last: u32,
     ticked: Instant,
+    /// How long to wait between ticks: twice the last tick's own time, at least 1 s, at most 60 s.
+    /// Over Tor a tick's chain reads take seconds; a node must not spend most of its time in them.
+    tick_gap: Duration,
+    /// A message already taken from the links to see whether more were waiting (see `pull_inner`)
+    peeked: Option<(String, Event)>,
     /// cases whose messages other traffic never pushes out, with their per-sender counts
     kept: HashMap<String, Kept>,
     pub t0: Instant,
@@ -503,6 +508,8 @@ impl Node {
             from_archive: (0, 0),
             anchored_last: 0,
             ticked: Instant::now(),
+            tick_gap: Duration::from_secs(1),
+            peeked: None,
             kept: HashMap::new(),
             t0: Instant::now(),
             last_sent: Instant::now() - Duration::from_secs(10),
@@ -631,10 +638,16 @@ impl Node {
     /// node's to anchor. A pool member anchors a checkpoint of every timed message it holds, on its
     /// turn; any node anchors its own timed message that no checkpoint took up in time.
     fn tick(&mut self) {
-        if self.ticked.elapsed() < Duration::from_secs(1) {
+        if self.ticked.elapsed() < self.tick_gap {
             return;
         }
-        self.ticked = Instant::now();
+        let t0 = Instant::now();
+        self.ticked = t0;
+        self.tick_inner();
+        self.tick_gap = (t0.elapsed() * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
+    }
+
+    fn tick_inner(&mut self) {
         if self.follow_tiers && !self.archives.is_empty() {
             self.rpc.sync();
             self.sync_cases();
@@ -1187,6 +1200,7 @@ impl Node {
     fn pull_inner(&mut self, timeout: Duration) -> bool {
         // BITAID_LAG: what arrives is held back as a slow link would hold it
         let got = match crate::lag() {
+            _ if self.peeked.is_some() => self.peeked.take(),
             None if self.lagged.is_empty() => self.client.next_event(timeout),
             lag => {
                 let due = |q: &VecDeque<(Instant, String, Event)>| q.iter().position(|x| x.0 <= Instant::now());
@@ -1234,7 +1248,15 @@ impl Node {
                     }
                     None => {}
                 }
-                self.tick();
+                // more already waiting: handle them first, and tick once they are through (or
+                // every 30 s at least): with a tick after each, a phone reaching its chain over
+                // Tor read a location 226 s after it arrived, behind 15 messages and 15 ticks
+                if crate::lag().is_none() && self.lagged.is_empty() && self.peeked.is_none() {
+                    self.peeked = self.client.next_event(Duration::ZERO);
+                }
+                if self.peeked.is_none() || self.ticked.elapsed() >= Duration::from_secs(30) {
+                    self.tick();
+                }
                 if t0.elapsed() >= Duration::from_secs(5) {
                     crate::say!("[{}] busy {:.1} s on one message (decode and tick) while others waited", self.name, t0.elapsed().as_secs_f64());
                 }
