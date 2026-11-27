@@ -20,6 +20,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
+          # keep downloads between runs on every branch (by default only the default branch writes
+          # the cache, so each m4-app build fetched everything again and Maven Central answered 429)
+          cache-read-only: false
       - name: Rust targets and cargo-ndk
         run: |
           rustup target add aarch64-linux-android x86_64-linux-android
@@ -38,7 +41,14 @@ jobs:
           cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build --release --locked -p bitaid-jni
       - name: Debug APK
         working-directory: android
-        run: gradle assembleDebug --no-daemon
+        # Maven Central rate-limits busy runners (429): wait and try again, up to three times
+        run: |
+          for i in 1 2 3; do
+            gradle assembleDebug --no-daemon && exit 0
+            echo "attempt $i failed; waiting $((i * 90)) s before retrying"
+            sleep $((i * 90))
+          done
+          exit 1
       - uses: actions/upload-artifact@v4
         with:
           name: bitaid-signet-debug-apk
