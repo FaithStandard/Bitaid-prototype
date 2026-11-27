@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed icon (Android 13+): the shield in one colour with the cross cut out. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="21"
+        android:translateY="21"
+        android:scaleX="1.375"
+        android:scaleY="1.375">
+        <path
+            android:fillColor="#FFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M24,2l18,6v14c0,12 -8,20 -18,24C14,42 6,34 6,22V8z M18.5,12H23V19.5H20.5V22H13V17.5H18.5z M29.5,12H25V19.5H27.5V22H35V17.5H29.5z M18.5,34H23V26.5H20.5V24H13V28.5H18.5z M29.5,34H25V26.5H27.5V24H35V28.5H29.5z" />
+    </group>
+</vector>
