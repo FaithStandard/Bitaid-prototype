@@ -553,6 +553,73 @@ pub enum Msg {
         pot: u8,
         share: String,
     },
+    /// Light client (§7.2, `design/phone_light.md`) asking its Core (or a sampled bonded worker)
+    /// for new headers, proven transactions, output spend status, and a case's on-chain records
+    /// in one exchange.
+    LightAsk {
+        id: Hex32,
+        since_height: u32,
+        txids: Vec<Hex32>,
+        outpoints: Vec<String>,
+        case_id: Option<Hex32>,
+        from_height: u32,
+    },
+    /// Signed answer to `LightAsk` (§7.2): carries new 80-byte headers, Merkle-proven transactions,
+    /// output status, and case records. `ask_hash` binds the answer to the exact question, and
+    /// `covers` lists the IDs of everything the answer claims is the complete set (empty included),
+    /// so a later proof of omission convicts the sender.
+    LightAnswer {
+        id: Hex32,
+        ask_hash: Hex32,
+        tip_height: u32,
+        tip_hash: Hex32,
+        headers: Vec<Vec<u8>>,
+        txs: Vec<LightTxProof>,
+        outputs: Vec<LightOutput>,
+        records: Vec<LightRecord>,
+        covers: Vec<String>,
+    },
+}
+
+/// One transaction proven to be in a block (`LightAnswer.txs`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LightTxProof {
+    /// Raw consensus-encoded Bitcoin transaction bytes.
+    pub raw: Vec<u8>,
+    pub height: u32,
+    pub block_hash: Hex32,
+    /// Consensus-encoded `PartialMerkleTree` proving `raw` is in `block_hash`.
+    pub merkle_path: Vec<u8>,
+}
+
+/// One output's unspent/spent status (`LightAnswer.outputs`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LightOutput {
+    pub outpoint: String,
+    pub unspent: bool,
+    pub value: u64,
+    pub script: Vec<u8>,
+    pub spent_by: Option<Hex32>,
+    pub height: u32,
+}
+
+/// One on-chain Bitaid record of a case (`LightAnswer.records`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LightRecord {
+    pub txid: Hex32,
+    pub height: u32,
+    /// Consensus-encoded `PartialMerkleTree` proving `txid` is in the block at `height`.
+    pub merkle_path: Vec<u8>,
+    /// Raw consensus-encoded transaction carrying the record's OP_RETURN.
+    pub record: Vec<u8>,
+}
+
+/// Tagged hash of a `LightAsk` message, echoed in `LightAnswer.ask_hash` so the sender's signature
+/// binds the answer to the exact question (§7.2).
+pub fn light_ask_hash(ask: &Msg) -> Hex32 {
+    let mut b = Vec::new();
+    ciborium::into_writer(ask, &mut b).unwrap();
+    hex::encode(tagged("Bitaid/light-ask", &b))
 }
 
 impl Msg {
@@ -629,6 +696,8 @@ impl Msg {
             Msg::Checkpoint { .. } => "checkpoint",
             Msg::SeizureRequest { .. } => "seizure-request",
             Msg::SeizureSig { .. } => "seizure-sig",
+            Msg::LightAsk { .. } => "light-ask",
+            Msg::LightAnswer { .. } => "light-answer",
         }
     }
     pub fn case_id(&self) -> Option<&str> {
@@ -643,7 +712,9 @@ impl Msg {
             | Msg::PoolNonceShare { .. }
             | Msg::PoolNonceStatus { .. }
             | Msg::PoolNonceReveal { .. }
-            | Msg::PoolReady { .. } => None,
+            | Msg::PoolReady { .. }
+            | Msg::LightAsk { .. }
+            | Msg::LightAnswer { .. } => None,
             Msg::Alert { case_id, .. }
             | Msg::Accept { case_id, .. }
             | Msg::Place { case_id, .. }
@@ -847,5 +918,82 @@ mod tests {
             );
             assert!(unseal(&b, &a.x_only_public_key().0, b"other", &ct).is_none());
         }
+    }
+
+    #[test]
+    fn light_ask_and_answer_sign_verify_and_tamper() {
+        let phone = kp();
+        let core = kp();
+        let ask = Msg::LightAsk {
+            id: "01".repeat(16),
+            since_height: 100,
+            txids: vec!["aa".repeat(32)],
+            outpoints: vec![format!("{}:0", "bb".repeat(32))],
+            case_id: Some("cc".repeat(32)),
+            from_height: 90,
+        };
+        let ask_hash = light_ask_hash(&ask);
+        let ask_bytes = sign(&phone, 100, ask.clone());
+        let ask_env = verify(&ask_bytes).unwrap();
+        assert_eq!(ask_env.msg, ask);
+        assert_eq!(ask_env.msg.name(), "light-ask");
+        assert_eq!(ask_env.msg.case_id(), None);
+        assert!(!ask_env.msg.timed());
+
+        // Non-empty answer covering tx, output, and record.
+        let ans = Msg::LightAnswer {
+            id: "01".repeat(16),
+            ask_hash: ask_hash.clone(),
+            tip_height: 102,
+            tip_hash: "dd".repeat(32),
+            headers: vec![vec![0x11; 80], vec![0x22; 80]],
+            txs: vec![LightTxProof {
+                raw: vec![1, 2, 3, 4],
+                height: 101,
+                block_hash: "ee".repeat(32),
+                merkle_path: vec![5, 6, 7],
+            }],
+            outputs: vec![LightOutput {
+                outpoint: format!("{}:0", "bb".repeat(32)),
+                unspent: true,
+                value: 500_000,
+                script: vec![0x51, 0x20],
+                spent_by: None,
+                height: 101,
+            }],
+            records: vec![LightRecord {
+                txid: "ff".repeat(32),
+                height: 102,
+                merkle_path: vec![8, 9],
+                record: vec![10, 11, 12],
+            }],
+            covers: vec!["aa".repeat(32), format!("{}:0", "bb".repeat(32)), "ff".repeat(32)],
+        };
+        let ans_bytes = sign(&core, 102, ans.clone());
+        let ans_env = verify(&ans_bytes).unwrap();
+        assert_eq!(ans_env.msg, ans);
+        assert_eq!(ans_env.msg.name(), "light-answer");
+        assert_eq!(ans_env.msg.case_id(), None);
+
+        // Tampering with any byte (e.g. covers or outputs) breaks signature verification.
+        let mut tampered = ans_bytes.clone();
+        let mid = tampered.len() / 2;
+        tampered[mid] ^= 0xff;
+        assert!(verify(&tampered).is_err());
+
+        // Empty-set answer still signs and verifies cleanly (§7.2 omission accountability).
+        let empty = Msg::LightAnswer {
+            id: "01".repeat(16),
+            ask_hash,
+            tip_height: 102,
+            tip_hash: "dd".repeat(32),
+            headers: vec![],
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            covers: vec![],
+        };
+        let empty_bytes = sign(&core, 102, empty.clone());
+        assert_eq!(verify(&empty_bytes).unwrap().msg, empty);
     }
 }
