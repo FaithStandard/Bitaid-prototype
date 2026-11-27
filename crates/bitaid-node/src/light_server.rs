@@ -756,7 +756,9 @@ mod tests {
         let case_id = hex::encode(case_bytes);
         let spk = rpc.new_spk().unwrap();
         let op = rpc
-            .fund_with_record(&spk, 10_000, &crate::ledger::incident_record(&case_bytes))
+            // a tier commitment: the ledger reads it from any transaction (an incident counts only
+            // when a Bitaid key signed it, which a wallet-funded test transaction never is)
+            .fund_with_record(&spk, 10_000, &crate::ledger::tier_record(&case_id, 1, &[0x77u8; 32]))
             .unwrap();
         rpc.confirm(&[op.txid]);
 
