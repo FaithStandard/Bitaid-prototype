@@ -461,6 +461,11 @@ impl LocalLink {
         self.ask_rx.lock().unwrap().recv_timeout(timeout).ok()
     }
 
+    /// Non-blocking check for a link-local `LightAsk`.
+    pub fn try_recv_ask(&self) -> Option<(u64, crate::wire::Envelope)> {
+        self.ask_rx.lock().unwrap().try_recv().ok()
+    }
+
     /// Receives the next link-local `LightAnswer` from any peer, waiting up to `timeout`.
     pub fn recv_answer(&self, timeout: Duration) -> Option<(u64, crate::wire::Envelope)> {
         self.answer_rx.lock().unwrap().recv_timeout(timeout).ok()
