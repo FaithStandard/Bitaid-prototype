@@ -167,6 +167,8 @@ pub mod commands;
 pub mod events;
 pub mod gossip;
 pub mod ledger;
+/// Core-side server answering link-local `LightAsk` requests from its own `bitcoind` (§7.2, M4).
+pub mod light_server;
 pub mod market;
 pub mod node;
 pub mod nostr;

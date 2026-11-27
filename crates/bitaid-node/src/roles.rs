@@ -362,9 +362,12 @@ fn main_inner() -> i32 {
         crate::pre(&node.me(), 16)
     ));
     let code = match role.as_str() {
-        // a Core that only carries gossip: the hub other Cores and apps dial
+        // a Core that carries gossip and answers link-local LightAsk queries from its own bitcoind
         "core" => {
             let mut n = node;
+            if let Some(link) = n.client.local_link() {
+                crate::light_server::spawn(link, n.rpc.clone(), n.keys);
+            }
             n.subscribe("all", vec![crate::nostr::Filter::default()]);
             loop {
                 let _ = n.wait(secs(60), |_, _| Some(()));
