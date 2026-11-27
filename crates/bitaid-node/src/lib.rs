@@ -167,6 +167,8 @@ pub mod commands;
 pub mod events;
 pub mod gossip;
 pub mod ledger;
+/// Phone-side light client (`ChainSource`, `CoreLight`, 2-source tip cross-check, sign gate; §7.2, M4).
+pub mod light_client;
 /// Core-side server answering link-local `LightAsk` requests from its own `bitcoind` (§7.2, M4).
 pub mod light_server;
 pub mod market;

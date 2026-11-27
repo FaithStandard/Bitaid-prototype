@@ -184,6 +184,8 @@ struct Link {
     /// bounded, so a peer that stops reading is closed rather than queued for without end
     out: SyncSender<Arc<str>>,
     incoming: bool,
+    /// address dialled for outbound links (empty for incoming links)
+    peer: String,
     since: Instant,
     /// new, valid messages this link brought
     useful: u64,
@@ -441,6 +443,19 @@ impl LocalLink {
         ids
     }
 
+    /// Returns `(link_id, peer_addr)` for every established outbound link.
+    pub fn outbound_peers(&self) -> Vec<(u64, String)> {
+        let g = self.shared.lock().unwrap();
+        let mut out: Vec<(u64, String)> = g
+            .links
+            .iter()
+            .filter(|(_, l)| !l.incoming && l.authed)
+            .map(|(id, l)| (*id, l.peer.clone()))
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
     /// Sends a signed `LightAsk` envelope on an established outbound link, returning its link ID.
     pub fn send_outbound(&self, raw_envelope: &[u8]) -> Result<u64, String> {
         let line = Self::encode_local(raw_envelope)?;
@@ -459,6 +474,11 @@ impl LocalLink {
     /// Receives the next link-local `LightAsk` from any peer, waiting up to `timeout`.
     pub fn recv_ask(&self, timeout: Duration) -> Option<(u64, crate::wire::Envelope)> {
         self.ask_rx.lock().unwrap().recv_timeout(timeout).ok()
+    }
+
+    /// Non-blocking check for a link-local `LightAsk`.
+    pub fn try_recv_ask(&self) -> Option<(u64, crate::wire::Envelope)> {
+        self.ask_rx.lock().unwrap().try_recv().ok()
     }
 
     /// Receives the next link-local `LightAnswer` from any peer, waiting up to `timeout`.
@@ -889,6 +909,7 @@ fn run_link(
             Link {
                 out: otx.clone(),
                 incoming,
+                peer: to.clone(),
                 since: Instant::now(),
                 useful: 0,
                 stream: s.try_clone().ok(),
@@ -1433,7 +1454,7 @@ mod tests {
             far.push(f);
             let (out, _rx) = std::sync::mpsc::sync_channel(1);
             let mut g = sh.lock().unwrap();
-            g.links.insert(id, Link { out, incoming: true, since: Instant::now(), useful: 0, stream: Some(near), authed: true });
+            g.links.insert(id, Link { out, incoming: true, peer: String::new(), since: Instant::now(), useful: 0, stream: Some(near), authed: true });
             g.stakes.insert(id, (k, stake.into()));
             std::mem::forget(_rx);
         }

@@ -12,10 +12,105 @@ use crate::wire::{
 };
 use bitcoin::secp256k1::Keypair;
 use bitcoin::OutPoint;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Per-link rate limit for strangers' `LightAsk`s: 1 ask/s with a burst of 4.
+/// Excess asks are dropped with no answer (withholding, which §7.2 already accounts for).
+pub const ASK_RATE: f64 = 1.0;
+pub const ASK_BURST: f64 = 4.0;
+/// Generous budget for the Core owner's own registered device keys (`BITAID_OWN_KEYS`).
+pub const OWN_ASK_RATE: f64 = 4.0;
+pub const OWN_ASK_BURST: f64 = 16.0;
+const MAX_PENDING_OWN: usize = 64;
+const MAX_PENDING_STRANGER: usize = 64;
+
+/// Per-link token bucket + priority queue for `LightAsk`s:
+/// - Bounds what any single link can cost the Core's `bitcoind` (strangers: 1/s, burst 4).
+/// - Prioritizes asks signed by the Core owner's own device keys (`BITAID_OWN_KEYS`, comma-separated
+///   x-only hex pubkeys) ahead of strangers' asks without filtering strangers out.
+pub struct AskScheduler {
+    own_keys: HashSet<String>,
+    buckets: HashMap<u64, (f64, Instant)>,
+    own_queue: VecDeque<(u64, wire::Envelope)>,
+    stranger_queue: VecDeque<(u64, wire::Envelope)>,
+}
+
+impl AskScheduler {
+    pub fn new(own_keys: HashSet<String>) -> Self {
+        let normalized = own_keys
+            .into_iter()
+            .map(|k| k.trim().to_ascii_lowercase())
+            .filter(|k| !k.is_empty())
+            .collect();
+        Self {
+            own_keys: normalized,
+            buckets: HashMap::new(),
+            own_queue: VecDeque::new(),
+            stranger_queue: VecDeque::new(),
+        }
+    }
+
+    pub fn from_env() -> Self {
+        let keys = crate::config::var("BITAID_OWN_KEYS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Self::new(keys)
+    }
+
+    pub fn is_own(&self, sender: &str) -> bool {
+        self.own_keys.contains(&sender.to_ascii_lowercase())
+    }
+
+    /// Admits an incoming ask under its link's token bucket. Returns `false` (drop silently)
+    /// when the link has exhausted its budget or the pending queue is full.
+    pub fn enqueue_at(&mut self, link_id: u64, env: wire::Envelope, now: Instant) -> bool {
+        let own = self.is_own(&env.sender);
+        let (rate, burst) = if own {
+            (OWN_ASK_RATE, OWN_ASK_BURST)
+        } else {
+            (ASK_RATE, ASK_BURST)
+        };
+        if self.buckets.len() > 4_096 && !self.buckets.contains_key(&link_id) {
+            self.buckets
+                .retain(|_, (_, t)| now.saturating_duration_since(*t) < Duration::from_secs(600));
+        }
+        let entry = self.buckets.entry(link_id).or_insert((burst, now));
+        let elapsed = now.saturating_duration_since(entry.1).as_secs_f64();
+        entry.0 = (entry.0 + elapsed * rate).min(burst);
+        entry.1 = now;
+        if entry.0 < 1.0 {
+            return false;
+        }
+        entry.0 -= 1.0;
+        let (q, cap) = if own {
+            (&mut self.own_queue, MAX_PENDING_OWN)
+        } else {
+            (&mut self.stranger_queue, MAX_PENDING_STRANGER)
+        };
+        if q.len() >= cap {
+            return false;
+        }
+        q.push_back((link_id, env));
+        true
+    }
+
+    /// Pops the next ask to serve: own devices always go ahead of strangers.
+    pub fn pop_next(&mut self) -> Option<(u64, wire::Envelope)> {
+        self.own_queue
+            .pop_front()
+            .or_else(|| self.stranger_queue.pop_front())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.own_queue.is_empty() && self.stranger_queue.is_empty()
+    }
+}
 
 /// Read-only chain data needed to build a `LightAnswer`. Implemented for `Rpc` (live `bitcoind`)
 /// and for in-memory test chains.
@@ -285,22 +380,34 @@ pub fn answer_ask<B: LightBackend>(
 }
 
 /// Spawns a background thread that answers incoming link-local `LightAsk` messages from `rpc`
-/// and returns each signed `LightAnswer` on the originating link.
+/// and returns each signed `LightAnswer` on the originating link, enforcing the per-link ask budget
+/// and prioritizing the Core owner's registered device keys (`BITAID_OWN_KEYS`).
 pub fn spawn(link: LocalLink, rpc: Arc<Rpc>, keys: Keypair) {
     let _ = std::thread::Builder::new()
         .name("bitaid-light-server".into())
-        .spawn(move || loop {
-            let Some((link_id, env)) = link.recv_ask(Duration::from_secs(60)) else {
-                continue;
-            };
-            match answer_ask(&*rpc, &keys, &env.msg) {
-                Ok((_, signed)) => {
-                    if let Err(e) = link.send_to(link_id, &signed) {
-                        crate::say!("light-server: send to link {link_id} failed ({e})");
+        .spawn(move || {
+            let mut sched = AskScheduler::from_env();
+            loop {
+                if sched.is_empty() {
+                    if let Some((link_id, env)) = link.recv_ask(Duration::from_secs(60)) {
+                        sched.enqueue_at(link_id, env, Instant::now());
                     }
                 }
-                Err(e) => {
-                    crate::say!("light-server: cannot answer ask on link {link_id} ({e})");
+                while let Some((link_id, env)) = link.try_recv_ask() {
+                    sched.enqueue_at(link_id, env, Instant::now());
+                }
+                let Some((link_id, env)) = sched.pop_next() else {
+                    continue;
+                };
+                match answer_ask(&*rpc, &keys, &env.msg) {
+                    Ok((_, signed)) => {
+                        if let Err(e) = link.send_to(link_id, &signed) {
+                            crate::say!("light-server: send to link {link_id} failed ({e})");
+                        }
+                    }
+                    Err(e) => {
+                        crate::say!("light-server: cannot answer ask on link {link_id} ({e})");
+                    }
                 }
             }
         });
@@ -805,5 +912,55 @@ mod tests {
         assert_eq!(proven.output[op.vout as usize].value.to_sat(), 10_000);
         assert!(outputs.iter().any(|o| o.outpoint == op.to_string() && o.unspent));
         assert!(records.iter().any(|r| r.txid == op.txid.to_string()));
+    }
+
+    #[test]
+    fn ask_budget_drops_excess_and_prioritizes_own_devices() {
+        let secp = Secp256k1::new();
+        let own_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let stranger_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let own_hex = hex::encode(own_kp.x_only_public_key().0.serialize());
+        let stranger_hex = hex::encode(stranger_kp.x_only_public_key().0.serialize());
+
+        let mk_env = |kp: &Keypair, id_byte: u8| {
+            let ask = Msg::LightAsk {
+                id: format!("{id_byte:02x}").repeat(16),
+                locator: vec![],
+                txids: vec![],
+                outpoints: vec![],
+                case_id: None,
+                from_height: 0,
+            };
+            wire::verify(&wire::sign(kp, 1, ask)).unwrap()
+        };
+
+        let mut own_set = HashSet::new();
+        own_set.insert(own_hex.to_uppercase()); // verify case-insensitive matching
+        let mut sched = AskScheduler::new(own_set);
+        let t0 = Instant::now();
+
+        // Stranger link gets a burst of 4, then the 5th at the same instant is dropped.
+        for i in 0..4u8 {
+            assert!(sched.enqueue_at(10, mk_env(&stranger_kp, i), t0));
+        }
+        assert!(!sched.enqueue_at(10, mk_env(&stranger_kp, 99), t0));
+
+        // Own device arriving after strangers jumps to the front of the queue.
+        assert!(sched.enqueue_at(20, mk_env(&own_kp, 77), t0));
+        let (lid, first) = sched.pop_next().unwrap();
+        assert_eq!(lid, 20);
+        assert_eq!(first.sender, own_hex);
+
+        // Next 4 popped are the strangers' asks.
+        for _ in 0..4 {
+            let (lid, env) = sched.pop_next().unwrap();
+            assert_eq!(lid, 10);
+            assert_eq!(env.sender, stranger_hex);
+        }
+        assert!(sched.pop_next().is_none());
+
+        // After 1 second refill, stranger link is admitted again.
+        assert!(sched.enqueue_at(10, mk_env(&stranger_kp, 5), t0 + Duration::from_secs(1)));
+        assert!(!sched.enqueue_at(10, mk_env(&stranger_kp, 6), t0 + Duration::from_secs(1)));
     }
 }
