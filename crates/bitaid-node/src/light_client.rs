@@ -23,6 +23,7 @@ use bitcoin::secp256k1::Keypair;
 use bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -355,6 +356,7 @@ pub struct CoreLight {
     keys: Keypair,
     state: Mutex<LightState>,
     tip_sources: Mutex<Vec<Box<dyn TipSource>>>,
+    asks: AtomicU64,
 }
 
 impl CoreLight {
@@ -392,7 +394,12 @@ impl CoreLight {
                 tip_checks: HashMap::new(),
             }),
             tip_sources: Mutex::new(Vec::new()),
+            asks: AtomicU64::new(0),
         })
+    }
+
+    pub fn ask_count(&self) -> u64 {
+        self.asks.load(Ordering::Relaxed)
     }
 
     pub fn set_core_link(&self, link_id: u64) {
@@ -871,6 +878,7 @@ impl CoreLight {
         let ask_hash = light_ask_hash(&ask);
         let tip_h = self.height();
         let raw = wire::sign(&self.keys, tip_h, ask);
+        self.asks.fetch_add(1, Ordering::Relaxed);
         let link_id = match *self.core_link_id.lock().unwrap() {
             Some(id) => {
                 self.link.send_to(id, &raw)?;

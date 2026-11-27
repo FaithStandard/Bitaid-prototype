@@ -162,23 +162,49 @@ fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::
         );
     }
     let network = n.rpc.network();
-    let tip = n.rpc.height();
-    let params = bitcoin::params::Params::from(network);
-    let anchor_h = if params.no_pow_retargeting {
-        tip.saturating_sub(12)
+    let (anchor_h, anchor_hash) = if let Ok(spec) = crate::config::var("BITAID_ANCHOR") {
+        let Some((hs, hash)) = spec.split_once(':') else {
+            crate::stop(3, format!("BITAID_ANCHOR must be height:hash, got {spec}"));
+        };
+        let h: u32 = hs
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| crate::stop(3, format!("BITAID_ANCHOR bad height: {e}")));
+        let hash = hash.trim().to_ascii_lowercase();
+        if hash.len() != 64 || hex::decode(&hash).is_err() {
+            crate::stop(3, format!("BITAID_ANCHOR bad 32-byte hash: {hash}"));
+        }
+        (h, hash)
     } else {
-        (tip / 2_016) * 2_016
+        let tip = n.rpc.height();
+        let params = bitcoin::params::Params::from(network);
+        let h = if params.no_pow_retargeting {
+            tip.saturating_sub(12)
+        } else {
+            (tip / 2_016) * 2_016
+        };
+        let hash = n
+            .rpc
+            .block_hash_at(h)
+            .unwrap_or_else(|| crate::stop(3, format!("BITAID_CHAIN=core: cannot read anchor hash at {h}")));
+        (h, hash)
     };
-    let anchor_hash = n
-        .rpc
-        .block_hash_at(anchor_h)
-        .unwrap_or_else(|| crate::stop(3, format!("BITAID_CHAIN=core: cannot read anchor hash at {anchor_h}")));
     let anchor_raw = n
         .rpc
         .raw_header(&anchor_hash)
         .unwrap_or_else(|| crate::stop(3, format!("BITAID_CHAIN=core: cannot read anchor header at {anchor_h}")));
-    let anchor_hdr = bitcoin::consensus::Decodable::consensus_decode(&mut anchor_raw.as_slice())
-        .unwrap_or_else(|e| crate::stop(3, format!("BITAID_CHAIN=core: bad anchor header: {e}")));
+    let anchor_hdr: bitcoin::block::Header =
+        bitcoin::consensus::Decodable::consensus_decode(&mut anchor_raw.as_slice())
+            .unwrap_or_else(|e| crate::stop(3, format!("BITAID_CHAIN=core: bad anchor header: {e}")));
+    if anchor_hdr.block_hash().to_string() != anchor_hash {
+        crate::stop(
+            3,
+            format!(
+                "BITAID_CHAIN=core: anchor header hash mismatch: got {}, expected {anchor_hash}",
+                anchor_hdr.block_hash()
+            ),
+        );
+    }
 
     let cl = std::sync::Arc::new(
         crate::light_client::CoreLight::new(
@@ -194,6 +220,18 @@ fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::
 
     // Pin the Core's outbound link and wire any independent worker TipSources from
     // `BITAID_TIP_SOURCES` (format: `pubkey1@peer1,pubkey2@peer2` or `pubkey1,pubkey2`).
+    // Wait briefly so all configured outbound links (Core + TipSources) finish connecting.
+    let tip_spec = crate::config::var("BITAID_TIP_SOURCES").unwrap_or_default();
+    let tip_items: Vec<&str> = tip_spec
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let want_links = 1 + tip_items.len();
+    let wait_end = Instant::now() + Duration::from_secs(10);
+    while link.outbound_peers().len() < want_links && Instant::now() < wait_end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let peers = link.outbound_peers();
     let core_peer = crate::config::var("BITAID_CORE_PEER").ok();
     let core_lid = core_peer
@@ -203,18 +241,18 @@ fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::
     if let Some(id) = core_lid {
         cl.set_core_link(id);
     }
-    if let Ok(spec) = crate::config::var("BITAID_TIP_SOURCES") {
+    if !tip_items.is_empty() {
         let non_core: Vec<(u64, String)> = peers
             .iter()
             .filter(|(id, _)| Some(*id) != core_lid)
             .cloned()
             .collect();
-        for (idx, item) in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).enumerate() {
+        for (idx, item) in tip_items.iter().enumerate() {
             let (pk, lid) = if let Some((pk, addr)) = item.split_once('@') {
                 let lid = peers.iter().find(|(_, p)| p == addr).map(|(id, _)| *id);
                 (pk.trim().to_string(), lid)
             } else {
-                (item.to_string(), non_core.get(idx).map(|(id, _)| *id))
+                ((*item).to_string(), non_core.get(idx).map(|(id, _)| *id))
             };
             if let Some(lid) = lid {
                 cl.add_tip_source(Box::new(crate::light_client::LinkTipSource::new(
@@ -496,6 +534,9 @@ fn main_inner() -> i32 {
         node.client.relay_count(),
         crate::pre(&node.me(), 16)
     ));
+    if let Ok(path) = crate::config::var("BITAID_PUBKEY_FILE") {
+        let _ = std::fs::write(&path, node.me());
+    }
     // Every bonded worker listening on gossip (Core, pool member, archivist, arbitrator) answers
     // link-local `LightAsk` queries from its own bitcoind (§7.2), bounded by AskScheduler.
     if listen.is_some()
@@ -7600,6 +7641,7 @@ fn responder(mut n: Node) -> i32 {
     let opid = view.pool_id();
     let archivists = n.all_services("archivist", num("--archivists", 1usize), secs(60));
     let light = init_responder_light(&n);
+    n.light = light.clone();
     // ------------------------------------------------ bond
     let (bond_scoped, bond_cold) = (random_scalar(), random_scalar());
     let tip_now = light

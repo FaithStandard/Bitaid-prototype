@@ -110,6 +110,8 @@ pub struct Node {
     pub keys: Keypair,
     pub client: Net,
     pub rpc: std::sync::Arc<Rpc>,
+    /// Phone-side light client when `BITAID_CHAIN=core` (replaces background RPC reads).
+    pub light: Option<std::sync::Arc<crate::light_client::CoreLight>>,
     pub case_keys: HashMap<String, [u8; 32]>,
     /// verified messages not yet asked for
     backlog: VecDeque<(Envelope, Event)>,
@@ -471,8 +473,10 @@ impl Node {
 
     fn with_net(name: &str, client: Net, rpc: Rpc, keys: Keypair) -> Node {
         let mut n = Self::bare(name, client, rpc, keys);
-        // in an app the chain is read by a thread of its own, never on the message thread
-        if crate::events::attached() {
+        // in an app the chain is read by a thread of its own, never on the message thread —
+        // unless `BITAID_CHAIN=core` is active, in which case `CoreLight::follow` replaces it
+        if crate::events::attached() && crate::config::var("BITAID_CHAIN").as_deref() != Ok("core")
+        {
             Rpc::follow(&n.rpc);
         }
         // every node reads the checkpoints: they say which messages each anchor on chain timestamps
@@ -486,6 +490,7 @@ impl Node {
             keys,
             client,
             rpc: std::sync::Arc::new(rpc),
+            light: None,
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
             places: HashMap::new(),
@@ -616,7 +621,8 @@ impl Node {
             // one anchorer could keep it out of the draw (review finding)
             let p = crate::checkpoint_blocks();
             let wait = if name == "seat-offer" || name == "seated" || name == "reseated" { p + 2 } else { 2 * p + 2 };
-            self.own_timed.insert(e.id.clone(), (self.rpc.height(), wait));
+            let h = self.height();
+            self.own_timed.insert(e.id.clone(), (h, wait));
         }
         e.id
     }
@@ -750,8 +756,14 @@ impl Node {
     }
 
     /// The chain height, refreshed at most every 10 s, so a slow chain connection never delays
-    /// sending a message (the height in an envelope is informational).
+    /// sending a message (the height in an envelope is informational). Under `BITAID_CHAIN=core`,
+    /// reads from `CoreLight` with zero RPC calls.
     pub fn height(&mut self) -> u32 {
+        if let Some(cl) = &self.light {
+            let h = crate::light_client::ChainSource::height(cl.as_ref());
+            self.height_cache = h;
+            return h;
+        }
         if self
             .height_at
             .map(|t| t.elapsed() > Duration::from_secs(10))
@@ -1447,6 +1459,13 @@ impl Node {
     }
 
     pub fn summary(&self) -> i32 {
+        if self.light.is_some() || crate::config::var("BITAID_RPC_COUNT").is_ok() {
+            let asks = self.light.as_ref().map(|cl| cl.ask_count()).unwrap_or(0);
+            self.log(&format!(
+                "chain stats: rpc_calls={}, light_asks={asks}",
+                self.rpc.call_count()
+            ));
+        }
         crate::events::emit(crate::events::Event::Summary { node: self.name.clone(), passed: self.passed, failed: self.failed });
         println!(
             "[{}] {} passed, {} failed",
