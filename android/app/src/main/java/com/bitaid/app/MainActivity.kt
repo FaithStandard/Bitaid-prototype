@@ -1,6 +1,8 @@
 package com.bitaid.app
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -28,6 +30,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -352,7 +355,13 @@ class MainActivity : AppCompatActivity() {
         lonEdit = labeledEdit(root, "Override longitude (optional; blank uses GPS)", "")
 
         // Live checks and logs
-        root.addView(sectionHeader("Live Checks"))
+        val checksHeaderRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        checksHeaderRow.addView(sectionHeader("Live Checks  "))
+        checksHeaderRow.addView(Button(this).apply {
+            text = "Copy Logs"
+            setOnClickListener { copyLogsToClipboard() }
+        })
+        root.addView(checksHeaderRow)
         summaryView = TextView(this).apply { setTypeface(null, Typeface.BOLD) }
         checksView = TextView(this).apply {
             typeface = Typeface.MONOSPACE
@@ -369,6 +378,26 @@ class MainActivity : AppCompatActivity() {
         root.addView(logsView)
 
         return ScrollView(this).apply { addView(root) }
+    }
+
+    private fun copyLogsToClipboard() {
+        val snap = BitaidState.snapshot
+        val sb = StringBuilder()
+        sb.append("Status: ").append(snap.status.name).append(" — ").append(snap.statusDetail).append('\n')
+        sb.append("Summary: ").append(snap.passed).append(" passed, ").append(snap.failed).append(" failed\n\n")
+        sb.append("=== Live Checks ===\n")
+        for (c in snap.checks) {
+            val tag = if (c.ok) "PASS" else "FAIL"
+            val tail = if (c.detail.isNotBlank()) " (${c.detail})" else ""
+            sb.append('[').append(tag).append("] ").append(c.what).append(tail).append('\n')
+        }
+        sb.append("\n=== Logs ===\n")
+        for (line in snap.logs) {
+            sb.append(line).append('\n')
+        }
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("Bitaid Logs", sb.toString()))
+        Toast.makeText(this, "Copied checks & logs to clipboard", Toast.LENGTH_SHORT).show()
     }
 
     private fun refreshRpcStatus() {
