@@ -109,6 +109,70 @@ fn cell_of(lat: f64, lon: f64) -> h3o::CellIndex {
         .to_cell(h3o::Resolution::Eight)
 }
 
+/// Exact distance in metres from `(lat, lon)` to the farthest vertex of an H3 cell.
+/// Because the alert's exact location is sealed inside its cell until after accepting, checking
+/// the farthest boundary vertex guarantees no point in the cell can exceed the responder's limit.
+pub(crate) fn max_distance_to_cell_m(lat: f64, lon: f64, cell_str: &str) -> Option<f64> {
+    if !lat.is_finite() || !lon.is_finite() || !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    let origin = h3o::LatLng::new(lat, lon).ok()?;
+    let cell: h3o::CellIndex = cell_str.parse().ok()?;
+    let mut max_d = 0.0f64;
+    for v in cell.boundary().iter() {
+        let d = origin.distance_m(*v);
+        if d.is_finite() && d > max_d {
+            max_d = d;
+        }
+    }
+    (max_d > 0.0).then_some(max_d)
+}
+
+/// Evaluates whether an alert may be auto-accepted under the responder's standing policy.
+/// Fails closed if auto-accept is off, `max_distance_m == 0`, the Core is distrusted, any pot is
+/// below its minimum, or the cell's farthest vertex exceeds `max_distance_m`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_auto_accept(
+    enabled: bool,
+    distrusted: bool,
+    lat: f64,
+    lon: f64,
+    cell_str: &str,
+    max_distance_m: u64,
+    pots: [u64; 3],
+    min_deposit: u64,
+    min_reward: u64,
+    min_bounty: u64,
+) -> Result<f64, String> {
+    if !enabled {
+        return Err("auto-accept is disabled".into());
+    }
+    if distrusted {
+        return Err("Core is distrusted (signing disabled)".into());
+    }
+    if max_distance_m == 0 {
+        return Err("max-distance-m is 0".into());
+    }
+    if pots[0] < min_deposit {
+        return Err(format!("deposit {} < minimum {min_deposit}", pots[0]));
+    }
+    if pots[1] < min_reward {
+        return Err(format!("reward {} < minimum {min_reward}", pots[1]));
+    }
+    if pots[2] < min_bounty {
+        return Err(format!("bounty {} < minimum {min_bounty}", pots[2]));
+    }
+    let farthest = max_distance_to_cell_m(lat, lon, cell_str)
+        .ok_or_else(|| format!("cannot compute distance to cell {cell_str}"))?;
+    if farthest > max_distance_m as f64 {
+        return Err(format!(
+            "farthest point of cell is {:.0} m > limit {max_distance_m} m",
+            farthest
+        ));
+    }
+    Ok(farthest)
+}
+
 fn chain_view(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBuf)> + '_ {
     move |op| rpc.utxo(op).map(|o| (o.value.to_sat(), o.script_pubkey))
 }
@@ -7815,7 +7879,11 @@ fn responder(mut n: Node) -> i32 {
         cells.len()
     ));
     crate::events::emit(crate::events::Event::Listening { node: n.name.clone(), home: home.to_string(), cells: cells.len() });
+    let min_deposit = num("--min-deposit", 0u64);
+    let min_reward = num("--min-reward", 0u64);
     let min_bounty = num("--min-bounty", 1u64);
+    let auto_accept = flag("--auto-accept");
+    let max_distance_m = num("--max-distance-m", 0u64);
     let delay = num("--accept-delay-ms", 0u64);
     let me = n.me();
     let listen_until = Instant::now() + secs(num("--exit-after", 600u64));
@@ -7845,22 +7913,72 @@ fn responder(mut n: Node) -> i32 {
             .as_ref()
             .map(|cl| crate::light_client::ChainSource::height(cl.as_ref()))
             .unwrap_or_else(|| n.rpc.height());
+        let meets_pots = |a: &Alerted| {
+            a.template.pots[0] >= min_deposit
+                && a.template.pots[1] >= min_reward
+                && a.template.pots[2] >= min_bounty
+        };
         match checked {
             Ok(a) if a.fallback_height < cur_h + funding_margin() => {
                 n.log("alert whose funding fallback is too near; ignored")
             }
-            Ok(a) if a.template.pots[2] >= min_bounty
+            Ok(a) if meets_pots(&a)
                 && amt("--bond", RESPONDER_BOND) < case::exposure_bond(&a, crate::sats(BOND_FLOOR)) =>
             {
                 n.log("alert above what my bond backs (twice the reward and bounty); ignored")
             }
-            Ok(a) if a.template.pots[2] >= min_bounty => {
+            Ok(a) if meets_pots(&a) => {
                 n.log(&format!(
-                    "alert {} in cell {} arrived and checked in {:.2} s (waiting for decision)",
+                    "alert {} in cell {} arrived and checked in {:.2} s",
                     crate::pre(&a.case_hex, 8),
                     a.cell,
                     t_check.elapsed().as_secs_f64()
                 ));
+                if auto_accept {
+                    // Check OffDuty one last time before auto-accepting.
+                    if crate::commands::take(Duration::ZERO, |x| matches!(x, crate::commands::Command::OffDuty)).is_some() {
+                        n.log("off duty");
+                        return n.summary();
+                    }
+                    let distrusted = light.as_ref().is_some_and(|cl| cl.is_distrusted());
+                    match evaluate_auto_accept(
+                        true,
+                        distrusted,
+                        lat,
+                        lon,
+                        &a.cell,
+                        max_distance_m,
+                        a.template.pots,
+                        min_deposit,
+                        min_reward,
+                        min_bounty,
+                    ) {
+                        Ok(dist_m) => {
+                            let max_d = dist_m.round() as u32;
+                            n.log(&format!(
+                                "alert {} auto-accepted (cell {} max {max_d} m <= {max_distance_m} m)",
+                                crate::pre(&a.case_hex, 8),
+                                a.cell
+                            ));
+                            crate::events::emit(crate::events::Event::AutoAccepted {
+                                node: n.name.clone(),
+                                case: a.case_hex.clone(),
+                                cell: a.cell.clone(),
+                                max_distance_m: max_d,
+                                deposit: a.template.pots[0],
+                                reward: a.template.pots[1],
+                                bounty: a.template.pots[2],
+                            });
+                            break a;
+                        }
+                        Err(why) => {
+                            n.log(&format!(
+                                "alert {} not auto-accepted ({why}); offering manual prompt",
+                                crate::pre(&a.case_hex, 8)
+                            ));
+                        }
+                    }
+                }
                 crate::events::emit(crate::events::Event::Alert {
                     node: n.name.clone(),
                     case: a.case_hex.clone(),
@@ -8672,4 +8790,57 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
 #[allow(dead_code)]
 fn unused(_: OutPoint) -> Option<Scalar> {
     scalar_from("")
+}
+
+#[cfg(test)]
+mod auto_accept_tests {
+    use super::*;
+
+    #[test]
+    fn auto_accept_enforces_exact_cell_vertex_distance_pots_and_trust() {
+        let (lat, lon) = (13.6929, -89.2182);
+        let home = cell_of(lat, lon);
+        let home_str = home.to_string();
+        let farthest_home = max_distance_to_cell_m(lat, lon, &home_str).expect("valid home cell");
+        assert!(
+            farthest_home > 400.0 && farthest_home < 1200.0,
+            "res-8 home cell farthest vertex should be ~500-1000 m, got {farthest_home}"
+        );
+
+        let pots = [100_000, 200_000, 50_000];
+
+        // Positive: home cell inside limit, pots meet minimums, Core trusted.
+        let limit = (farthest_home.ceil() as u64) + 50;
+        let ok = evaluate_auto_accept(true, false, lat, lon, &home_str, limit, pots, 100_000, 200_000, 50_000);
+        assert!(ok.is_ok(), "matching alert must auto-accept: {ok:?}");
+
+        // Negative: deposit, reward, or bounty below minimum.
+        assert!(evaluate_auto_accept(true, false, lat, lon, &home_str, limit, pots, 100_001, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, &home_str, limit, pots, 0, 200_001, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, &home_str, limit, pots, 0, 0, 50_001).is_err());
+
+        // Negative: limit tighter than the cell's farthest vertex (even though we are inside the cell!).
+        let too_tight = (farthest_home.floor() as u64).saturating_sub(10);
+        assert!(
+            evaluate_auto_accept(true, false, lat, lon, &home_str, too_tight, pots, 0, 0, 0).is_err(),
+            "cell whose farthest vertex exceeds limit must not auto-accept"
+        );
+
+        // Negative: neighbor cell beyond limit.
+        let neighbor = home
+            .grid_disk::<Vec<_>>(1)
+            .into_iter()
+            .find(|c| *c != home)
+            .unwrap();
+        let farthest_nb = max_distance_to_cell_m(lat, lon, &neighbor.to_string()).unwrap();
+        assert!(farthest_nb > farthest_home);
+        assert!(
+            evaluate_auto_accept(true, false, lat, lon, &neighbor.to_string(), limit, pots, 0, 0, 0).is_err()
+        );
+
+        // Negative: Core distrusted, disabled, or max_distance_m == 0.
+        assert!(evaluate_auto_accept(true, true, lat, lon, &home_str, limit, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(false, false, lat, lon, &home_str, limit, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, &home_str, 0, pots, 0, 0, 0).is_err());
+    }
 }

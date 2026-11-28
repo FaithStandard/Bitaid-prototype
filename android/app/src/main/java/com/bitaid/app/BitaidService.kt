@@ -66,6 +66,11 @@ class BitaidService : Service() {
         val timeScale: String,
         val lat: Double?,
         val lon: Double?,
+        val autoAccept: Boolean = false,
+        val maxDistanceM: Long = 0L,
+        val minDeposit: Long = 0L,
+        val minReward: Long = 0L,
+        val minBounty: Long = 1L,
     )
 
     override fun onCreate() {
@@ -116,6 +121,11 @@ class BitaidService : Service() {
                     timeScale = intent.getStringExtra(EXTRA_TIME_SCALE) ?: "1",
                     lat = if (validLoc) lat else null,
                     lon = if (validLoc) lon else null,
+                    autoAccept = intent.getBooleanExtra(EXTRA_AUTO_ACCEPT, false),
+                    maxDistanceM = intent.getLongExtra(EXTRA_MAX_DISTANCE_M, 0L),
+                    minDeposit = intent.getLongExtra(EXTRA_MIN_DEPOSIT, 0L),
+                    minReward = intent.getLongExtra(EXTRA_MIN_REWARD, 0L),
+                    minBounty = intent.getLongExtra(EXTRA_MIN_BOUNTY, 1L),
                 )
                 consecutiveQuickFails = 0
                 wantOnDuty.set(true)
@@ -248,6 +258,19 @@ class BitaidService : Service() {
             if (cfg.role == "responder") {
                 put("--ask-accept")
                 put("--ask-vote")
+                if (cfg.autoAccept && cfg.maxDistanceM > 0L) {
+                    put("--auto-accept")
+                    put("--max-distance-m"); put(cfg.maxDistanceM.toString())
+                }
+                if (cfg.minDeposit > 0L) {
+                    put("--min-deposit"); put(cfg.minDeposit.toString())
+                }
+                if (cfg.minReward > 0L) {
+                    put("--min-reward"); put(cfg.minReward.toString())
+                }
+                if (cfg.minBounty > 0L) {
+                    put("--min-bounty"); put(cfg.minBounty.toString())
+                }
             } else {
                 put("--ask-alert")
             }
@@ -271,6 +294,15 @@ class BitaidService : Service() {
                     when (type) {
                         "Listening" -> updateNotification("On duty — listening for alerts")
                         "Alert" -> postAlertNotification()
+                        "AutoAccepted" -> {
+                            val distM = try {
+                                JSONObject(json).optInt("max_distance_m", 0)
+                            } catch (_: Exception) {
+                                0
+                            }
+                            postAutoAcceptedNotification(distM)
+                            updateNotification("Accepted automatically (within $distM m)")
+                        }
                         "Location" -> updateNotification("Responding — location verified")
                         "BallotDue" -> {
                             val remSecs = try {
@@ -424,6 +456,33 @@ class BitaidService : Service() {
         nm.notify(ALERT_NOTIF_ID, notif)
     }
 
+    private fun postAutoAcceptedNotification(maxDistanceM: Int) {
+        val pi = PendingIntent.getActivity(
+            this,
+            3,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val body = if (maxDistanceM > 0) {
+            "Emergency within $maxDistanceM m — open for exact location"
+        } else {
+            "Emergency accepted automatically — open for exact location"
+        }
+        val notif = NotificationCompat.Builder(this, CHANNEL_ALERT)
+            .setContentTitle("Accepted automatically")
+            .setContentText(body)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(ALERT_NOTIF_ID, notif)
+    }
+
     private fun postBallotNotification(remainingSecs: Long) {
         val pi = PendingIntent.getActivity(
             this,
@@ -512,6 +571,11 @@ class BitaidService : Service() {
         const val EXTRA_HAS_LOC = "has_loc"
         const val EXTRA_LAT = "lat"
         const val EXTRA_LON = "lon"
+        const val EXTRA_AUTO_ACCEPT = "auto_accept"
+        const val EXTRA_MAX_DISTANCE_M = "max_distance_m"
+        const val EXTRA_MIN_DEPOSIT = "min_deposit"
+        const val EXTRA_MIN_REWARD = "min_reward"
+        const val EXTRA_MIN_BOUNTY = "min_bounty"
 
         private const val CHANNEL_DUTY = "bitaid_duty"
         private const val CHANNEL_ALERT = "bitaid_alert"

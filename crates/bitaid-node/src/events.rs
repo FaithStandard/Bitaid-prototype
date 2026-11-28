@@ -21,6 +21,16 @@ pub enum Event {
     /// an alert in the responder's cells passed its checks: the app shows it, and with
     /// `--ask-accept` the role waits for Accept or Decline
     Alert { node: String, case: String, cell: String, deposit: u64, reward: u64, bounty: u64 },
+    /// an alert matched the responder's `--auto-accept` policy and was accepted without prompting
+    AutoAccepted {
+        node: String,
+        case: String,
+        cell: String,
+        max_distance_m: u32,
+        deposit: u64,
+        reward: u64,
+        bounty: u64,
+    },
     /// the exact location, opened the moment it arrives (§13): what the responder drives to
     Location { node: String, case: String, lat: f64, lon: f64 },
     /// with `--ask-vote`, the role waits for the attendee's ballot on this case until the commit window closes

@@ -108,6 +108,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rpcSaveBtn: Button
     private lateinit var walletEdit: EditText
 
+    // Professional responders: Auto-accept (collapsed by default, opt-in only)
+    private lateinit var proToggleBtn: Button
+    private lateinit var proSection: LinearLayout
+    private lateinit var autoAcceptSwitch: Switch
+    private lateinit var maxDistanceEdit: EditText
+    private lateinit var minDepositEdit: EditText
+    private lateinit var minRewardEdit: EditText
+    private lateinit var minBountyEdit: EditText
+
     // Advanced / Test network (collapsible)
     private lateinit var advancedToggleBtn: Button
     private lateinit var advancedSection: LinearLayout
@@ -126,6 +135,8 @@ class MainActivity : AppCompatActivity() {
 
     private var secretStore: KeystoreSecretStore? = null
     private var suppressSwitch = false
+    private var suppressAutoAcceptSwitch = false
+    private var autoAcceptAcknowledged = false
     private var uiMode: String = MODE_RESPONDER
     private var renderedBallotCase: String? = null
     private val seatSpinners = mutableListOf<Spinner>()
@@ -605,6 +616,72 @@ class MainActivity : AppCompatActivity() {
             "The wallet's name inside your node. Leave as is unless you changed it.",
             "w",
         )
+
+        // For professional responders (collapsed by default, opt-in only)
+        proToggleBtn = Button(this).apply {
+            text = "For professional responders (auto-accept)"
+            setOnClickListener {
+                val show = proSection.visibility != View.VISIBLE
+                proSection.visibility = if (show) View.VISIBLE else View.GONE
+                text = if (show) "Hide professional responder settings" else "For professional responders (auto-accept)"
+            }
+        }
+        responderSettingsSection.addView(proToggleBtn)
+
+        proSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        autoAcceptSwitch = Switch(this).apply {
+            text = "Accept automatically"
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            isChecked = false
+            setOnCheckedChangeListener { _, isChecked ->
+                if (suppressAutoAcceptSwitch) return@setOnCheckedChangeListener
+                if (isChecked && !autoAcceptAcknowledged) {
+                    suppressAutoAcceptSwitch = true
+                    this.isChecked = false
+                    suppressAutoAcceptSwitch = false
+                    showAutoAcceptWarningDialog()
+                } else {
+                    savePrefs()
+                }
+            }
+        }
+        proSection.addView(autoAcceptSwitch)
+        proSection.addView(helpText("Off by default. When on, this phone accepts matching alerts while on duty without asking first. Going off duty stops it. Ballots are never cast automatically."))
+
+        maxDistanceEdit = labeledEditWithHelp(
+            proSection,
+            "Maximum distance (metres)",
+            "Only auto-accept if the farthest point of the alert's area is within this distance.",
+            "1000",
+        )
+        maxDistanceEdit.inputType = InputType.TYPE_CLASS_NUMBER
+        minDepositEdit = labeledEditWithHelp(
+            proSection,
+            "Minimum deposit (sats)",
+            "Smallest caller deposit to accept.",
+            "0",
+        )
+        minDepositEdit.inputType = InputType.TYPE_CLASS_NUMBER
+        minRewardEdit = labeledEditWithHelp(
+            proSection,
+            "Minimum reward (sats)",
+            "Smallest responder reward to accept.",
+            "0",
+        )
+        minRewardEdit.inputType = InputType.TYPE_CLASS_NUMBER
+        minBountyEdit = labeledEditWithHelp(
+            proSection,
+            "Minimum bounty (sats)",
+            "Smallest bounty to accept.",
+            "1",
+        )
+        minBountyEdit.inputType = InputType.TYPE_CLASS_NUMBER
+        responderSettingsSection.addView(proSection)
+
         root.addView(responderSettingsSection)
 
         // ================= ADVANCED / TEST NETWORK (collapsed by default) =================
@@ -928,6 +1005,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showAutoAcceptWarningDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Before you turn on automatic acceptance")
+            .setMessage(
+                "• This phone will accept matching emergencies for you without asking.\n\n" +
+                    "• Your bond is at stake if it accepts and you do not go.\n\n" +
+                    "• It only accepts within your distance limit and above your minimums.\n\n" +
+                    "• Going off duty stops it immediately. It never casts a vote for you."
+            )
+            .setPositiveButton("I understand, turn on") { _, _ ->
+                autoAcceptAcknowledged = true
+                suppressAutoAcceptSwitch = true
+                autoAcceptSwitch.isChecked = true
+                suppressAutoAcceptSwitch = false
+                savePrefs()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun startRoleService(action: String) {
         val pos = manualCoords() ?: recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L)?.first
         if (action == BitaidService.ACTION_START_RESPONDER && pos == null) {
@@ -947,6 +1044,11 @@ class MainActivity : AppCompatActivity() {
             putExtra(BitaidService.EXTRA_POOL, poolEdit.text.toString().trim().ifEmpty { "bitaid" })
             putExtra(BitaidService.EXTRA_SAT_SCALE, satScaleEdit.text.toString().trim().ifEmpty { "1" })
             putExtra(BitaidService.EXTRA_TIME_SCALE, timeScaleEdit.text.toString().trim().ifEmpty { "1" })
+            putExtra(BitaidService.EXTRA_AUTO_ACCEPT, autoAcceptSwitch.isChecked)
+            putExtra(BitaidService.EXTRA_MAX_DISTANCE_M, maxDistanceEdit.text.toString().trim().toLongOrNull() ?: 0L)
+            putExtra(BitaidService.EXTRA_MIN_DEPOSIT, minDepositEdit.text.toString().trim().toLongOrNull() ?: 0L)
+            putExtra(BitaidService.EXTRA_MIN_REWARD, minRewardEdit.text.toString().trim().toLongOrNull() ?: 0L)
+            putExtra(BitaidService.EXTRA_MIN_BOUNTY, minBountyEdit.text.toString().trim().toLongOrNull() ?: 1L)
             if (pos != null) {
                 putExtra(BitaidService.EXTRA_HAS_LOC, true)
                 putExtra(BitaidService.EXTRA_LAT, pos.first)
@@ -1123,6 +1225,14 @@ class MainActivity : AppCompatActivity() {
         timeScaleEdit.setText(p.getString("time_scale", "1"))
         latEdit.setText(p.getString("lat", ""))
         lonEdit.setText(p.getString("lon", ""))
+        autoAcceptAcknowledged = p.getBoolean("auto_accept_ack", false)
+        suppressAutoAcceptSwitch = true
+        autoAcceptSwitch.isChecked = autoAcceptAcknowledged && p.getBoolean("auto_accept", false)
+        suppressAutoAcceptSwitch = false
+        maxDistanceEdit.setText(p.getString("max_distance_m", "1000"))
+        minDepositEdit.setText(p.getString("min_deposit", "0"))
+        minRewardEdit.setText(p.getString("min_reward", "0"))
+        minBountyEdit.setText(p.getString("min_bounty", "1"))
         refreshRpcStatus()
     }
 
@@ -1140,6 +1250,12 @@ class MainActivity : AppCompatActivity() {
             .putString("time_scale", timeScaleEdit.text.toString().trim())
             .putString("lat", latEdit.text.toString().trim())
             .putString("lon", lonEdit.text.toString().trim())
+            .putBoolean("auto_accept_ack", autoAcceptAcknowledged)
+            .putBoolean("auto_accept", autoAcceptSwitch.isChecked)
+            .putString("max_distance_m", maxDistanceEdit.text.toString().trim())
+            .putString("min_deposit", minDepositEdit.text.toString().trim())
+            .putString("min_reward", minRewardEdit.text.toString().trim())
+            .putString("min_bounty", minBountyEdit.text.toString().trim())
             .remove("rpc")
             .apply()
         val typedRpc = rpcEdit.text.toString().trim()

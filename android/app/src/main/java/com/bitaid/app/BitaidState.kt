@@ -174,6 +174,18 @@ object BitaidState {
                         )
                     )
                 }
+                "AutoAccepted" -> {
+                    markAcceptedNow()
+                    val distM = obj.optInt("max_distance_m", 0)
+                    val caseId = obj.optString("case")
+                    val line = "[app] Auto-accepted alert ${caseId.take(8)} (within $distM m)"
+                    cur.copy(
+                        status = ServiceStatus.ACTIVE_CASE,
+                        statusDetail = "Accepted automatically (within $distM m) — waiting for exact location",
+                        alert = null,
+                        logs = (cur.logs + line).takeLast(MAX_LOGS),
+                    )
+                }
                 "Location" -> {
                     val dt = if (acceptedAtMs > 0L) {
                         val s = (System.currentTimeMillis() - acceptedAtMs) / 1000.0
