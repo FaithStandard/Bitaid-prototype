@@ -178,8 +178,10 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
   sleep 1
   # (APP=1: pool1 and pool2 also listen on gossip, each with its own onion port, and answer the app's
   # tip checks: the light client signs only when 2 independent sources agree with its Core)
+  # (the keys go to a folder without spaces: $L is under "Files for Claude", and $(lk) is word-split)
+  K=$HOME/bitaid-light; mkdir -p "$K"; rm -f "$K"/*.pub
   lg() { [ "$APP" = 1 ] && [ $1 -le 2 ] && echo "--listen-gossip 127.0.0.1:770$1"; }
-  lk() { [ "$APP" = 1 ] && [ $1 -le 2 ] && echo "BITAID_PUBKEY_FILE=$L/pool$1.pub BITAID_LINK_NAMES=${ONION%.onion}.onion:770$1"; }
+  lk() { [ "$APP" = 1 ] && [ $1 -le 2 ] && echo "BITAID_PUBKEY_FILE=$K/pool$1.pub BITAID_LINK_NAMES=${ONION%.onion}.onion:770$1"; }
   env $(lk 1) BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 $(lg 1) --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
   if [ "$APP" = 1 ]; then
     # the app's run: the whole pool on this machine, none stalling (the devices run none of it)
@@ -236,10 +238,10 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
   if [ "$APP" = 1 ]; then
     # the light client's three fields (Settings): written to app_light.txt in the Windows folder too,
     # to copy to the phone instead of typing 64-character keys
-    for _ in $(seq 1 20); do [ -s "$L/core.pub" ] && [ -s "$L/pool1.pub" ] && [ -s "$L/pool2.pub" ] && break; sleep 1; done
+    for _ in $(seq 1 20); do [ -s "$L/core.pub" ] && [ -s "$K/pool1.pub" ] && [ -s "$K/pool2.pub" ] && break; sleep 1; done
     AH=$(( $($CLI getblockcount) - 12 )); [ $AH -lt 0 ] && AH=0
     { echo "Core pubkey: $(cat "$L/core.pub")"
-      echo "Tip sources: $(cat "$L/pool1.pub")@$ONION:7701,$(cat "$L/pool2.pub")@$ONION:7702"
+      echo "Tip sources: $(cat "$K/pool1.pub")@$ONION:7701,$(cat "$K/pool2.pub")@$ONION:7702"
       echo "Anchor: $AH:$($CLI getblockhash $AH)"; } > "$WIN/app_light.txt"
     echo "APP_LIGHT (Settings; also in app_light.txt):"; sed 's/^/  /' "$WIN/app_light.txt"
   fi
