@@ -206,11 +206,33 @@ fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::
         );
     }
 
+    // Fetch up to 10 ancestor headers immediately preceding `anchor_h` by following `prev_blockhash`
+    // backwards: cryptographically hash-linked to the pinned `anchor_hdr` so the 11-block BIP113
+    // MTP window is exact from the very first header after the anchor.
+    let mut ancestors_rev: Vec<bitcoin::block::Header> = Vec::new();
+    let mut prev_hash = anchor_hdr.prev_blockhash;
+    for _ in 0..anchor_h.min(10) {
+        let raw = n.rpc.raw_header(&prev_hash.to_string()).unwrap_or_else(|| {
+            crate::stop(
+                3,
+                format!("BITAID_CHAIN=core: cannot read ancestor header {prev_hash}"),
+            )
+        });
+        let hdr: bitcoin::block::Header =
+            bitcoin::consensus::Decodable::consensus_decode(&mut raw.as_slice()).unwrap_or_else(
+                |e| crate::stop(3, format!("BITAID_CHAIN=core: bad ancestor header: {e}")),
+            );
+        prev_hash = hdr.prev_blockhash;
+        ancestors_rev.push(hdr);
+    }
+    ancestors_rev.reverse();
+
     let cl = std::sync::Arc::new(
-        crate::light_client::CoreLight::new(
+        crate::light_client::CoreLight::new_with_ancestors(
             network,
             anchor_h,
             anchor_hdr,
+            &ancestors_rev,
             core_pubkey,
             link.clone(),
             n.keys,

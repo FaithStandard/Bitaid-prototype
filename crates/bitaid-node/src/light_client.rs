@@ -371,12 +371,26 @@ impl CoreLight {
         link: LocalLink,
         keys: Keypair,
     ) -> Result<Self, String> {
+        Self::new_with_ancestors(network, anchor_height, anchor_header, &[], core_pubkey, link, keys)
+    }
+
+    /// Creates a `CoreLight` anchored at `(anchor_height, anchor_header)` along with up to 10
+    /// hash-linked ancestor headers immediately preceding `anchor_height` (for exact BIP113 MTP).
+    pub fn new_with_ancestors(
+        network: Network,
+        anchor_height: u32,
+        anchor_header: Header,
+        ancestors: &[Header],
+        core_pubkey: String,
+        link: LocalLink,
+        keys: Keypair,
+    ) -> Result<Self, String> {
         let core_pubkey = core_pubkey.trim().to_ascii_lowercase();
         if core_pubkey.len() != 64 || hex::decode(&core_pubkey).is_err() {
             return Err("CoreLight requires a valid 32-byte hex core_pubkey".into());
         }
-        let headers =
-            HeaderChain::new(network, anchor_height, anchor_header).map_err(|e| e.to_string())?;
+        let headers = HeaderChain::new_with_ancestors(network, anchor_height, anchor_header, ancestors)
+            .map_err(|e| e.to_string())?;
         let (h, bh) = headers.tip();
         Ok(Self {
             core_pubkey,
