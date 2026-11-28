@@ -155,7 +155,9 @@ start)
   else $CLI -rpcwallet=w generatetoaddress 1 $($CLI -rpcwallet=w getnewaddress) >/dev/null; fi
   fi
   echo "chain: $($CLI getblockchaininfo | sed -n 's/.*"chain": "\([a-z]*\)".*/\1/p') height $($CLI getblockcount)"
-  OUT=$(sh scripts/tor_up.sh 7700 7480 18443:$RPCPORT) || { echo "$OUT"; exit 1; }
+  # APP=1: the app as a light client of the Core (phone-light): pool1 and pool2 answer as its 2 tip sources
+  TP=""; [ "$APP" = 1 ] && TP="7701 7702"
+  OUT=$(sh scripts/tor_up.sh 7700 7480 18443:$RPCPORT $TP) || { echo "$OUT"; exit 1; }
   ONION=$(echo "$OUT" | sed -n 's/^ONION=//p')
   [ -z "$NO_TOR" ] && export BITAID_SOCKS=127.0.0.1:${TOR_SOCKS:-9160}
   export BITAID_RPC=http://bitaid:$PASS@127.0.0.1:$RPCPORT BITAID_SELF_ONION=$ONION
@@ -172,13 +174,17 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
   rm -f "$L"/*.log "$L"/*.out
   # bonded links: the Core demands a proof of stake from every peer; a proof names the address the
   # peer dialled, so the Core accepts its own onion address besides the local port
-  BITAID_LINK_NAMES="${ONION%.onion}.onion:7700" BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
+  BITAID_PUBKEY_FILE="$L/core.pub" BITAID_LINK_NAMES="${ONION%.onion}.onion:7700" BITAID_WALLET=w nohup target/release/bitaid-node --role core --name core-pc --listen-gossip 127.0.0.1:7700 >/dev/null 2>"$L/core.log" </dev/null &
   sleep 1
-  BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
+  # (APP=1: pool1 and pool2 also listen on gossip, each with its own onion port, and answer the app's
+  # tip checks: the light client signs only when 2 independent sources agree with its Core)
+  lg() { [ "$APP" = 1 ] && [ $1 -le 2 ] && echo "--listen-gossip 127.0.0.1:770$1"; }
+  lk() { [ "$APP" = 1 ] && [ $1 -le 2 ] && echo "BITAID_PUBKEY_FILE=$L/pool$1.pub BITAID_LINK_NAMES=${ONION%.onion}.onion:770$1"; }
+  env $(lk 1) BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool1-pc --id 1 --n 4 --t 3 $(lg 1) --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool1.log" </dev/null &
   if [ "$APP" = 1 ]; then
     # the app's run: the whole pool on this machine, none stalling (the devices run none of it)
     for m in 2 3 4; do
-      BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool$m-pc --id $m --n 4 --t 3 --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool$m.log" </dev/null &
+      env $(lk $m) BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool$m-pc --id $m --n 4 --t 3 $(lg $m) --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool$m.log" </dev/null &
     done
   else
   BITAID_WALLET=w nohup target/release/bitaid-node --role pool-member --name pool2-pc-stall --id 2 --n 4 --t 3 --stall --setup-wait ${WAIT:-10800} $P $X >/dev/null 2>"$L/pool2.log" </dev/null &
@@ -227,6 +233,16 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
   echo "$ONION" > "$L/onion.txt"; echo "$BITAID_INDEX_FROM" > "$L/index_from.txt"
   echo "PC_READY  onion: $ONION  TIME_SCALE=$BITAID_TIME_SCALE SAT_SCALE=$BITAID_SAT_SCALE INDEX_FROM=$BITAID_INDEX_FROM"
   [ "$APP" = 1 ] && echo "APP_SETTINGS  peer: $ONION:7700  rpc: http://bitaid:$PASS@$ONION:18443  wallet: r1  pool: ${POOL:-tor1}  lat: ${APP_LAT:-13.6929}  lon: ${APP_LON:--89.2182}"
+  if [ "$APP" = 1 ]; then
+    # the light client's three fields (Settings): written to app_light.txt in the Windows folder too,
+    # to copy to the phone instead of typing 64-character keys
+    for _ in $(seq 1 20); do [ -s "$L/core.pub" ] && [ -s "$L/pool1.pub" ] && [ -s "$L/pool2.pub" ] && break; sleep 1; done
+    AH=$(( $($CLI getblockcount) - 12 )); [ $AH -lt 0 ] && AH=0
+    { echo "Core pubkey: $(cat "$L/core.pub")"
+      echo "Tip sources: $(cat "$L/pool1.pub")@$ONION:7701,$(cat "$L/pool2.pub")@$ONION:7702"
+      echo "Anchor: $AH:$($CLI getblockhash $AH)"; } > "$WIN/app_light.txt"
+    echo "APP_LIGHT (Settings; also in app_light.txt):"; sed 's/^/  /' "$WIN/app_light.txt"
+  fi
   [ "$CHAIN" = public ] && echo "RPC_PASS=$PASS"
   ;;
 alert)
