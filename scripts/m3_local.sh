@@ -50,6 +50,7 @@ COMMON="$R $RELAY --archivists 2 --mine"
 # alert raised on the ready event), with its settings passed in rather than read from the environment
 R1=$BIN/bitaid-node; CALLER=$BIN/bitaid-node; R1X=""; CX=""
 [ -n "$APP" ] && { R1=$BIN/examples/app_drive; CALLER=$BIN/examples/app_drive; R1X="--ask-accept --ask-vote"; CX="--ask-alert"; export BITAID_APP_BALLOT=I,D; }
+[ -n "$R1_EXTRA" ] && R1X="$R1X $R1_EXTRA"   # e.g. R1_EXTRA="--auto-accept --max-distance-m 2000" (tests)
 # LIGHT_R1=1 (Step 6): run r1 with BITAID_CHAIN=core, pinned Core key, BITAID_ANCHOR, and 2 independent
 # worker TipSources (pool1 + pool2). LIGHT_R1_NEG=1 gives only 1 TipSource so r1's sign_gate must FAIL.
 R1_ENV="BITAID_RPC_COUNT=1"; R1_PEERS=""

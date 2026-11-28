@@ -47,6 +47,8 @@ fn main() {
         .split(',')
         .map(|x| x.trim().to_string())
         .collect();
+    let no_accept = settings.get("BITAID_APP_NO_ACCEPT").is_some_and(|v| v == "1");
+    let vote_delay: u64 = settings.get("BITAID_APP_VOTE_DELAY_S").and_then(|v| v.parse().ok()).unwrap_or(0);
     let store = settings
         .get("BITAID_LINK_DIR")
         .cloned()
@@ -69,10 +71,21 @@ fn main() {
                     Event::ReadyToAlert { .. } => commands::send(Command::RaiseAlert { at: None }),
                     Event::Alert { case, .. } => {
                         alerts += 1;
-                        commands::send(Command::Accept { case });
+                        // BITAID_APP_NO_ACCEPT=1 (tests): the attendee never taps Accept, so only the
+                        // role's own auto-accept can take the case
+                        if !no_accept {
+                            commands::send(Command::Accept { case });
+                        }
                     }
+                    // BITAID_APP_VOTE_DELAY_S (tests): the attendee answers the ballot late, from another
+                    // thread, so the role's own cutoff decides whether it still counts
                     Event::BallotDue { case, .. } => {
-                        commands::send(Command::Vote { case, classes: ballot.clone(), achieved: true, misuse: false })
+                        let delay: u64 = vote_delay;
+                        let classes = ballot.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(delay));
+                            commands::send(Command::Vote { case, classes, achieved: true, misuse: false })
+                        });
                     }
                     // shown, never hidden: a real app would mark the node down until it restarts it
                     Event::Fatal { text, .. } => eprintln!("[app] FATAL: {text}"),
