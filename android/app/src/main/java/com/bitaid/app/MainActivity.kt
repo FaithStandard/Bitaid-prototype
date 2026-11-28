@@ -18,6 +18,7 @@ import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.InputType
 import android.view.View
@@ -1035,7 +1036,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun startRoleService(action: String) {
         val manual = manualCoords()
-        val pos = manual ?: recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L)?.first
+        val recent = if (manual == null) recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L) else null
+        val pos = manual ?: recent?.let { Pair(it.lat, it.lon) }
         if (action == BitaidService.ACTION_START_RESPONDER && pos == null) {
             BitaidState.update {
                 it.copy(status = ServiceStatus.OFF_DUTY, statusDetail = "No GPS location — enable GPS or enter coordinates")
@@ -1063,6 +1065,10 @@ class MainActivity : AppCompatActivity() {
                 putExtra(BitaidService.EXTRA_HAS_LOC, true)
                 putExtra(BitaidService.EXTRA_LAT, pos.first)
                 putExtra(BitaidService.EXTRA_LON, pos.second)
+                if (recent != null) {
+                    putExtra(BitaidService.EXTRA_POS_AT, recent.epochSecs)
+                    putExtra(BitaidService.EXTRA_POS_ACCURACY_M, recent.accuracyM)
+                }
             } else {
                 putExtra(BitaidService.EXTRA_HAS_LOC, false)
             }
@@ -1131,14 +1137,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private data class CachedFix(
+        val lat: Double,
+        val lon: Double,
+        val accuracyM: Float,
+        val ageMs: Long,
+        val epochSecs: Long,
+    )
+
     private fun fallbackRecentFix(): Pair<Double, Double>? {
         val recent = recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L)
         if (recent != null) {
-            val ageSec = recent.second / 1000L
+            val ageSec = recent.ageMs / 1000L
             BitaidState.update {
                 it.copy(logs = (it.logs + "[app] No fresh GPS fix; using cached fix (${ageSec}s old)").takeLast(200))
             }
-            return recent.first
+            return Pair(recent.lat, recent.lon)
         }
         BitaidState.update {
             it.copy(logs = (it.logs + "[app] No recent GPS fix (<5 min); raising alert without position").takeLast(200))
@@ -1146,17 +1160,24 @@ class MainActivity : AppCompatActivity() {
         return null
     }
 
-    private fun recentLastKnownFix(maxAgeMs: Long): Pair<Pair<Double, Double>, Long>? {
+    private fun recentLastKnownFix(maxAgeMs: Long): CachedFix? {
         val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (!hasFine) return null
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val best = listOfNotNull(
             lm.getLastKnownLocation(LocationManager.GPS_PROVIDER),
             lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER),
-        ).maxByOrNull { it.time } ?: return null
-        val age = (System.currentTimeMillis() - best.time).coerceAtLeast(0L)
-        if (age > maxAgeMs) return null
-        return Pair(Pair(best.latitude, best.longitude), age)
+        ).maxByOrNull { it.elapsedRealtimeNanos } ?: return null
+        val ageMs = ((SystemClock.elapsedRealtimeNanos() - best.elapsedRealtimeNanos).coerceAtLeast(0L)) / 1_000_000L
+        if (ageMs > maxAgeMs) return null
+        val epochSecs = ((System.currentTimeMillis() - ageMs).coerceAtLeast(0L)) / 1000L
+        return CachedFix(
+            lat = best.latitude,
+            lon = best.longitude,
+            accuracyM = best.accuracy,
+            ageMs = ageMs,
+            epochSecs = epochSecs,
+        )
     }
 
     private fun requestRuntimePermissions() {

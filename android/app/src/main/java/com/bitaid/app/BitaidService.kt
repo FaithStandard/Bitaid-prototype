@@ -19,6 +19,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -72,6 +73,8 @@ class BitaidService : Service() {
         val timeScale: String,
         val lat: Double?,
         val lon: Double?,
+        val posAtSecs: Long = 0L,
+        val posAccuracyM: Float = -1f,
         val autoAccept: Boolean = false,
         val maxDistanceM: Long = 0L,
         val minDeposit: Long = 0L,
@@ -127,6 +130,8 @@ class BitaidService : Service() {
                     timeScale = intent.getStringExtra(EXTRA_TIME_SCALE) ?: "1",
                     lat = if (validLoc) lat else null,
                     lon = if (validLoc) lon else null,
+                    posAtSecs = intent.getLongExtra(EXTRA_POS_AT, 0L),
+                    posAccuracyM = intent.getFloatExtra(EXTRA_POS_ACCURACY_M, -1f),
                     autoAccept = intent.getBooleanExtra(EXTRA_AUTO_ACCEPT, false),
                     maxDistanceM = intent.getLongExtra(EXTRA_MAX_DISTANCE_M, 0L),
                     minDeposit = intent.getLongExtra(EXTRA_MIN_DEPOSIT, 0L),
@@ -265,6 +270,10 @@ class BitaidService : Service() {
             if (cfg.lat != null && cfg.lon != null) {
                 put("--lat"); put(cfg.lat.toString())
                 put("--lon"); put(cfg.lon.toString())
+                if (cfg.posAtSecs > 0L && cfg.posAccuracyM >= 0f && cfg.posAccuracyM.isFinite()) {
+                    put("--pos-at"); put(cfg.posAtSecs.toString())
+                    put("--pos-accuracy-m"); put(cfg.posAccuracyM.toString())
+                }
             }
             put("--exit-after"); put("86400")
             put("--settle-wait"); put("1800")
@@ -582,7 +591,8 @@ class BitaidService : Service() {
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val listener = object : LocationListener {
             override fun onLocationChanged(loc: Location) {
-                val atSecs = (loc.time / 1000L).coerceAtLeast(0L)
+                val ageMs = ((SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos).coerceAtLeast(0L)) / 1_000_000L
+                val atSecs = ((System.currentTimeMillis() - ageMs).coerceAtLeast(0L)) / 1000L
                 NativeBridge.sendPosition(loc.latitude, loc.longitude, loc.accuracy, atSecs)
             }
         }
@@ -653,6 +663,8 @@ class BitaidService : Service() {
         const val EXTRA_MANUAL_LOC = "manual_loc"
         const val EXTRA_LAT = "lat"
         const val EXTRA_LON = "lon"
+        const val EXTRA_POS_AT = "pos_at"
+        const val EXTRA_POS_ACCURACY_M = "pos_accuracy_m"
         const val EXTRA_AUTO_ACCEPT = "auto_accept"
         const val EXTRA_MAX_DISTANCE_M = "max_distance_m"
         const val EXTRA_MIN_DEPOSIT = "min_deposit"

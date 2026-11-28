@@ -7882,14 +7882,19 @@ fn responder(mut n: Node) -> i32 {
     }
     // ------------------------------------------------ listen to my cell and its neighbours
     let (mut lat, mut lon) = (num("--lat", 13.6929f64), num("--lon", -89.2182f64));
-    let mut pos_accuracy_m = 0.0f64;
+    // Fail closed: starting --lat/--lon has unknown age and accuracy unless explicitly passed via
+    // --pos-at / --pos-accuracy-m or updated by a live Command::Position from the app.
+    let mut pos_accuracy_m = arg("--pos-accuracy-m")
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(f64::INFINITY);
     let now_epoch = || {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
     };
-    let mut pos_at_secs = now_epoch();
+    let mut pos_at_secs = num("--pos-at", 0u64);
     let mut home = cell_of(lat, lon);
     let mut cells: Vec<String> = home
         .grid_disk::<Vec<_>>(1)
@@ -8014,7 +8019,11 @@ fn responder(mut n: Node) -> i32 {
                     a.cell,
                     t_check.elapsed().as_secs_f64()
                 ));
-                let pos_age_secs = now_epoch().saturating_sub(pos_at_secs);
+                let pos_age_secs = if pos_at_secs > 0 {
+                    now_epoch().saturating_sub(pos_at_secs)
+                } else {
+                    u64::MAX
+                };
                 if auto_accept {
                     // Check OffDuty one last time before auto-accepting.
                     if crate::commands::take(Duration::ZERO, |x| matches!(x, crate::commands::Command::OffDuty)).is_some() {
@@ -8062,8 +8071,9 @@ fn responder(mut n: Node) -> i32 {
                         }
                     }
                 }
+                let acc_pad = if pos_accuracy_m.is_finite() { pos_accuracy_m } else { 0.0 };
                 let dist_m = max_distance_to_cell_m(lat, lon, &a.cell)
-                    .map(|d| (d + pos_accuracy_m).round() as u32);
+                    .map(|d| (d + acc_pad).round() as u32);
                 crate::events::emit(crate::events::Event::Alert {
                     node: n.name.clone(),
                     case: a.case_hex.clone(),
@@ -8072,7 +8082,7 @@ fn responder(mut n: Node) -> i32 {
                     reward: a.template.pots[1],
                     bounty: a.template.pots[2],
                     distance_m: dist_m,
-                    position_age_secs: Some(pos_age_secs),
+                    position_age_secs: (pos_at_secs > 0).then_some(pos_age_secs),
                 });
                 if !flag("--ask-accept") {
                     break a;
@@ -8943,9 +8953,11 @@ mod auto_accept_tests {
             "accuracy_m must be added to farthest vertex distance"
         );
 
-        // Negative: stale fix (> 120 s) or inaccurate fix (> 100 m).
+        // Negative: stale fix (> 120 s), unknown age (u64::MAX), or inaccurate/unknown accuracy (> 100 m / INFINITY).
         assert!(evaluate_auto_accept(true, false, lat, lon, 15.0, 121, &home_str, limit, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, 15.0, u64::MAX, &home_str, limit, pots, 0, 0, 0).is_err());
         assert!(evaluate_auto_accept(true, false, lat, lon, 101.0, 10, &home_str, limit + 500, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, f64::INFINITY, 10, &home_str, limit + 500, pots, 0, 0, 0).is_err());
 
         // Negative: responder moved ~5 km away after going on duty -> alert near A must NOT auto-accept.
         let (moved_lat, moved_lon) = (lat + 0.045, lon); // ~5 km north
