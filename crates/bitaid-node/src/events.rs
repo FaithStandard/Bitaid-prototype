@@ -16,6 +16,8 @@ pub enum Event {
     Summary { node: String, passed: u32, failed: u32 },
     /// the role stopped on a fault (a panic in its thread): whatever the app showed is no longer true
     Fatal { node: String, text: String },
+    /// a non-fatal security or operational warning (e.g. Core distrusted; signing disabled while alerts stay active)
+    Warning { node: String, text: String },
     /// an alert in the responder's cells passed its checks: the app shows it, and with
     /// `--ask-accept` the role waits for Accept or Decline
     Alert { node: String, case: String, cell: String, deposit: u64, reward: u64, bounty: u64 },

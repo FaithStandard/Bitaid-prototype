@@ -211,6 +211,9 @@ pub struct TipCheck {
     pub hash: BlockHash,
     /// For each requested outpoint, whether this independent source reports it unspent.
     pub unspent: HashMap<OutPoint, bool>,
+    /// Optional creating `TxOut`s parsed from the worker's `LightAnswer.txs` (used only for
+    /// credible-only alert fallback when the user's own Core is distrusted; never for signing).
+    pub txouts: HashMap<OutPoint, TxOut>,
 }
 
 /// Independent source of the current chain tip and output unspent status (§7.2 anti-omission
@@ -265,6 +268,7 @@ impl TipSource for LinkTipSource {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let raw = wire::sign(&self.keys, 0, ask);
@@ -293,6 +297,7 @@ impl TipSource for LinkTipSource {
                 ask_hash: ah,
                 tip_height,
                 tip_hash,
+                txs,
                 outputs,
                 ..
             } = env.msg
@@ -301,16 +306,31 @@ impl TipSource for LinkTipSource {
                     continue;
                 }
                 let hash = BlockHash::from_str(&tip_hash).map_err(|e| e.to_string())?;
+                let mut decoded_txs: HashMap<Txid, Transaction> = HashMap::new();
+                for p in txs {
+                    if let Ok(tx) = Transaction::consensus_decode(&mut p.raw.as_slice()) {
+                        decoded_txs.insert(tx.compute_txid(), tx);
+                    }
+                }
                 let mut unspent = HashMap::new();
+                let mut txouts = HashMap::new();
                 for o in outputs {
                     if let Ok(op) = OutPoint::from_str(&o.outpoint) {
                         unspent.insert(op, o.unspent);
+                        if let Some(out) = decoded_txs
+                            .get(&op.txid)
+                            .and_then(|tx| tx.output.get(op.vout as usize))
+                            .cloned()
+                        {
+                            txouts.insert(op, out);
+                        }
                     }
                 }
                 return Ok(TipCheck {
                     height: tip_height,
                     hash,
                     unspent,
+                    txouts,
                 });
             }
         }
@@ -434,6 +454,134 @@ impl CoreLight {
 
     pub fn set_core_link(&self, link_id: u64) {
         *self.core_link_id.lock().unwrap() = Some(link_id);
+    }
+
+    /// Fetches the pinned anchor header, up to 10 hash-linked ancestors immediately preceding it,
+    /// and any post-anchor headers up to the Core's tip in a single `LightAsk { anchor_hash }`.
+    /// Verifies the Core's signature, the anchor block hash, and the backward `prev_blockhash`
+    /// chain of ancestors before returning `(anchor_header, ancestors_oldest_first, post_anchor)`.
+    pub fn fetch_anchor_bundle(
+        link: &LocalLink,
+        core_link_id: Option<u64>,
+        core_pubkey: &str,
+        keys: &Keypair,
+        anchor_height: u32,
+        anchor_hash: &str,
+        timeout: Duration,
+    ) -> Result<(Header, Vec<Header>, Vec<Header>), String> {
+        let core_pk = core_pubkey.trim().to_ascii_lowercase();
+        if core_pk.len() != 64 || hex::decode(&core_pk).is_err() {
+            return Err("fetch_anchor_bundle requires a valid 32-byte hex core_pubkey".into());
+        }
+        let anchor_hash_lc = anchor_hash.trim().to_ascii_lowercase();
+        let req_id = hex::encode(rand::random::<[u8; 16]>());
+        let ask = Msg::LightAsk {
+            id: req_id.clone(),
+            locator: vec![],
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+            anchor_hash: Some(anchor_hash_lc.clone()),
+        };
+        let ask_hash = light_ask_hash(&ask);
+        let raw = wire::sign(keys, anchor_height, ask);
+        let link_id = match core_link_id {
+            Some(id) => {
+                link.send_to(id, &raw)?;
+                id
+            }
+            None => link.send_outbound(&raw)?,
+        };
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err("anchor LightAsk timed out waiting for Core answer".into());
+            }
+            let Some((lid, env)) = link.recv_answer(left) else {
+                return Err("anchor LightAsk timed out waiting for Core answer".into());
+            };
+            if lid != link_id {
+                continue;
+            }
+            if env.sender.to_ascii_lowercase() != core_pk {
+                return Err(format!(
+                    "anchor LightAsk wrong signer: got {}, expected {}",
+                    crate::pre(&env.sender, 12),
+                    crate::pre(&core_pk, 12)
+                ));
+            }
+            if let Msg::LightAnswer {
+                id,
+                ask_hash: ah,
+                headers_from,
+                headers,
+                ..
+            } = env.msg
+            {
+                if id != req_id || ah != ask_hash {
+                    continue;
+                }
+                if headers.is_empty() {
+                    return Err("Core returned no headers for anchor_hash".into());
+                }
+                if headers_from > anchor_height {
+                    return Err(format!(
+                        "Core anchor headers_from {headers_from} > anchor_height {anchor_height}"
+                    ));
+                }
+                let mut decoded = Vec::with_capacity(headers.len());
+                for raw_h in &headers {
+                    if raw_h.len() != 80 {
+                        return Err(format!("bad header length {}", raw_h.len()));
+                    }
+                    let hdr = Header::consensus_decode(&mut raw_h.as_slice())
+                        .map_err(|e| format!("bad header decode: {e}"))?;
+                    decoded.push(hdr);
+                }
+                let idx = (anchor_height - headers_from) as usize;
+                if idx >= decoded.len() {
+                    return Err(format!(
+                        "Core returned {} headers from {headers_from}, missing anchor_height {anchor_height}",
+                        decoded.len()
+                    ));
+                }
+                let anchor_hdr = decoded[idx];
+                if anchor_hdr.block_hash().to_string() != anchor_hash_lc {
+                    return Err(format!(
+                        "Core anchor header hash mismatch: got {}, expected {anchor_hash_lc}",
+                        anchor_hdr.block_hash()
+                    ));
+                }
+                let ancestors = decoded[..idx].to_vec();
+                let want_anc = anchor_height.min(10) as usize;
+                if ancestors.len() < want_anc {
+                    return Err(format!(
+                        "Core returned {} anchor ancestors, need {want_anc}",
+                        ancestors.len()
+                    ));
+                }
+                let post_anchor = decoded[idx + 1..].to_vec();
+                return Ok((anchor_hdr, ancestors, post_anchor));
+            }
+        }
+    }
+
+    /// Applies pre-fetched post-anchor headers (e.g. from `fetch_anchor_bundle`) directly to the
+    /// verified `HeaderChain`.
+    pub fn apply_headers_at(&self, headers: &[Header], now_secs: u32) -> Result<(), String> {
+        if headers.is_empty() {
+            return Ok(());
+        }
+        let mut st = self.state.lock().unwrap();
+        st.headers
+            .apply_fork_at(headers, Some(now_secs))
+            .map_err(|e| e.to_string())?;
+        let (h, bh) = st.headers.tip();
+        st.credible_tip = (h, bh.to_string());
+        Ok(())
     }
 
     /// Earliest block height anchoring `root_hex` (`KIND_ANCHOR` OP_RETURN), credible or verified.
@@ -603,10 +751,49 @@ impl CoreLight {
     }
 
     fn mark_distrusted(st: &mut LightState, why: String) -> String {
-        crate::say!("FAIL: your Core gave a bad proof ({why}); signing is off");
+        let msg = format!("Your Core gave a bad proof ({why}); signing is off");
+        crate::say!("FAIL: {msg}");
+        crate::events::emit(crate::events::Event::Warning {
+            node: String::new(),
+            text: msg,
+        });
         st.distrusted = true;
         st.distrust_reason = Some(why.clone());
         why
+    }
+
+    /// Credible-only fallback when the user's own Core is distrusted: queries the independent
+    /// `TipSource`s for `op` and returns its `TxOut` only if at least `MIN_TIP_SOURCES` (2)
+    /// distinct sources agree it is unspent with identical `(value, script_pubkey)` and none
+    /// reports it spent. NEVER marks anything `Verified` and NEVER unlocks `sign_gate`.
+    pub fn credible_utxo_from_tip_sources(&self, op: &OutPoint) -> Option<TxOut> {
+        let sources = self.tip_sources.lock().unwrap();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut agreed: Vec<TxOut> = Vec::new();
+        for src in sources.iter() {
+            let pk = src.pubkey().trim().to_ascii_lowercase();
+            if pk.is_empty() || pk == self.core_pubkey || !seen.insert(pk) {
+                continue;
+            }
+            let Ok(chk) = src.check(&[*op]) else {
+                continue;
+            };
+            match chk.unspent.get(op) {
+                Some(&false) => return None,
+                Some(&true) => {
+                    if let Some(out) = chk.txouts.get(op) {
+                        agreed.push(out.clone());
+                    }
+                }
+                None => {}
+            }
+        }
+        if agreed.len() < MIN_TIP_SOURCES {
+            return None;
+        }
+        let first = &agreed[0];
+        let matches = agreed.iter().filter(|o| *o == first).count();
+        (matches >= MIN_TIP_SOURCES).then(|| first.clone())
     }
 
     /// Stage 1 (Credible): ingests a signed `LightAnswer` immediately into the cache as
@@ -1078,6 +1265,7 @@ impl CoreLight {
             case_id,
             from_height,
             from_index,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let tip_h = self.height();
@@ -1182,6 +1370,7 @@ impl CoreLight {
                     height,
                     hash,
                     unspent: HashMap::new(),
+                    txouts: HashMap::new(),
                 },
                 None => match src.check(outpoints) {
                     Ok(c) => {
@@ -1743,6 +1932,7 @@ mod tests {
                 height: g.0,
                 hash: g.1,
                 unspent,
+                txouts: HashMap::new(),
             })
         }
     }
@@ -1822,6 +2012,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let (_, signed) = answer_ask(&*chain, &core_kp, &ask).unwrap();
@@ -1970,6 +2161,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let (mut ans, _) = answer_ask(&*chain, &core_kp, &ask).unwrap();
@@ -2294,6 +2486,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah1 = light_ask_hash(&ask1);
         let (_, s1) = answer_ask(&*chain, &core_kp, &ask1).unwrap();
@@ -2315,6 +2508,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah_a = light_ask_hash(&ask_a);
         let (_, sa) = answer_ask(&*chain, &core_kp, &ask_a).unwrap();
@@ -2329,6 +2523,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah_b = light_ask_hash(&ask_b);
         let (_, sb) = answer_ask(&*chain, &core_kp, &ask_b).unwrap();
@@ -2357,6 +2552,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah_c = light_ask_hash(&ask_c);
         let lighter_ans = Msg::LightAnswer {
@@ -2378,5 +2574,118 @@ mod tests {
             .unwrap();
         assert!(!light.is_distrusted());
         assert_eq!(light.verified_tip(), (3, h3_hash));
+    }
+
+    #[test]
+    fn distrusted_core_falls_back_to_tip_sources_credible_only_never_signs() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let w1_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let w2_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+        let w1_pk = hex::encode(w1_kp.x_only_public_key().0.serialize());
+        let w2_pk = hex::encode(w2_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let g = Gossip::start(None, &[], None).unwrap();
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        let spk = ScriptBuf::from_bytes(vec![0x51, 0x20, 0x99, 0xaa]);
+        let expected_out = TxOut {
+            value: Amount::from_sat(123_456),
+            script_pubkey: spk,
+        };
+        let fund_tx = make_tx(5, vec![expected_out.clone()]);
+        let op = OutPoint {
+            txid: fund_tx.compute_txid(),
+            vout: 0,
+        };
+
+        struct FallbackSrc {
+            pk: String,
+            op: OutPoint,
+            unspent: bool,
+            out: TxOut,
+        }
+        impl TipSource for FallbackSrc {
+            fn pubkey(&self) -> &str {
+                &self.pk
+            }
+            fn check(&self, _ops: &[OutPoint]) -> Result<TipCheck, String> {
+                let mut unspent = HashMap::new();
+                let mut txouts = HashMap::new();
+                unspent.insert(self.op, self.unspent);
+                txouts.insert(self.op, self.out.clone());
+                Ok(TipCheck {
+                    height: 1,
+                    hash: BlockHash::all_zeros(),
+                    unspent,
+                    txouts,
+                })
+            }
+        }
+
+        // Distrust the Core with a bad header.
+        let ask = Msg::LightAsk {
+            id: "dd".repeat(16),
+            locator: light.build_locator(),
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+            anchor_hash: None,
+        };
+        let ah = light_ask_hash(&ask);
+        let bad_ans = Msg::LightAnswer {
+            id: "dd".repeat(16),
+            ask_hash: ah.clone(),
+            tip_height: 1,
+            tip_hash: "00".repeat(32),
+            headers_from: 1,
+            headers: vec![vec![0u8; 80]], // invalid PoW/linkage
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            records_through: (1, u32::MAX),
+            covers: vec![],
+        };
+        let bad_raw = wire::sign(&core_kp, 1, bad_ans);
+        assert!(light
+            .apply_answer_at(&ah, &wire::verify(&bad_raw).unwrap(), bad_raw.len(), base_time + 60)
+            .is_err());
+        assert!(light.is_distrusted());
+
+        // With 2 agreeing independent TipSources, credible fallback works for alert checks,
+        // while sign_gate remains permanently blocked!
+        light.add_tip_source(Box::new(FallbackSrc {
+            pk: w1_pk,
+            op,
+            unspent: true,
+            out: expected_out.clone(),
+        }));
+        assert_eq!(light.credible_utxo_from_tip_sources(&op), None, "1 source is not enough");
+        light.add_tip_source(Box::new(FallbackSrc {
+            pk: w2_pk,
+            op,
+            unspent: true,
+            out: expected_out.clone(),
+        }));
+        assert_eq!(light.credible_utxo_from_tip_sources(&op), Some(expected_out));
+        assert!(
+            light.sign_gate(&[], &[op]).is_err(),
+            "distrusted Core must NEVER pass sign_gate even when credible fallback succeeds"
+        );
     }
 }

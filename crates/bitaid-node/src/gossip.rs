@@ -1505,6 +1505,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_raw = crate::wire::sign(&phone_kp, 10, ask.clone());
         let phone_local = phone.local_link();

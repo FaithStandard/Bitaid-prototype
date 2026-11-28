@@ -115,11 +115,18 @@ fn chain_view(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBu
 
 /// Chain view backed by `CoreLight` (`BITAID_CHAIN=core`): returns cached credible/verified
 /// outputs immediately or fetches the outpoint in one `LightAsk` (fast alert check).
+/// When the Core is distrusted, falls back to the 2 independent `TipSource`s (credible-only;
+/// `sign_gate` remains permanently blocked).
 fn light_chain_view(
     cl: &crate::light_client::CoreLight,
 ) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBuf)> + '_ {
     use crate::light_client::ChainSource;
     move |op| {
+        if cl.is_distrusted() {
+            return cl
+                .credible_utxo_from_tip_sources(op)
+                .map(|o| (o.value.to_sat(), o.script_pubkey));
+        }
         if let Some(t) = cl.utxo(op) {
             return Some((t.value.value.to_sat(), t.value.script_pubkey));
         }
@@ -189,60 +196,8 @@ fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::
             .unwrap_or_else(|| crate::stop(3, format!("BITAID_CHAIN=core: cannot read anchor hash at {h}")));
         (h, hash)
     };
-    let anchor_raw = n
-        .rpc
-        .raw_header(&anchor_hash)
-        .unwrap_or_else(|| crate::stop(3, format!("BITAID_CHAIN=core: cannot read anchor header at {anchor_h}")));
-    let anchor_hdr: bitcoin::block::Header =
-        bitcoin::consensus::Decodable::consensus_decode(&mut anchor_raw.as_slice())
-            .unwrap_or_else(|e| crate::stop(3, format!("BITAID_CHAIN=core: bad anchor header: {e}")));
-    if anchor_hdr.block_hash().to_string() != anchor_hash {
-        crate::stop(
-            3,
-            format!(
-                "BITAID_CHAIN=core: anchor header hash mismatch: got {}, expected {anchor_hash}",
-                anchor_hdr.block_hash()
-            ),
-        );
-    }
-
-    // Fetch up to 10 ancestor headers immediately preceding `anchor_h` by following `prev_blockhash`
-    // backwards: cryptographically hash-linked to the pinned `anchor_hdr` so the 11-block BIP113
-    // MTP window is exact from the very first header after the anchor.
-    let mut ancestors_rev: Vec<bitcoin::block::Header> = Vec::new();
-    let mut prev_hash = anchor_hdr.prev_blockhash;
-    for _ in 0..anchor_h.min(10) {
-        let raw = n.rpc.raw_header(&prev_hash.to_string()).unwrap_or_else(|| {
-            crate::stop(
-                3,
-                format!("BITAID_CHAIN=core: cannot read ancestor header {prev_hash}"),
-            )
-        });
-        let hdr: bitcoin::block::Header =
-            bitcoin::consensus::Decodable::consensus_decode(&mut raw.as_slice()).unwrap_or_else(
-                |e| crate::stop(3, format!("BITAID_CHAIN=core: bad ancestor header: {e}")),
-            );
-        prev_hash = hdr.prev_blockhash;
-        ancestors_rev.push(hdr);
-    }
-    ancestors_rev.reverse();
-
-    let cl = std::sync::Arc::new(
-        crate::light_client::CoreLight::new_with_ancestors(
-            network,
-            anchor_h,
-            anchor_hdr,
-            &ancestors_rev,
-            core_pubkey,
-            link.clone(),
-            n.keys,
-        )
-        .unwrap_or_else(|e| crate::stop(3, format!("BITAID_CHAIN=core: {e}"))),
-    );
-
-    // Pin the Core's outbound link and wire any independent worker TipSources from
-    // `BITAID_TIP_SOURCES` (format: `pubkey1@peer1,pubkey2@peer2` or `pubkey1,pubkey2`).
-    // Wait briefly so all configured outbound links (Core + TipSources) finish connecting.
+    // Wait briefly so all configured outbound links (Core + TipSources) finish connecting before
+    // fetching the anchor bundle over the Core's LocalLink.
     let tip_spec = crate::config::var("BITAID_TIP_SOURCES").unwrap_or_default();
     let tip_items: Vec<&str> = tip_spec
         .split(',')
@@ -260,6 +215,79 @@ fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::
         .as_deref()
         .and_then(|cp| peers.iter().find(|(_, p)| p == cp).map(|(id, _)| *id))
         .or_else(|| peers.first().map(|(id, _)| *id));
+
+    // Fetch the anchor header, its 10 hash-linked ancestors (for exact BIP113 MTP), and any
+    // post-anchor headers in ONE LightAsk over the Core's LocalLink. Fall back to sequential
+    // wallet RPC `getblockheader` calls only if an older Core doesn't support `anchor_hash`.
+    let (anchor_hdr, ancestors, post_anchor) = match crate::light_client::CoreLight::fetch_anchor_bundle(
+        &link,
+        core_lid,
+        &core_pubkey,
+        &n.keys,
+        anchor_h,
+        &anchor_hash,
+        Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
+    ) {
+        Ok(bundle) => bundle,
+        Err(e) => {
+            n.log(&format!(
+                "anchor_hash LightAsk unavailable ({e}); falling back to RPC header fetch"
+            ));
+            let anchor_raw = n.rpc.raw_header(&anchor_hash).unwrap_or_else(|| {
+                crate::stop(
+                    3,
+                    format!("BITAID_CHAIN=core: cannot read anchor header at {anchor_h}"),
+                )
+            });
+            let anchor_hdr: bitcoin::block::Header =
+                bitcoin::consensus::Decodable::consensus_decode(&mut anchor_raw.as_slice())
+                    .unwrap_or_else(|e| {
+                        crate::stop(3, format!("BITAID_CHAIN=core: bad anchor header: {e}"))
+                    });
+            if anchor_hdr.block_hash().to_string() != anchor_hash {
+                crate::stop(
+                    3,
+                    format!(
+                        "BITAID_CHAIN=core: anchor header hash mismatch: got {}, expected {anchor_hash}",
+                        anchor_hdr.block_hash()
+                    ),
+                );
+            }
+            let mut ancestors_rev: Vec<bitcoin::block::Header> = Vec::new();
+            let mut prev_hash = anchor_hdr.prev_blockhash;
+            for _ in 0..anchor_h.min(10) {
+                let raw = n.rpc.raw_header(&prev_hash.to_string()).unwrap_or_else(|| {
+                    crate::stop(
+                        3,
+                        format!("BITAID_CHAIN=core: cannot read ancestor header {prev_hash}"),
+                    )
+                });
+                let hdr: bitcoin::block::Header =
+                    bitcoin::consensus::Decodable::consensus_decode(&mut raw.as_slice())
+                        .unwrap_or_else(|e| {
+                            crate::stop(3, format!("BITAID_CHAIN=core: bad ancestor header: {e}"))
+                        });
+                prev_hash = hdr.prev_blockhash;
+                ancestors_rev.push(hdr);
+            }
+            ancestors_rev.reverse();
+            (anchor_hdr, ancestors_rev, Vec::new())
+        }
+    };
+
+    let cl = std::sync::Arc::new(
+        crate::light_client::CoreLight::new_with_ancestors(
+            network,
+            anchor_h,
+            anchor_hdr,
+            &ancestors,
+            core_pubkey,
+            link.clone(),
+            n.keys,
+        )
+        .unwrap_or_else(|e| crate::stop(3, format!("BITAID_CHAIN=core: {e}"))),
+    );
+
     if let Some(id) = core_lid {
         cl.set_core_link(id);
     }
@@ -292,6 +320,11 @@ fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as u32;
+    if !post_anchor.is_empty() {
+        if let Err(e) = cl.apply_headers_at(&post_anchor, now_ts) {
+            n.log(&format!("post-anchor headers skipped: {e}"));
+        }
+    }
     let _ = cl.sync_once_at(
         vec![],
         vec![],
@@ -2735,8 +2768,36 @@ fn settle(
         match set.complete(p, &label, sc) {
             Some(tx) => {
                 if broadcast {
-                    // another party may have broadcast it first: then it is already in the mempool or a block
-                    let known = |n: &Node| n.rpc.knows(&tx.compute_txid());
+                    // another party may have broadcast it first: then it is already in the mempool or a block.
+                    // Under `BITAID_CHAIN=core`, check via a single `LightAsk` (payout txid + pot outpoint)
+                    // instead of `n.rpc.knows` (which falls back to block-by-block `Rpc::sync_now`).
+                    let txid = tx.compute_txid();
+                    let pot_op = tx.input.first().map(|i| i.previous_output);
+                    let known = |n: &Node| {
+                        if let Some(cl) = &n.light {
+                            use crate::light_client::ChainSource;
+                            let ops: Vec<String> = pot_op.iter().map(|o| o.to_string()).collect();
+                            let now_ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as u32;
+                            let _ = cl.sync_once_at(
+                                vec![txid.to_string()],
+                                ops,
+                                None,
+                                0,
+                                Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
+                                now_ts,
+                            );
+                            cl.confirmations(&txid) > 0
+                                || pot_op.is_some_and(|op| {
+                                    cl.output_status(&op)
+                                        .is_some_and(|(unspent, _, _, _)| !unspent)
+                                })
+                        } else {
+                            n.rpc.knows(&txid)
+                        }
+                    };
                     let (ok, how) = if known(n) {
                         (true, "already broadcast by another party".to_string())
                     } else {
@@ -2907,38 +2968,58 @@ fn upload_evidence(
     footage.extend((footage.len()..bytes).map(|i| (i * 31 % 251) as u8 ^ n.keys.secret_bytes()[0]));
     let blobs = blossom::seal_footage(&key, &c, &footage, 256 * 1024);
     let t0 = Instant::now();
-    let mut ok = 0;
-    let mut urls = vec![];
-    for (_, _, url) in archivists {
-        let mut all = true;
-        for b in &blobs {
-            // retried: a first connection to an onion service can time out while its circuit builds,
-            // and an archivist busy convening a review may not have read the roster yet (401); a
-            // refusal is retried with backoff for up to two minutes
-            let mut r = blossom::upload(url, &n.keys, &c, b);
-            let t_up = Instant::now();
-            let mut wait = 1u64;
-            while let Err(e) = &r {
-                if t_up.elapsed() > secs(crate::slow(120)) {
-                    break;
+    // Upload off the message thread so Tor Blossom transfers never stall incoming case messages.
+    let arch_urls: Vec<String> = archivists.iter().map(|(_, _, u)| u.clone()).collect();
+    let blobs_up = blobs.clone();
+    let keys_up = n.keys;
+    let case_up = c.clone();
+    let node_name = n.name.clone();
+    let max_wait = secs(crate::slow(120));
+    let (tx_up, rx_up) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut ok = 0usize;
+        let mut urls = vec![];
+        for url in arch_urls {
+            let mut all = true;
+            for b in &blobs_up {
+                // retried: a first connection to an onion service can time out while its circuit builds,
+                // and an archivist busy convening a review may not have read the roster yet (401); a
+                // refusal is retried with backoff for up to two minutes
+                let mut r = blossom::upload(&url, &keys_up, &case_up, b);
+                let t_up = Instant::now();
+                let mut wait = 1u64;
+                while let Err(e) = &r {
+                    if t_up.elapsed() > max_wait {
+                        break;
+                    }
+                    crate::say!("[{node_name}] upload to {url} failed ({e}); retrying in {wait} s");
+                    std::thread::sleep(Duration::from_secs(wait));
+                    wait = (wait * 2).min(15);
+                    r = blossom::upload(&url, &keys_up, &case_up, b);
                 }
-                n.log(&format!("upload to {url} failed ({e}); retrying in {wait} s"));
-                std::thread::sleep(Duration::from_secs(wait));
-                wait = (wait * 2).min(15);
-                r = blossom::upload(url, &n.keys, &c, b);
+                if let Err(e) = &r {
+                    crate::say!("[{node_name}] upload to {url} failed: {e}");
+                }
+                if r.is_err() {
+                    all = false;
+                }
             }
-            if let Err(e) = &r {
-                n.log(&format!("upload to {url} failed: {e}"));
-            }
-            if r.is_err() {
-                all = false;
+            if all {
+                ok += 1;
+                urls.push(url);
             }
         }
-        if all {
-            ok += 1;
-            urls.push(url.clone());
+        let _ = tx_up.send((ok, urls));
+    });
+    let (ok, urls) = loop {
+        match rx_up.try_recv() {
+            Ok(res) => break res,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                n.pull(Duration::from_millis(250));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break (0, vec![]),
         }
-    }
+    };
     let list: Vec<(String, u64)> = blobs
         .iter()
         .map(|b| (hex::encode(bitaid_core::hashes::sha256(b)), b.len() as u64))
@@ -7679,14 +7760,32 @@ fn responder(mut n: Node) -> i32 {
         &wire::xonly(&okey).unwrap(),
         bf,
     );
-    let bond = match n
-        .rpc
-        .fund(&btree.script_pubkey(), amt("--bond", RESPONDER_BOND))
-    {
-        Ok(op) => op,
-        Err(e) => {
-            n.check("bond posted", false, &e);
-            return n.summary();
+    // Fund the bond off the message thread so Tor wallet RPC latency never stalls incoming events.
+    let bond = {
+        let rpc = n.rpc.clone();
+        let spk = btree.script_pubkey();
+        let bond_amt = amt("--bond", RESPONDER_BOND);
+        let (tx_f, rx_f) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx_f.send(rpc.fund(&spk, bond_amt));
+        });
+        let res = loop {
+            match rx_f.try_recv() {
+                Ok(r) => break r,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    n.pull(Duration::from_millis(250));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    break Err("bond funding thread exited unexpectedly".into());
+                }
+            }
+        };
+        match res {
+            Ok(op) => op,
+            Err(e) => {
+                n.check("bond posted", false, &e);
+                return n.summary();
+            }
         }
     };
     if flag("--mine") {
