@@ -48,8 +48,12 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusView: TextView
     private lateinit var progressView: TextView
+    private lateinit var warningBanner: TextView
     private lateinit var dutySwitch: Switch
     private lateinit var peerEdit: EditText
+    private lateinit var coreKeyEdit: EditText
+    private lateinit var tipSourcesEdit: EditText
+    private lateinit var anchorEdit: EditText
     private lateinit var rpcStatusView: TextView
     private lateinit var rpcReplaceBtn: Button
     private lateinit var rpcInputRow: LinearLayout
@@ -142,6 +146,17 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(statusView)
         root.addView(progressView)
+
+        warningBanner = TextView(this).apply {
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#C62828"))
+            val bp = (10 * resources.displayMetrics.density).toInt()
+            setPadding(bp, bp, bp, bp)
+            visibility = View.GONE
+        }
+        root.addView(warningBanner)
 
         dutySwitch = Switch(this).apply {
             text = "Responder On Duty (Foreground Service)"
@@ -294,9 +309,12 @@ class MainActivity : AppCompatActivity() {
         root.addView(sectionHeader("Signet Settings"))
         nameEdit = labeledEdit(root, "Node name", "phone1")
         peerEdit = labeledEdit(root, "Core peer (.onion:port)", "")
+        coreKeyEdit = labeledEdit(root, "Core pubkey (64-hex; enables light client BITAID_CHAIN=core)", "")
+        tipSourcesEdit = labeledEdit(root, "Tip sources (pk1@onion:port,pk2@onion:port)", "")
+        anchorEdit = labeledEdit(root, "Anchor checkpoint (optional height:hash)", "")
 
         // Masked RPC URL (never repopulated into plaintext once stored)
-        root.addView(TextView(this).apply { text = "Trusted bitcoind RPC (http://user:pass@onion:port)"; textSize = 12f })
+        root.addView(TextView(this).apply { text = "Wallet bitcoind RPC (http://user:pass@onion:port; wallet calls only under light client)"; textSize = 12f })
         val rpcStatusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         rpcStatusView = TextView(this).apply { text = "Not set"; textSize = 13f }
         rpcReplaceBtn = Button(this).apply {
@@ -435,6 +453,13 @@ class MainActivity : AppCompatActivity() {
             progressView.visibility = View.GONE
         }
 
+        if (!snap.warning.isNullOrBlank()) {
+            warningBanner.visibility = View.VISIBLE
+            warningBanner.text = "WARNING: ${snap.warning}"
+        } else {
+            warningBanner.visibility = View.GONE
+        }
+
         suppressSwitch = true
         dutySwitch.isChecked = snap.status == ServiceStatus.ON_DUTY ||
             snap.status == ServiceStatus.ACTIVE_CASE ||
@@ -512,6 +537,9 @@ class MainActivity : AppCompatActivity() {
             this.action = action
             putExtra(BitaidService.EXTRA_NAME, nameEdit.text.toString().trim().ifEmpty { "phone1" })
             putExtra(BitaidService.EXTRA_PEER, peerEdit.text.toString().trim())
+            putExtra(BitaidService.EXTRA_CORE_KEY, coreKeyEdit.text.toString().trim())
+            putExtra(BitaidService.EXTRA_TIP_SOURCES, tipSourcesEdit.text.toString().trim())
+            putExtra(BitaidService.EXTRA_ANCHOR, anchorEdit.text.toString().trim())
             putExtra(BitaidService.EXTRA_WALLET, walletEdit.text.toString().trim().ifEmpty { "w" })
             putExtra(BitaidService.EXTRA_POOL, poolEdit.text.toString().trim().ifEmpty { "bitaid" })
             putExtra(BitaidService.EXTRA_SAT_SCALE, satScaleEdit.text.toString().trim().ifEmpty { "1" })
@@ -665,6 +693,9 @@ class MainActivity : AppCompatActivity() {
         val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         nameEdit.setText(p.getString("name", "phone1"))
         peerEdit.setText(p.getString("peer", ""))
+        coreKeyEdit.setText(p.getString("core_key", ""))
+        tipSourcesEdit.setText(p.getString("tip_sources", ""))
+        anchorEdit.setText(p.getString("anchor", ""))
         walletEdit.setText(p.getString("wallet", "w"))
         poolEdit.setText(p.getString("pool", "bitaid"))
         satScaleEdit.setText(p.getString("sat_scale", "1"))
@@ -678,6 +709,9 @@ class MainActivity : AppCompatActivity() {
         getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("name", nameEdit.text.toString().trim())
             .putString("peer", peerEdit.text.toString().trim())
+            .putString("core_key", coreKeyEdit.text.toString().trim())
+            .putString("tip_sources", tipSourcesEdit.text.toString().trim())
+            .putString("anchor", anchorEdit.text.toString().trim())
             .putString("wallet", walletEdit.text.toString().trim())
             .putString("pool", poolEdit.text.toString().trim())
             .putString("sat_scale", satScaleEdit.text.toString().trim())

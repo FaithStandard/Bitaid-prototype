@@ -44,6 +44,7 @@ data class AppSnapshot(
     val status: ServiceStatus = ServiceStatus.OFF_DUTY,
     val statusDetail: String = "Off duty",
     val lastProgress: String = "",
+    val warning: String? = null,
     val alert: AlertPrompt? = null,
     val location: VerifiedLocation? = null,
     val ballotDue: BallotPrompt? = null,
@@ -142,6 +143,13 @@ object BitaidState {
                         alert = null,
                         ballotDue = null,
                         logs = (cur.logs + "[FATAL] $text").takeLast(MAX_LOGS),
+                    )
+                }
+                "Warning" -> {
+                    val text = obj.optString("text")
+                    cur.copy(
+                        warning = text,
+                        logs = (cur.logs + "[WARN] $text").takeLast(MAX_LOGS),
                     )
                 }
                 "Listening" -> {

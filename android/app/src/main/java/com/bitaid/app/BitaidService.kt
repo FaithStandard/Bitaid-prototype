@@ -57,6 +57,9 @@ class BitaidService : Service() {
         val role: String,
         val nodeName: String,
         val peerOnion: String,
+        val coreKey: String,
+        val tipSources: String,
+        val anchor: String,
         val wallet: String,
         val pool: String,
         val satScale: String,
@@ -104,6 +107,9 @@ class BitaidService : Service() {
                     role = role,
                     nodeName = intent.getStringExtra(EXTRA_NAME) ?: role,
                     peerOnion = intent.getStringExtra(EXTRA_PEER) ?: "",
+                    coreKey = intent.getStringExtra(EXTRA_CORE_KEY) ?: "",
+                    tipSources = intent.getStringExtra(EXTRA_TIP_SOURCES) ?: "",
+                    anchor = intent.getStringExtra(EXTRA_ANCHOR) ?: "",
                     wallet = intent.getStringExtra(EXTRA_WALLET) ?: "w",
                     pool = intent.getStringExtra(EXTRA_POOL) ?: "bitaid",
                     satScale = intent.getStringExtra(EXTRA_SAT_SCALE) ?: "1",
@@ -113,6 +119,7 @@ class BitaidService : Service() {
                 )
                 consecutiveQuickFails = 0
                 wantOnDuty.set(true)
+                BitaidState.update { it.copy(warning = null) }
                 promoteForeground("Starting Tor ($role)...")
                 acquireWakeLock()
                 worker.execute { startTorAndRole(cfg) }
@@ -197,6 +204,19 @@ class BitaidService : Service() {
             put("BITAID_REPLY_MIN", "900")
             put("BITAID_SAT_SCALE", cfg.satScale.ifBlank { "1" })
             put("BITAID_TIME_SCALE", cfg.timeScale.ifBlank { "1" })
+            if (cfg.role == "responder" && cfg.coreKey.isNotBlank()) {
+                put("BITAID_CHAIN", "core")
+                put("BITAID_CORE_KEY", cfg.coreKey.trim())
+                if (cfg.peerOnion.isNotBlank()) {
+                    put("BITAID_CORE_PEER", cfg.peerOnion.trim())
+                }
+                if (cfg.tipSources.isNotBlank()) {
+                    put("BITAID_TIP_SOURCES", cfg.tipSources.trim())
+                }
+                if (cfg.anchor.isNotBlank()) {
+                    put("BITAID_ANCHOR", cfg.anchor.trim())
+                }
+            }
         }
 
         val args = JSONArray().apply {
@@ -209,6 +229,15 @@ class BitaidService : Service() {
             }
             if (cfg.peerOnion.isNotBlank()) {
                 put("--peer"); put(cfg.peerOnion)
+            }
+            if (cfg.role == "responder" && cfg.coreKey.isNotBlank() && cfg.tipSources.isNotBlank()) {
+                val seenPeers = mutableSetOf(cfg.peerOnion.trim())
+                for (item in cfg.tipSources.split(',')) {
+                    val addr = item.substringAfter('@', "").trim()
+                    if (addr.isNotEmpty() && seenPeers.add(addr)) {
+                        put("--peer"); put(addr)
+                    }
+                }
             }
             if (cfg.lat != null && cfg.lon != null) {
                 put("--lat"); put(cfg.lat.toString())
@@ -243,6 +272,7 @@ class BitaidService : Service() {
                         "Listening" -> updateNotification("On duty — listening for alerts")
                         "Alert" -> postAlertNotification()
                         "Location" -> updateNotification("Responding — location verified")
+                        "Warning" -> updateNotification("WARNING: Core proof failed — signing off")
                         "Fatal" -> {
                             wantOnDuty.set(false)
                             pendingRelaunch = null
@@ -425,6 +455,9 @@ class BitaidService : Service() {
 
         const val EXTRA_NAME = "name"
         const val EXTRA_PEER = "peer"
+        const val EXTRA_CORE_KEY = "core_key"
+        const val EXTRA_TIP_SOURCES = "tip_sources"
+        const val EXTRA_ANCHOR = "anchor"
         const val EXTRA_WALLET = "wallet"
         const val EXTRA_POOL = "pool"
         const val EXTRA_SAT_SCALE = "sat_scale"
