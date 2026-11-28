@@ -180,3 +180,23 @@ The same end-to-end test (`PC_20_APP_RUN.bat`, then `PC_21_APP_ALERT.bat`) was r
 The fix (`chain-follower`): in an app the chain is read by a thread of its own every 2 s, without holding a lock across a call to the chain node, and the archives are asked at most once a minute. On a phone each chain call crosses Tor, so the message thread must never wait on one. The local suites did not show any of this: there a chain call takes milliseconds.
 
 The last run passed all 9 checks on the phone (the shares, 900,000 sats, arrived at its payout address). One `no message read for 34.1 s` remained, after the evidence step, while the role was busy; it does not touch the response.
+
+## The phone as a light client of its own Core: 1,440 chain calls → 28 (2026-11-28, `phone-light` steps 1–6b)
+
+`scripts/m3_local.sh` on local regtest (a block every 2 s), r1 slowed to Tor speed with `R1_RPC_DELAY_MS=1500`. `LIGHT_R1=1` runs r1 with `BITAID_CHAIN=core`: it asks its Core (`LightAsk`), checks each answer (header chain with proof of work and median time, Merkle paths, the Core's signature over the whole set), and signs only after the tip and the outputs agree with 2 independent sources. Chain calls counted with `BITAID_RPC_TRACE`.
+
+| r1 reads the chain by | Chain calls in one case | LightAsks | Location after accepting | Light sign gate | r1's checks |
+| --- | --- | --- | --- | --- | --- |
+| RPC, block by block (`774f36f`) | about 1,440 (721 `getblockhash`, 718 `getblock`) | 0 | 0.0 s | — | stalled at the vote: 3 s to read a block, one every 2 s |
+| asking its Core (`07ed7b8`) | **28** (12 `getblockheader`, 4 `getrawtransaction`, wallet calls; no `getblock`) | 119 | **0.0 s** | PASS (2 sources) | 12 passed, 0 failed |
+| asking its Core, as the app (`APP=1`, `07ed7b8`) | 121 (46 `getblock`: see below) | 34 | 0.5 s | PASS | 12 passed, 0 failed |
+| `LIGHT_R1_NEG=1`: only 1 tip source | 11 | 4 | — | FAIL "1/2 independent sources", nothing signed | as intended |
+
+On the same commit the local suites pass: m3 35, arb (stuffing, hostile, capture, challenge, stall) 80, arb misconduct 66; 0 FAIL.
+
+What it took, found in these runs:
+- the ledger's records (message anchors) come from the Core with Merkle proofs, paged by a signed `(height, position in block)` cursor, so one block stuffed with records cannot blind a phone;
+- the median time is taken over the anchor's 10 real ancestors, so a block whose time ties its parent's is not refused;
+- a late or overlapping answer, or a lighter fork, is ignored, not taken as a lie: only a failed proof distrusts the Core.
+
+Still open (step 7): in the app, the 46 `getblock` reads come from a path that still refreshes the ledger by RPC on the message thread. It is to move off that thread, or onto `LightAsk { case }`.
