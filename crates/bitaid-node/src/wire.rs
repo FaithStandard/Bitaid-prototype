@@ -582,6 +582,11 @@ pub enum Msg {
         txs: Vec<LightTxProof>,
         outputs: Vec<LightOutput>,
         records: Vec<LightRecord>,
+        /// Highest block height for which `records` is the complete set (signed by the Core).
+        /// When the response hits `LIGHT_MAX_RECORDS`, `records_through < tip_height` so the
+        /// client continues pagination from `records_through + 1` without losing records.
+        #[serde(default)]
+        records_through: u32,
         covers: Vec<LightCover>,
     },
 }
@@ -1088,6 +1093,7 @@ mod tests {
                 merkle_path: vec![8, 9],
                 record: vec![10, 11, 12],
             }],
+            records_through: 102,
             covers: vec![
                 LightCover::Tx("aa".repeat(32)),
                 LightCover::Output(format!("{}:0", "bb".repeat(32))),
@@ -1117,6 +1123,7 @@ mod tests {
             txs: vec![],
             outputs: vec![],
             records: vec![],
+            records_through: 102,
             covers: vec![],
         };
         assert!(bad_hdr_len.check_light_bounds(100).is_err());
@@ -1131,6 +1138,7 @@ mod tests {
             txs: vec![],
             outputs: vec![],
             records: vec![],
+            records_through: 3000,
             covers: vec![],
         };
         assert!(too_many_hdrs.check_light_bounds(200_000).is_err());
@@ -1152,6 +1160,7 @@ mod tests {
             txs: vec![],
             outputs: vec![],
             records: vec![],
+            records_through: 102,
             covers: vec![],
         };
         let empty_bytes = sign(&core, 102, empty.clone());

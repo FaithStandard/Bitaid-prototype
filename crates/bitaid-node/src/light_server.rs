@@ -334,7 +334,10 @@ pub fn answer_ask<B: LightBackend>(
     }
 
     // 4. Case on-chain records and `KIND_ANCHOR` checkpoint records from `from_height`.
+    // When more than `LIGHT_MAX_RECORDS` records exist, cut cleanly at a block boundary and sign
+    // `records_through` so the client knows which height is complete and continues from `records_through + 1`.
     let mut records: Vec<LightRecord> = Vec::new();
+    let mut records_through = tip_height;
     let mut want_recs: Vec<(String, u32)> = Vec::new();
     if let Some(cid) = case_id {
         want_recs.extend(backend.case_record_txs(cid, *from_height));
@@ -345,7 +348,17 @@ pub fn answer_ask<B: LightBackend>(
     if !want_recs.is_empty() {
         want_recs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         want_recs.dedup_by(|a, b| a.0 == b.0);
-        for (txid, _h) in want_recs.into_iter().take(LIGHT_MAX_RECORDS) {
+        if want_recs.len() > LIGHT_MAX_RECORDS {
+            let cut_h = want_recs[LIGHT_MAX_RECORDS].1;
+            if want_recs[0].1 < cut_h {
+                want_recs.retain(|(_, h)| *h < cut_h);
+                records_through = cut_h - 1;
+            } else {
+                want_recs.truncate(LIGHT_MAX_RECORDS);
+                records_through = cut_h.saturating_sub(1);
+            }
+        }
+        for (txid, _h) in want_recs {
             let Some((raw, block_hash, height)) = backend.raw_tx_and_block(&txid) else {
                 continue;
             };
@@ -381,6 +394,7 @@ pub fn answer_ask<B: LightBackend>(
             txs: txs.clone(),
             outputs: outputs.clone(),
             records: records.clone(),
+            records_through,
             covers: covers.clone(),
         };
         let signed = wire::sign(keys, tip_height, ans.clone());

@@ -343,6 +343,7 @@ struct LightState {
     /// `KIND_ANCHOR` roots -> `(earliest_height, block_hash, trust)`, fed from `LightRecord`s.
     anchors: HashMap<String, (u32, BlockHash, Trust)>,
     anchors_synced_to: u32,
+    last_records_through: u32,
     last_anchor_sync: Option<Instant>,
     /// Set to true if any proof from the Core fails: stops trusting the Core and blocks signing.
     distrusted: bool,
@@ -409,6 +410,7 @@ impl CoreLight {
                 records: HashMap::new(),
                 anchors: HashMap::new(),
                 anchors_synced_to: anchor_height,
+                last_records_through: anchor_height,
                 last_anchor_sync: None,
                 distrusted: false,
                 distrust_reason: None,
@@ -433,10 +435,15 @@ impl CoreLight {
         st.anchors.get(root_hex).map(|(h, _, _)| *h)
     }
 
-    /// Pulls new headers and any new `KIND_ANCHOR` records since the last synced height in a
-    /// single `LightAsk` round-trip, throttled to at most once per `min_interval`.
+    /// Pulls new headers and any new `KIND_ANCHOR` records since the last synced height,
+    /// paginating by the Core's signed `records_through` height so responses truncated at
+    /// `LIGHT_MAX_RECORDS` never lose records. Throttled to at most once per `min_interval`.
     pub fn sync_anchors(&self, min_interval: Duration) -> Result<(), String> {
-        let from_h = {
+        self.sync_anchors_at(min_interval, Self::now_secs())
+    }
+
+    pub fn sync_anchors_at(&self, min_interval: Duration, now_secs: u32) -> Result<(), String> {
+        let mut from_h = {
             let mut st = self.state.lock().unwrap();
             if st.distrusted {
                 return Err("Core is distrusted".into());
@@ -451,20 +458,35 @@ impl CoreLight {
             st.last_anchor_sync = Some(Instant::now());
             st.anchors_synced_to.saturating_sub(2).max(1)
         };
-        let res = self.sync_once_at(
-            vec![],
-            vec![],
-            None,
-            from_h,
-            Duration::from_secs(REFRESH_TIMEOUT_SECS),
-            Self::now_secs(),
-        );
-        if res.is_ok() {
-            let mut st = self.state.lock().unwrap();
-            let tip = st.headers.tip().0;
-            st.anchors_synced_to = st.anchors_synced_to.max(tip);
+        const MAX_PAGES: usize = 8;
+        for _ in 0..MAX_PAGES {
+            self.sync_once_at(
+                vec![],
+                vec![],
+                None,
+                from_h,
+                Duration::from_secs(REFRESH_TIMEOUT_SECS),
+                now_secs,
+            )?;
+            let (through, tip) = {
+                let mut st = self.state.lock().unwrap();
+                let through = st.last_records_through;
+                let tip = st.headers.tip().0;
+                if through > st.anchors_synced_to {
+                    st.anchors_synced_to = through;
+                }
+                (through, tip)
+            };
+            if through >= tip {
+                break;
+            }
+            let next_from = through.saturating_add(1);
+            if next_from <= from_h {
+                break;
+            }
+            from_h = next_from;
         }
-        res
+        Ok(())
     }
 
     /// Spawns a lightweight background thread that sends one `LightAsk` (headers + `KIND_ANCHOR`
@@ -724,6 +746,7 @@ impl CoreLight {
             txs,
             outputs,
             records,
+            records_through,
             ..
         } = &env.msg
         else {
@@ -870,6 +893,7 @@ impl CoreLight {
                 }
             }
         }
+        st.last_records_through = (*records_through).min(st.headers.tip().0);
 
         Ok(())
     }
@@ -1963,5 +1987,78 @@ mod tests {
             .unwrap();
         assert_eq!(light.verified_tip().0, 2);
         assert_eq!(light.anchored(&root_hex), None);
+    }
+
+    #[test]
+    fn anchor_pagination_does_not_drop_records_past_cap() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let chain = Arc::new(MemChain::new(genesis, gen_tx));
+
+        // Create 70 blocks (> LIGHT_MAX_RECORDS = 64), each with 1 KIND_ANCHOR record.
+        let mut expected: Vec<(String, u32)> = Vec::new();
+        for i in 1..=70u32 {
+            let mut root_bytes = [0u8; 32];
+            root_bytes[..4].copy_from_slice(&i.to_le_bytes());
+            let anc_payload = crate::ledger::anchor_record(&root_bytes);
+            let mut spk = vec![0x6a, anc_payload.len() as u8];
+            spk.extend_from_slice(&anc_payload);
+            let tx = make_tx(
+                i,
+                vec![TxOut {
+                    value: Amount::from_sat(0),
+                    script_pubkey: ScriptBuf::from_bytes(spk),
+                }],
+            );
+            let (h, _, _) = chain.push(vec![tx], base_time + i * 10);
+            expected.push((hex::encode(root_bytes), h));
+        }
+
+        let core_g = Gossip::start(Some("127.0.0.1:0"), &[], None).unwrap();
+        let addr = core_g.listen_addr().unwrap().to_string();
+        let phone_g = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
+        assert_eq!(core_g.wait_links(1, Duration::from_secs(5)), 1);
+        assert_eq!(phone_g.wait_links(1, Duration::from_secs(5)), 1);
+
+        let core_link = core_g.local_link();
+        let chain_srv = chain.clone();
+        std::thread::spawn(move || loop {
+            if let Some((lid, env)) = core_link.recv_ask(Duration::from_secs(5)) {
+                if let Ok((_, signed)) = answer_ask(&*chain_srv, &core_kp, &env.msg) {
+                    let _ = core_link.send_to(lid, &signed);
+                }
+            }
+        });
+
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            phone_g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        light
+            .sync_anchors_at(Duration::ZERO, base_time + 1000)
+            .unwrap();
+        assert!(
+            light.ask_count() >= 2,
+            "70 records (> 64 cap) must paginate across at least 2 LightAsks"
+        );
+        for (root_hex, h) in &expected {
+            assert_eq!(
+                light.anchored(root_hex),
+                Some(*h),
+                "anchor at height {h} must not be dropped by 64-record cap"
+            );
+        }
     }
 }

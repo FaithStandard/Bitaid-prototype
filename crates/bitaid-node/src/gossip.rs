@@ -1526,6 +1526,7 @@ mod tests {
             txs: vec![],
             outputs: vec![],
             records: vec![],
+            records_through: 10,
             covers: vec![],
         };
         let ans_raw = crate::wire::sign(&core_kp, 10, ans.clone());
