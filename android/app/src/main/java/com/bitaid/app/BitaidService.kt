@@ -272,6 +272,19 @@ class BitaidService : Service() {
                         "Listening" -> updateNotification("On duty — listening for alerts")
                         "Alert" -> postAlertNotification()
                         "Location" -> updateNotification("Responding — location verified")
+                        "BallotDue" -> {
+                            val remSecs = try {
+                                JSONObject(json).optLong("remaining_secs", 0L)
+                            } catch (_: Exception) {
+                                0L
+                            }
+                            postBallotNotification(remSecs)
+                            updateNotification("Ballot due — tap to vote")
+                        }
+                        "BallotClosed" -> {
+                            cancelBallotNotification()
+                            updateNotification("Ballot window closed")
+                        }
                         "Warning" -> updateNotification("WARNING: Core proof failed — signing off")
                         "Fatal" -> {
                             wantOnDuty.set(false)
@@ -411,6 +424,40 @@ class BitaidService : Service() {
         nm.notify(ALERT_NOTIF_ID, notif)
     }
 
+    private fun postBallotNotification(remainingSecs: Long) {
+        val pi = PendingIntent.getActivity(
+            this,
+            2,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val timeHint = if (remainingSecs > 0L) {
+            val mins = remainingSecs / 60L
+            val secs = remainingSecs % 60L
+            if (mins > 0L) "About ${mins}m ${secs}s left to vote" else "About ${secs}s left to vote"
+        } else {
+            "Tap now to submit your ballot"
+        }
+        val notif = NotificationCompat.Builder(this, CHANNEL_ALERT)
+            .setContentTitle("Bitaid Ballot Due")
+            .setContentText(timeHint)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(BALLOT_NOTIF_ID, notif)
+    }
+
+    private fun cancelBallotNotification() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.cancel(BALLOT_NOTIF_ID)
+    }
+
     private fun createChannels() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
@@ -470,6 +517,7 @@ class BitaidService : Service() {
         private const val CHANNEL_ALERT = "bitaid_alert"
         private const val NOTIF_ID = 1001
         private const val ALERT_NOTIF_ID = 1002
+        private const val BALLOT_NOTIF_ID = 1003
         private const val QUICK_FAIL_MS = 10_000L
         private const val MAX_QUICK_FAILS = 3
     }

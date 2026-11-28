@@ -82,6 +82,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var mapsBtn: Button
 
     private lateinit var ballotCard: LinearLayout
+    private lateinit var ballotCountdownText: TextView
     private lateinit var ballotSeatsBox: LinearLayout
     private lateinit var achievedCheck: CheckBox
     private lateinit var misuseCheck: CheckBox
@@ -115,12 +116,23 @@ class MainActivity : AppCompatActivity() {
         loadPrefs()
     }
 
+    private val ballotCountdownTick = object : Runnable {
+        override fun run() {
+            val bp = BitaidState.snapshot.ballotDue
+            if (bp != null) {
+                updateBallotCountdown(bp)
+                mainHandler.postDelayed(this, 1000L)
+            }
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         BitaidState.addListener(stateListener)
     }
 
     override fun onStop() {
+        mainHandler.removeCallbacks(ballotCountdownTick)
         BitaidState.removeListener(stateListener)
         savePrefs()
         super.onStop()
@@ -280,6 +292,13 @@ class MainActivity : AppCompatActivity() {
             text = "Ballot Due — classify each seat (I = Intervened, D = Documented, N = Neither)"
             setTypeface(null, Typeface.BOLD)
         })
+        ballotCountdownText = TextView(this).apply {
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#B71C1C"))
+            setPadding(0, 4, 0, 8)
+        }
+        ballotCard.addView(ballotCountdownText)
         ballotSeatsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         achievedCheck = CheckBox(this).apply { text = "Outcome achieved"; isChecked = true }
         misuseCheck = CheckBox(this).apply { text = "Force misused"; isChecked = false }
@@ -554,6 +573,9 @@ class MainActivity : AppCompatActivity() {
         val bp = snap.ballotDue
         if (bp != null) {
             ballotCard.visibility = View.VISIBLE
+            updateBallotCountdown(bp)
+            mainHandler.removeCallbacks(ballotCountdownTick)
+            mainHandler.postDelayed(ballotCountdownTick, 1000L)
             if (renderedBallotCase != bp.caseId || seatSpinners.size != bp.seats) {
                 renderedBallotCase = bp.caseId
                 ballotSeatsBox.removeAllViews()
@@ -575,6 +597,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } else {
+            mainHandler.removeCallbacks(ballotCountdownTick)
             ballotCard.visibility = View.GONE
             renderedBallotCase = null
         }
@@ -586,6 +609,23 @@ class MainActivity : AppCompatActivity() {
             "[$tag] ${c.what}$tail"
         }
         logsView.text = snap.logs.takeLast(40).joinToString("\n")
+    }
+
+    private fun updateBallotCountdown(bp: BallotPrompt) {
+        if (bp.remainingSecs <= 0L && bp.remainingBlocks <= 0) {
+            ballotCountdownText.text = "Ballot window closing now — submit immediately"
+            return
+        }
+        val elapsedSecs = ((System.currentTimeMillis() - bp.receivedAtMs).coerceAtLeast(0L)) / 1000L
+        val leftSecs = (bp.remainingSecs - elapsedSecs).coerceAtLeast(0L)
+        val mins = leftSecs / 60L
+        val secs = leftSecs % 60L
+        val clock = if (mins > 0L) "${mins}m ${secs}s" else "${secs}s"
+        ballotCountdownText.text = if (leftSecs > 0L) {
+            "Time left to vote: ~$clock (${bp.remainingBlocks} block(s) at prompt)"
+        } else {
+            "Estimated time elapsed — waiting for chain cutoff block"
+        }
     }
 
     private fun startRoleService(action: String) {

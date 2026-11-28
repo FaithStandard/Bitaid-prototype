@@ -196,6 +196,12 @@ enum WireEvent {
         case: String,
         seats: usize,
         my_seat: usize,
+        remaining_blocks: u32,
+        remaining_secs: u64,
+    },
+    BallotClosed {
+        node: String,
+        case: String,
     },
     ReadyToAlert {
         node: String,
@@ -267,12 +273,17 @@ impl From<Event> for WireEvent {
                 case,
                 seats,
                 my_seat,
+                remaining_blocks,
+                remaining_secs,
             } => WireEvent::BallotDue {
                 node,
                 case,
                 seats,
                 my_seat,
+                remaining_blocks,
+                remaining_secs,
             },
+            Event::BallotClosed { node, case } => WireEvent::BallotClosed { node, case },
             Event::ReadyToAlert { node } => WireEvent::ReadyToAlert { node },
             Event::Listening { node, home, cells } => WireEvent::Listening { node, home, cells },
             // an event this build does not know yet (Event is non_exhaustive): shown as a log line

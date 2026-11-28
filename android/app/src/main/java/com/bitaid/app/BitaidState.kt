@@ -31,6 +31,9 @@ data class BallotPrompt(
     val caseId: String,
     val seats: Int,
     val mySeat: Int,
+    val remainingBlocks: Int = 0,
+    val remainingSecs: Long = 0L,
+    val receivedAtMs: Long = System.currentTimeMillis(),
 )
 
 data class CheckLine(
@@ -196,7 +199,19 @@ object BitaidState {
                             caseId = obj.optString("case"),
                             seats = obj.optInt("seats"),
                             mySeat = obj.optInt("my_seat"),
+                            remainingBlocks = obj.optInt("remaining_blocks", 0),
+                            remainingSecs = obj.optLong("remaining_secs", 0L),
+                            receivedAtMs = System.currentTimeMillis(),
                         )
+                    )
+                }
+                "BallotClosed" -> {
+                    val closedCase = obj.optString("case")
+                    val keep = cur.ballotDue?.takeIf { it.caseId != closedCase }
+                    val line = "[app] Ballot window closed for ${closedCase.take(8)}"
+                    cur.copy(
+                        ballotDue = keep,
+                        logs = (cur.logs + line).takeLast(MAX_LOGS),
                     )
                 }
                 "ReadyToAlert" -> {

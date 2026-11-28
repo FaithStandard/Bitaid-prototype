@@ -3068,7 +3068,13 @@ fn vote(n: &mut Node, a: &Alerted, r: &Rostered, ballot: Ballot) {
     let mut seen = std::collections::HashSet::new();
     // a commitment is seen here once it is anchored; this seat reveals when every seat's is, or when
     // the commit window (measured from the incident's block) has ended: nothing anchored later counts
-    let by = n.rpc.tx_height(&r.incident_txid.to_string()).unwrap_or(n.tip()) + a.template.commit_blocks;
+    let inc_h = n
+        .light
+        .as_ref()
+        .and_then(|cl| crate::light_client::ChainSource::tx_height(cl.as_ref(), &r.incident_txid).map(|t| t.value))
+        .or_else(|| n.rpc.tx_height(&r.incident_txid.to_string()))
+        .unwrap_or_else(|| n.tip());
+    let by = inc_h + a.template.commit_blocks;
     let got = n.collect_until(
         by + 1,
         secs(crate::slow(3600)),
@@ -7830,6 +7836,7 @@ fn responder(mut n: Node) -> i32 {
             n.check("an alert arrived in my cells", false, "");
             return n.summary();
         };
+        let t_check = Instant::now();
         let checked = match &light {
             Some(cl) => Alerted::check(&env.sender, &env.msg, light_chain_view(cl), &opid),
             None => Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid),
@@ -7848,6 +7855,12 @@ fn responder(mut n: Node) -> i32 {
                 n.log("alert above what my bond backs (twice the reward and bounty); ignored")
             }
             Ok(a) if a.template.pots[2] >= min_bounty => {
+                n.log(&format!(
+                    "alert {} in cell {} arrived and checked in {:.2} s (waiting for decision)",
+                    crate::pre(&a.case_hex, 8),
+                    a.cell,
+                    t_check.elapsed().as_secs_f64()
+                ));
                 crate::events::emit(crate::events::Event::Alert {
                     node: n.name.clone(),
                     case: a.case_hex.clone(),
@@ -7869,10 +7882,20 @@ fn responder(mut n: Node) -> i32 {
                     n.log(&format!("alert {}: its joining window passed before it could be shown", crate::pre(&a.case_hex, 8)));
                     continue;
                 }
-                match crate::commands::take(window, |x| {
-                    matches!(x, crate::commands::Command::Accept { case } | crate::commands::Command::Decline { case } if *case == cs)
-                        || matches!(x, crate::commands::Command::OffDuty)
-                }) {
+                let prompt_end = Instant::now() + window;
+                let decision = loop {
+                    if let Some(cmd) = crate::commands::take(Duration::ZERO, |x| {
+                        matches!(x, crate::commands::Command::Accept { case } | crate::commands::Command::Decline { case } if *case == cs)
+                            || matches!(x, crate::commands::Command::OffDuty)
+                    }) {
+                        break Some(cmd);
+                    }
+                    if Instant::now() >= prompt_end {
+                        break None;
+                    }
+                    n.pull(Duration::from_millis(250));
+                };
+                match decision {
                     Some(crate::commands::Command::Accept { .. }) => break a,
                     Some(crate::commands::Command::OffDuty) => {
                         n.log("off duty");
@@ -8169,11 +8192,68 @@ fn responder(mut n: Node) -> i32 {
     let my_ballot = if flag("--ask-vote") {
         // --ask-vote (the app): the attendee's own ballot, as it gives it. None given, or a malformed
         // one, and none is cast: never a ballot the attendee did not give (review of M4 step 1: a
-        // default ballot was committed in the silent attendee's name)
-        crate::events::emit(crate::events::Event::BallotDue { node: n.name.clone(), case: c.clone(), seats: r.seats.len(), my_seat });
+        // default ballot was committed in the silent attendee's name).
+        // Cutoff is chain-anchored: stop waiting when the commit window nears its closing block so
+        // a late ballot never commits after the window has closed, and pump `n.pull` while waiting.
+        let inc_h = n
+            .light
+            .as_ref()
+            .and_then(|cl| crate::light_client::ChainSource::tx_height(cl.as_ref(), &r.incident_txid).map(|t| t.value))
+            .or_else(|| n.rpc.tx_height(&r.incident_txid.to_string()))
+            .unwrap_or_else(|| n.tip());
+        let commit_end = inc_h + a.template.commit_blocks;
+        let margin = if a.template.commit_blocks >= 3 { 1 } else { 0 };
+        let deadline_h = commit_end.saturating_sub(margin);
+        let cur_h = n.tip();
+        let rem_blocks = deadline_h.saturating_sub(cur_h);
+        let time_scale: f64 = crate::config::var("BITAID_TIME_SCALE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|k: &f64| *k >= 1.0)
+            .unwrap_or(1.0);
+        let rem_secs = ((rem_blocks as f64) * 20.0 * time_scale).round() as u64;
+        n.log(&format!(
+            "ballot due: {rem_blocks} block(s) (~{rem_secs} s) until commit cutoff at height {deadline_h} (window ends {commit_end})"
+        ));
+        crate::events::emit(crate::events::Event::BallotDue {
+            node: n.name.clone(),
+            case: c.clone(),
+            seats: r.seats.len(),
+            my_seat,
+            remaining_blocks: rem_blocks,
+            remaining_secs: rem_secs,
+        });
         let cs = c.clone();
-        match crate::commands::take(secs(3600), |x| matches!(x, crate::commands::Command::Vote { case, .. } if *case == cs)) {
-            Some(crate::commands::Command::Vote { classes, achieved, misuse, .. }) => ballot_of(r.seats.len(), &classes, achieved, misuse),
+        let wall_cap = Instant::now() + secs(crate::slow(3600));
+        let got_vote = loop {
+            if let Some(cmd) = crate::commands::take(Duration::ZERO, |x| {
+                matches!(x, crate::commands::Command::Vote { case, .. } if *case == cs)
+            }) {
+                break Some(cmd);
+            }
+            let h = n.tip();
+            if h >= deadline_h {
+                n.log(&format!(
+                    "ballot window closed at height {h} (cutoff {deadline_h}); no ballot cast"
+                ));
+                break None;
+            }
+            if Instant::now() >= wall_cap {
+                n.log("ballot wait wall-clock cap reached; no ballot cast");
+                break None;
+            }
+            n.pull(Duration::from_millis(250));
+        };
+        if got_vote.is_none() {
+            crate::events::emit(crate::events::Event::BallotClosed {
+                node: n.name.clone(),
+                case: c.clone(),
+            });
+        }
+        match got_vote {
+            Some(crate::commands::Command::Vote { classes, achieved, misuse, .. }) => {
+                ballot_of(r.seats.len(), &classes, achieved, misuse)
+            }
             _ => None,
         }
     } else {

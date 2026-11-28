@@ -23,8 +23,17 @@ pub enum Event {
     Alert { node: String, case: String, cell: String, deposit: u64, reward: u64, bounty: u64 },
     /// the exact location, opened the moment it arrives (§13): what the responder drives to
     Location { node: String, case: String, lat: f64, lon: f64 },
-    /// with `--ask-vote`, the role waits for the attendee's ballot on this case
-    BallotDue { node: String, case: String, seats: usize, my_seat: usize },
+    /// with `--ask-vote`, the role waits for the attendee's ballot on this case until the commit window closes
+    BallotDue {
+        node: String,
+        case: String,
+        seats: usize,
+        my_seat: usize,
+        remaining_blocks: u32,
+        remaining_secs: u64,
+    },
+    /// the ballot commit window closed without a vote (or after the prompt ended)
+    BallotClosed { node: String, case: String },
     /// the caller's pool is ready: with `--ask-alert` the role waits for RaiseAlert
     ReadyToAlert { node: String },
     /// the responder has found the pool, posted its bond and now listens for alerts in these cells:
