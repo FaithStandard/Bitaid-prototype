@@ -57,6 +57,7 @@ impl Rpc {
         }
     }
 
+    /// Total JSON-RPC requests issued (including retries of failed calls).
     pub fn call_count(&self) -> u64 {
         self.calls.load(Ordering::Relaxed)
     }
@@ -541,7 +542,12 @@ impl Rpc {
 
     /// One refresh, whoever asks: one at a time, and no lock on the index or the ledger held across
     /// a call to the chain node, so a reader is never kept waiting on the network.
+    /// Under `BITAID_CHAIN=core`, block-by-block RPC scanning is disabled (records arrive via
+    /// `LightAsk`/`LightAnswer` instead).
     pub fn sync_now(&self) {
+        if crate::config::var("BITAID_CHAIN").as_deref() == Ok("core") {
+            return;
+        }
         let _one = self.syncing.lock().unwrap_or_else(|e| e.into_inner());
         // at most every two seconds: a replay asks many times in a row, and over Tor each look costs
         {

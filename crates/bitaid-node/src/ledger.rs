@@ -216,6 +216,8 @@ pub struct Ledger {
     pub registrations: Vec<Registration>,
     /// anchored roots (hex) and the block that confirmed each, in chain order
     pub anchors: Vec<(String, u32)>,
+    /// anchored roots with their confirming txid and height (for light-server Merkle proofs)
+    pub anchor_txs: Vec<(String, Txid, u32)>,
     /// recorded outputs still unspent: (is a posting, index)
     watch: HashMap<OutPoint, (bool, usize)>,
     /// every block read: (height, hash), oldest first
@@ -307,7 +309,11 @@ impl Ledger {
                         at: Anchor { op, value, spk, height, pos, spent: None, released: false },
                     });
                 }
-                (Some(&KIND_ANCHOR), 37) => self.anchors.push((hex::encode(&p[5..37]), height)),
+                (Some(&KIND_ANCHOR), 37) => {
+                    let root = hex::encode(&p[5..37]);
+                    self.anchors.push((root.clone(), height));
+                    self.anchor_txs.push((root, txid, height));
+                }
                 (Some(&KIND_TIER), 70) => self.tiers.push(TierRec {
                     case: hex::encode(&p[5..37]),
                     tier: p[37] as u32,
@@ -355,6 +361,7 @@ impl Ledger {
         self.postings.retain(|p| p.at.height < height);
         self.registrations.retain(|r| r.at.height < height);
         self.anchors.retain(|a| a.1 < height);
+        self.anchor_txs.retain(|a| a.2 < height);
         self.incidents.retain(|i| i.height < height);
         self.tiers.retain(|t| t.height < height);
         self.watch.clear();

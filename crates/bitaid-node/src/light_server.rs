@@ -125,6 +125,10 @@ pub trait LightBackend: Send + Sync {
     fn output_state(&self, op: &OutPoint) -> Result<Option<u32>, String>;
     /// Returns `(txid_hex, height)` for all on-chain Bitaid records of `case_id` at `height >= from_height`.
     fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32)>;
+    /// Returns `(txid_hex, height)` for all `KIND_ANCHOR` checkpoint/message anchor records at `height >= from_height`.
+    fn anchor_record_txs(&self, _from_height: u32) -> Vec<(String, u32)> {
+        Vec::new()
+    }
 }
 
 impl LightBackend for Rpc {
@@ -179,6 +183,16 @@ impl LightBackend for Rpc {
                 }
             }
             out
+        })
+    }
+
+    fn anchor_record_txs(&self, from_height: u32) -> Vec<(String, u32)> {
+        self.ledger(|l| {
+            l.anchor_txs
+                .iter()
+                .filter(|(_, _, h)| *h >= from_height)
+                .map(|(_, txid, h)| (txid.to_string(), *h))
+                .collect()
         })
     }
 }
@@ -319,13 +333,19 @@ pub fn answer_ask<B: LightBackend>(
         covers.push(LightCover::Output(op_str.clone()));
     }
 
-    // 4. Case on-chain records from `from_height`.
+    // 4. Case on-chain records and `KIND_ANCHOR` checkpoint records from `from_height`.
     let mut records: Vec<LightRecord> = Vec::new();
+    let mut want_recs: Vec<(String, u32)> = Vec::new();
     if let Some(cid) = case_id {
-        let mut recs = backend.case_record_txs(cid, *from_height);
-        recs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        recs.dedup_by(|a, b| a.0 == b.0);
-        for (txid, _h) in recs.into_iter().take(LIGHT_MAX_RECORDS) {
+        want_recs.extend(backend.case_record_txs(cid, *from_height));
+    }
+    if *from_height > 0 {
+        want_recs.extend(backend.anchor_record_txs(*from_height));
+    }
+    if !want_recs.is_empty() {
+        want_recs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        want_recs.dedup_by(|a, b| a.0 == b.0);
+        for (txid, _h) in want_recs.into_iter().take(LIGHT_MAX_RECORDS) {
             let Some((raw, block_hash, height)) = backend.raw_tx_and_block(&txid) else {
                 continue;
             };

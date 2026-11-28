@@ -628,9 +628,15 @@ impl Node {
     }
 
     /// The first block that anchors message `id` on chain: alone, or in a checkpoint this node has
-    /// the list of.
+    /// the list of. Under `BITAID_CHAIN=core`, reads from `CoreLight` with zero RPC calls.
     pub fn anchor_height(&self, id: &str) -> Option<u32> {
         let roots = self.listed.get(id);
+        if let Some(cl) = &self.light {
+            return std::iter::once(id)
+                .chain(roots.into_iter().flatten().map(|r| r.as_str()))
+                .filter_map(|r| cl.anchored(r))
+                .min();
+        }
         self.rpc.ledger(|l| {
             std::iter::once(id)
                 .chain(roots.into_iter().flatten().map(|r| r.as_str()))
@@ -643,7 +649,11 @@ impl Node {
     pub fn wait_anchored(&mut self, id: &str, timeout: Duration) -> Option<u32> {
         let end = Instant::now() + timeout;
         loop {
-            self.rpc.sync();
+            if let Some(cl) = &self.light {
+                let _ = cl.sync_anchors(Duration::from_secs(2));
+            } else {
+                self.rpc.sync();
+            }
             if let Some(h) = self.anchor_height(id) {
                 return Some(h);
             }
@@ -675,8 +685,13 @@ impl Node {
         if self.parked.is_empty() && self.own_timed.is_empty() {
             return;
         }
-        self.rpc.sync();
-        let tip = self.rpc.ledger(|l| l.tip()).unwrap_or(0);
+        let tip = if let Some(cl) = &self.light {
+            let _ = cl.sync_anchors(Duration::from_secs(2));
+            crate::light_client::ChainSource::height(cl.as_ref())
+        } else {
+            self.rpc.sync();
+            self.rpc.ledger(|l| l.tip()).unwrap_or(0)
+        };
         // deliver
         let parked = std::mem::take(&mut self.parked);
         for (sub, e, at) in parked {
@@ -1270,7 +1285,11 @@ impl Node {
                         && self.anchor_height(&e.id).is_none()
                         && !self.parked.iter().any(|p| p.1.id == e.id) =>
                     {
-                        let at = self.rpc.ledger(|l| l.tip()).unwrap_or(0);
+                        let at = if let Some(cl) = &self.light {
+                            crate::light_client::ChainSource::height(cl.as_ref())
+                        } else {
+                            self.rpc.ledger(|l| l.tip()).unwrap_or(0)
+                        };
                         self.parked.push_back((sub, e, at));
                         if self.parked.len() > MAX_LOCKED {
                             self.parked.pop_front();

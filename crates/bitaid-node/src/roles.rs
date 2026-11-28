@@ -296,11 +296,11 @@ fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::
         vec![],
         vec![],
         None,
-        0,
+        anchor_h.max(1),
         Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
         now_ts,
     );
-    crate::light_client::CoreLight::follow(&cl, Duration::from_secs(10));
+    crate::light_client::CoreLight::follow(&cl, n.rpc.clone(), Duration::from_secs(2));
     n.log(&format!(
         "light client active (BITAID_CHAIN=core, anchor {anchor_h}, core {})",
         crate::pre(cl.core_pubkey(), 12)
