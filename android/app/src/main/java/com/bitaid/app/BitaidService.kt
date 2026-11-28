@@ -10,11 +10,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -50,6 +55,8 @@ class BitaidService : Service() {
     private var pendingRelaunch: RoleLaunchConfig? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var locationManager: LocationManager? = null
+    private var dutyLocationListener: LocationListener? = null
     private var roleStartedAtMs: Long = 0L
     private var consecutiveQuickFails: Int = 0
 
@@ -66,6 +73,13 @@ class BitaidService : Service() {
         val timeScale: String,
         val lat: Double?,
         val lon: Double?,
+        val posAtSecs: Long = 0L,
+        val posAccuracyM: Float = -1f,
+        val autoAccept: Boolean = false,
+        val maxDistanceM: Long = 0L,
+        val minDeposit: Long = 0L,
+        val minReward: Long = 0L,
+        val minBounty: Long = 1L,
     )
 
     override fun onCreate() {
@@ -116,17 +130,31 @@ class BitaidService : Service() {
                     timeScale = intent.getStringExtra(EXTRA_TIME_SCALE) ?: "1",
                     lat = if (validLoc) lat else null,
                     lon = if (validLoc) lon else null,
+                    posAtSecs = intent.getLongExtra(EXTRA_POS_AT, 0L),
+                    posAccuracyM = intent.getFloatExtra(EXTRA_POS_ACCURACY_M, -1f),
+                    autoAccept = intent.getBooleanExtra(EXTRA_AUTO_ACCEPT, false),
+                    maxDistanceM = intent.getLongExtra(EXTRA_MAX_DISTANCE_M, 0L),
+                    minDeposit = intent.getLongExtra(EXTRA_MIN_DEPOSIT, 0L),
+                    minReward = intent.getLongExtra(EXTRA_MIN_REWARD, 0L),
+                    minBounty = intent.getLongExtra(EXTRA_MIN_BOUNTY, 1L),
                 )
                 consecutiveQuickFails = 0
                 wantOnDuty.set(true)
                 BitaidState.update { it.copy(warning = null) }
+                val manualLoc = intent.getBooleanExtra(EXTRA_MANUAL_LOC, false)
                 promoteForeground("Starting Tor ($role)...")
                 acquireWakeLock()
+                if (role == "responder" && !manualLoc) {
+                    startDutyLocationUpdates()
+                } else {
+                    stopDutyLocationUpdates()
+                }
                 worker.execute { startTorAndRole(cfg) }
             }
             ACTION_STOP -> {
                 wantOnDuty.set(false)
                 pendingRelaunch = null
+                stopDutyLocationUpdates()
                 NativeBridge.sendOffDuty()
                 BitaidState.update {
                     it.copy(
@@ -242,12 +270,29 @@ class BitaidService : Service() {
             if (cfg.lat != null && cfg.lon != null) {
                 put("--lat"); put(cfg.lat.toString())
                 put("--lon"); put(cfg.lon.toString())
+                if (cfg.posAtSecs > 0L && cfg.posAccuracyM >= 0f && cfg.posAccuracyM.isFinite()) {
+                    put("--pos-at"); put(cfg.posAtSecs.toString())
+                    put("--pos-accuracy-m"); put(cfg.posAccuracyM.toString())
+                }
             }
             put("--exit-after"); put("86400")
             put("--settle-wait"); put("1800")
             if (cfg.role == "responder") {
                 put("--ask-accept")
                 put("--ask-vote")
+                if (cfg.autoAccept && cfg.maxDistanceM > 0L) {
+                    put("--auto-accept")
+                    put("--max-distance-m"); put(cfg.maxDistanceM.toString())
+                }
+                if (cfg.minDeposit > 0L) {
+                    put("--min-deposit"); put(cfg.minDeposit.toString())
+                }
+                if (cfg.minReward > 0L) {
+                    put("--min-reward"); put(cfg.minReward.toString())
+                }
+                if (cfg.minBounty > 0L) {
+                    put("--min-bounty"); put(cfg.minBounty.toString())
+                }
             } else {
                 put("--ask-alert")
             }
@@ -270,8 +315,40 @@ class BitaidService : Service() {
                     val type = BitaidState.applyNativeEvent(json)
                     when (type) {
                         "Listening" -> updateNotification("On duty — listening for alerts")
-                        "Alert" -> postAlertNotification()
+                        "Alert" -> {
+                            val (distM, posAge) = try {
+                                val obj = JSONObject(json)
+                                val d = if (obj.has("distance_m") && !obj.isNull("distance_m")) obj.optInt("distance_m") else null
+                                val a = if (obj.has("position_age_secs") && !obj.isNull("position_age_secs")) obj.optLong("position_age_secs") else null
+                                Pair(d, a)
+                            } catch (_: Exception) {
+                                Pair(null, null)
+                            }
+                            postAlertNotification(distM, posAge)
+                        }
+                        "AutoAccepted" -> {
+                            val distM = try {
+                                JSONObject(json).optInt("max_distance_m", 0)
+                            } catch (_: Exception) {
+                                0
+                            }
+                            postAutoAcceptedNotification(distM)
+                            updateNotification("Accepted automatically (within $distM m)")
+                        }
                         "Location" -> updateNotification("Responding — location verified")
+                        "BallotDue" -> {
+                            val remSecs = try {
+                                JSONObject(json).optLong("remaining_secs", 0L)
+                            } catch (_: Exception) {
+                                0L
+                            }
+                            postBallotNotification(remSecs)
+                            updateNotification("Ballot due — tap to vote")
+                        }
+                        "BallotClosed" -> {
+                            cancelBallotNotification()
+                            updateNotification("Ballot window closed")
+                        }
                         "Warning" -> updateNotification("WARNING: Core proof failed — signing off")
                         "Fatal" -> {
                             wantOnDuty.set(false)
@@ -389,7 +466,7 @@ class BitaidService : Service() {
             .build()
     }
 
-    private fun postAlertNotification() {
+    private fun postAlertNotification(distanceM: Int?, positionAgeSecs: Long?) {
         val pi = PendingIntent.getActivity(
             this,
             1,
@@ -398,9 +475,17 @@ class BitaidService : Service() {
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val body = when {
+            distanceM != null && (positionAgeSecs ?: 0L) >= 120L -> {
+                val mins = (positionAgeSecs ?: 0L) / 60L
+                "About $distanceM m from where you were $mins min ago — tap to review"
+            }
+            distanceM != null -> "About $distanceM m away — tap to accept or decline"
+            else -> "Tap to review and accept or decline"
+        }
         val notif = NotificationCompat.Builder(this, CHANNEL_ALERT)
             .setContentTitle("Incoming Bitaid Alert")
-            .setContentText("Tap to review and accept or decline")
+            .setContentText(body)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
@@ -409,6 +494,67 @@ class BitaidService : Service() {
             .build()
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(ALERT_NOTIF_ID, notif)
+    }
+
+    private fun postAutoAcceptedNotification(maxDistanceM: Int) {
+        val pi = PendingIntent.getActivity(
+            this,
+            3,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val body = if (maxDistanceM > 0) {
+            "Emergency within $maxDistanceM m — open for exact location"
+        } else {
+            "Emergency accepted automatically — open for exact location"
+        }
+        val notif = NotificationCompat.Builder(this, CHANNEL_ALERT)
+            .setContentTitle("Accepted automatically")
+            .setContentText(body)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(ALERT_NOTIF_ID, notif)
+    }
+
+    private fun postBallotNotification(remainingSecs: Long) {
+        val pi = PendingIntent.getActivity(
+            this,
+            2,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val timeHint = if (remainingSecs > 0L) {
+            val mins = remainingSecs / 60L
+            val secs = remainingSecs % 60L
+            if (mins > 0L) "About ${mins}m ${secs}s left to vote" else "About ${secs}s left to vote"
+        } else {
+            "Tap now to submit your ballot"
+        }
+        val notif = NotificationCompat.Builder(this, CHANNEL_ALERT)
+            .setContentTitle("Bitaid Ballot Due")
+            .setContentText(timeHint)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(BALLOT_NOTIF_ID, notif)
+    }
+
+    private fun cancelBallotNotification() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.cancel(BALLOT_NOTIF_ID)
     }
 
     private fun createChannels() {
@@ -435,9 +581,60 @@ class BitaidService : Service() {
         wakeLock = null
     }
 
+    private fun startDutyLocationUpdates() {
+        stopDutyLocationUpdates()
+        val hasFine = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine) return
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val listener = object : LocationListener {
+            override fun onLocationChanged(loc: Location) {
+                val ageMs = ((SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos).coerceAtLeast(0L)) / 1_000_000L
+                val atSecs = ((System.currentTimeMillis() - ageMs).coerceAtLeast(0L)) / 1000L
+                NativeBridge.sendPosition(loc.latitude, loc.longitude, loc.accuracy, atSecs)
+            }
+        }
+        try {
+            if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                lm.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    30_000L,
+                    100f,
+                    listener,
+                    Looper.getMainLooper(),
+                )
+            }
+            if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                lm.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    60_000L,
+                    100f,
+                    listener,
+                    Looper.getMainLooper(),
+                )
+            }
+            locationManager = lm
+            dutyLocationListener = listener
+        } catch (_: SecurityException) {
+        }
+    }
+
+    private fun stopDutyLocationUpdates() {
+        dutyLocationListener?.let { l ->
+            try {
+                locationManager?.removeUpdates(l)
+            } catch (_: Exception) {
+            }
+        }
+        dutyLocationListener = null
+    }
+
     override fun onDestroy() {
         wantOnDuty.set(false)
         pendingRelaunch = null
+        stopDutyLocationUpdates()
         NativeBridge.sendOffDuty()
         NativeBridge.setTorDormant(true)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
@@ -463,13 +660,22 @@ class BitaidService : Service() {
         const val EXTRA_SAT_SCALE = "sat_scale"
         const val EXTRA_TIME_SCALE = "time_scale"
         const val EXTRA_HAS_LOC = "has_loc"
+        const val EXTRA_MANUAL_LOC = "manual_loc"
         const val EXTRA_LAT = "lat"
         const val EXTRA_LON = "lon"
+        const val EXTRA_POS_AT = "pos_at"
+        const val EXTRA_POS_ACCURACY_M = "pos_accuracy_m"
+        const val EXTRA_AUTO_ACCEPT = "auto_accept"
+        const val EXTRA_MAX_DISTANCE_M = "max_distance_m"
+        const val EXTRA_MIN_DEPOSIT = "min_deposit"
+        const val EXTRA_MIN_REWARD = "min_reward"
+        const val EXTRA_MIN_BOUNTY = "min_bounty"
 
         private const val CHANNEL_DUTY = "bitaid_duty"
         private const val CHANNEL_ALERT = "bitaid_alert"
         private const val NOTIF_ID = 1001
         private const val ALERT_NOTIF_ID = 1002
+        private const val BALLOT_NOTIF_ID = 1003
         private const val QUICK_FAIL_MS = 10_000L
         private const val MAX_QUICK_FAILS = 3
     }

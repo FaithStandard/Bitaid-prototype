@@ -109,6 +109,89 @@ fn cell_of(lat: f64, lon: f64) -> h3o::CellIndex {
         .to_cell(h3o::Resolution::Eight)
 }
 
+/// Exact distance in metres from `(lat, lon)` to the farthest vertex of an H3 cell.
+/// Because the alert's exact location is sealed inside its cell until after accepting, checking
+/// the farthest boundary vertex guarantees no point in the cell can exceed the responder's limit.
+pub(crate) fn max_distance_to_cell_m(lat: f64, lon: f64, cell_str: &str) -> Option<f64> {
+    if !lat.is_finite() || !lon.is_finite() || !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    let origin = h3o::LatLng::new(lat, lon).ok()?;
+    let cell: h3o::CellIndex = cell_str.parse().ok()?;
+    let mut max_d = 0.0f64;
+    for v in cell.boundary().iter() {
+        let d = origin.distance_m(*v);
+        if d.is_finite() && d > max_d {
+            max_d = d;
+        }
+    }
+    (max_d > 0.0).then_some(max_d)
+}
+
+/// Maximum age (seconds) of a responder's GPS fix for auto-accept to act without human confirmation.
+pub(crate) const AUTO_ACCEPT_MAX_POS_AGE_SECS: u64 = 120;
+/// Maximum horizontal GPS accuracy radius (metres) for auto-accept.
+pub(crate) const AUTO_ACCEPT_MAX_ACCURACY_M: f64 = 100.0;
+
+/// Evaluates whether an alert may be auto-accepted under the responder's standing policy.
+/// Fails closed if auto-accept is off, `max_distance_m == 0`, the Core is distrusted, the GPS fix
+/// is stale (> 120 s) or inaccurate (> 100 m), any pot is below its minimum, or the cell's farthest
+/// vertex plus `accuracy_m` exceeds `max_distance_m`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_auto_accept(
+    enabled: bool,
+    distrusted: bool,
+    lat: f64,
+    lon: f64,
+    accuracy_m: f64,
+    pos_age_secs: u64,
+    cell_str: &str,
+    max_distance_m: u64,
+    pots: [u64; 3],
+    min_deposit: u64,
+    min_reward: u64,
+    min_bounty: u64,
+) -> Result<f64, String> {
+    if !enabled {
+        return Err("auto-accept is disabled".into());
+    }
+    if distrusted {
+        return Err("Core is distrusted (signing disabled)".into());
+    }
+    if max_distance_m == 0 {
+        return Err("max-distance-m is 0".into());
+    }
+    if pos_age_secs > AUTO_ACCEPT_MAX_POS_AGE_SECS {
+        return Err(format!(
+            "position fix is stale ({pos_age_secs} s > {AUTO_ACCEPT_MAX_POS_AGE_SECS} s)"
+        ));
+    }
+    if !accuracy_m.is_finite() || accuracy_m < 0.0 || accuracy_m > AUTO_ACCEPT_MAX_ACCURACY_M {
+        return Err(format!(
+            "position accuracy {accuracy_m:.0} m > {AUTO_ACCEPT_MAX_ACCURACY_M:.0} m"
+        ));
+    }
+    if pots[0] < min_deposit {
+        return Err(format!("deposit {} < minimum {min_deposit}", pots[0]));
+    }
+    if pots[1] < min_reward {
+        return Err(format!("reward {} < minimum {min_reward}", pots[1]));
+    }
+    if pots[2] < min_bounty {
+        return Err(format!("bounty {} < minimum {min_bounty}", pots[2]));
+    }
+    let farthest = max_distance_to_cell_m(lat, lon, cell_str)
+        .ok_or_else(|| format!("cannot compute distance to cell {cell_str}"))?;
+    let total = farthest + accuracy_m;
+    if total > max_distance_m as f64 {
+        return Err(format!(
+            "farthest point of cell is {:.0} m (incl. {:.0} m accuracy) > limit {max_distance_m} m",
+            total, accuracy_m
+        ));
+    }
+    Ok(total)
+}
+
 fn chain_view(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBuf)> + '_ {
     move |op| rpc.utxo(op).map(|o| (o.value.to_sat(), o.script_pubkey))
 }
@@ -3068,7 +3151,13 @@ fn vote(n: &mut Node, a: &Alerted, r: &Rostered, ballot: Ballot) {
     let mut seen = std::collections::HashSet::new();
     // a commitment is seen here once it is anchored; this seat reveals when every seat's is, or when
     // the commit window (measured from the incident's block) has ended: nothing anchored later counts
-    let by = n.rpc.tx_height(&r.incident_txid.to_string()).unwrap_or(n.tip()) + a.template.commit_blocks;
+    let inc_h = n
+        .light
+        .as_ref()
+        .and_then(|cl| crate::light_client::ChainSource::tx_height(cl.as_ref(), &r.incident_txid).map(|t| t.value))
+        .or_else(|| n.rpc.tx_height(&r.incident_txid.to_string()))
+        .unwrap_or_else(|| n.tip());
+    let by = inc_h + a.template.commit_blocks;
     let got = n.collect_until(
         by + 1,
         secs(crate::slow(3600)),
@@ -7792,9 +7881,22 @@ fn responder(mut n: Node) -> i32 {
         n.rpc.mine(1).ok();
     }
     // ------------------------------------------------ listen to my cell and its neighbours
-    let (lat, lon) = (num("--lat", 13.6929f64), num("--lon", -89.2182f64));
-    let home = cell_of(lat, lon);
-    let cells: Vec<String> = home
+    let (mut lat, mut lon) = (num("--lat", 13.6929f64), num("--lon", -89.2182f64));
+    // Fail closed: starting --lat/--lon has unknown age and accuracy unless explicitly passed via
+    // --pos-at / --pos-accuracy-m or updated by a live Command::Position from the app.
+    let mut pos_accuracy_m = arg("--pos-accuracy-m")
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(f64::INFINITY);
+    let now_epoch = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    };
+    let mut pos_at_secs = num("--pos-at", 0u64);
+    let mut home = cell_of(lat, lon);
+    let mut cells: Vec<String> = home
         .grid_disk::<Vec<_>>(1)
         .into_iter()
         .map(|c| c.to_string())
@@ -7809,11 +7911,51 @@ fn responder(mut n: Node) -> i32 {
         cells.len()
     ));
     crate::events::emit(crate::events::Event::Listening { node: n.name.clone(), home: home.to_string(), cells: cells.len() });
+    let min_deposit = num("--min-deposit", 0u64);
+    let min_reward = num("--min-reward", 0u64);
     let min_bounty = num("--min-bounty", 1u64);
+    let auto_accept = flag("--auto-accept");
+    let max_distance_m = num("--max-distance-m", 0u64);
     let delay = num("--accept-delay-ms", 0u64);
     let me = n.me();
     let listen_until = Instant::now() + secs(num("--exit-after", 600u64));
     let a = loop {
+        // Drain any live position updates from the app and re-centre cells if we moved a cell+.
+        while let Some(crate::commands::Command::Position {
+            lat: nlat,
+            lon: nlon,
+            accuracy_m,
+            at,
+        }) = crate::commands::take(Duration::ZERO, |x| {
+            matches!(x, crate::commands::Command::Position { .. })
+        }) {
+            if nlat.is_finite()
+                && nlon.is_finite()
+                && (-90.0..=90.0).contains(&nlat)
+                && (-180.0..=180.0).contains(&nlon)
+                && accuracy_m.is_finite()
+                && accuracy_m >= 0.0
+            {
+                lat = nlat;
+                lon = nlon;
+                pos_accuracy_m = accuracy_m as f64;
+                pos_at_secs = at;
+                let new_home = cell_of(lat, lon);
+                if new_home != home {
+                    home = new_home;
+                    cells = home
+                        .grid_disk::<Vec<_>>(1)
+                        .into_iter()
+                        .map(|c| c.to_string())
+                        .collect();
+                    n.subscribe(
+                        "alerts",
+                        vec![Filter::kinds(&[kind::ALERT]).tag('g', &cells)],
+                    );
+                    n.log(&format!("moved to cell {home}; re-centred alert subscription"));
+                }
+            }
+        }
         // off duty (the app): stop listening; nothing accepted yet, so nothing is left open
         if crate::commands::take(Duration::ZERO, |x| matches!(x, crate::commands::Command::OffDuty)).is_some() {
             n.log("off duty");
@@ -7830,6 +7972,29 @@ fn responder(mut n: Node) -> i32 {
             n.check("an alert arrived in my cells", false, "");
             return n.summary();
         };
+        // Pick up any position update that arrived while waiting for the alert.
+        while let Some(crate::commands::Command::Position {
+            lat: nlat,
+            lon: nlon,
+            accuracy_m,
+            at,
+        }) = crate::commands::take(Duration::ZERO, |x| {
+            matches!(x, crate::commands::Command::Position { .. })
+        }) {
+            if nlat.is_finite()
+                && nlon.is_finite()
+                && (-90.0..=90.0).contains(&nlat)
+                && (-180.0..=180.0).contains(&nlon)
+                && accuracy_m.is_finite()
+                && accuracy_m >= 0.0
+            {
+                lat = nlat;
+                lon = nlon;
+                pos_accuracy_m = accuracy_m as f64;
+                pos_at_secs = at;
+            }
+        }
+        let t_check = Instant::now();
         let checked = match &light {
             Some(cl) => Alerted::check(&env.sender, &env.msg, light_chain_view(cl), &opid),
             None => Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid),
@@ -7848,6 +8013,67 @@ fn responder(mut n: Node) -> i32 {
                 n.log("alert above what my bond backs (twice the reward and bounty); ignored")
             }
             Ok(a) if a.template.pots[2] >= min_bounty => {
+                n.log(&format!(
+                    "alert {} in cell {} arrived and checked in {:.2} s",
+                    crate::pre(&a.case_hex, 8),
+                    a.cell,
+                    t_check.elapsed().as_secs_f64()
+                ));
+                let pos_age_secs = if pos_at_secs > 0 {
+                    now_epoch().saturating_sub(pos_at_secs)
+                } else {
+                    u64::MAX
+                };
+                if auto_accept {
+                    // Check OffDuty one last time before auto-accepting.
+                    if crate::commands::take(Duration::ZERO, |x| matches!(x, crate::commands::Command::OffDuty)).is_some() {
+                        n.log("off duty");
+                        return n.summary();
+                    }
+                    let distrusted = light.as_ref().is_some_and(|cl| cl.is_distrusted());
+                    match evaluate_auto_accept(
+                        true,
+                        distrusted,
+                        lat,
+                        lon,
+                        pos_accuracy_m,
+                        pos_age_secs,
+                        &a.cell,
+                        max_distance_m,
+                        a.template.pots,
+                        min_deposit,
+                        min_reward,
+                        min_bounty,
+                    ) {
+                        Ok(dist_m) => {
+                            let max_d = dist_m.round() as u32;
+                            n.log(&format!(
+                                "alert {} auto-accepted (cell {} max {max_d} m <= {max_distance_m} m)",
+                                crate::pre(&a.case_hex, 8),
+                                a.cell
+                            ));
+                            crate::events::emit(crate::events::Event::AutoAccepted {
+                                node: n.name.clone(),
+                                case: a.case_hex.clone(),
+                                cell: a.cell.clone(),
+                                max_distance_m: max_d,
+                                deposit: a.template.pots[0],
+                                reward: a.template.pots[1],
+                                bounty: a.template.pots[2],
+                            });
+                            break a;
+                        }
+                        Err(why) => {
+                            n.log(&format!(
+                                "alert {} not auto-accepted ({why}); offering manual prompt",
+                                crate::pre(&a.case_hex, 8)
+                            ));
+                        }
+                    }
+                }
+                let acc_pad = if pos_accuracy_m.is_finite() { pos_accuracy_m } else { 0.0 };
+                let dist_m = max_distance_to_cell_m(lat, lon, &a.cell)
+                    .map(|d| (d + acc_pad).round() as u32);
                 crate::events::emit(crate::events::Event::Alert {
                     node: n.name.clone(),
                     case: a.case_hex.clone(),
@@ -7855,6 +8081,8 @@ fn responder(mut n: Node) -> i32 {
                     deposit: a.template.pots[0],
                     reward: a.template.pots[1],
                     bounty: a.template.pots[2],
+                    distance_m: dist_m,
+                    position_age_secs: (pos_at_secs > 0).then_some(pos_age_secs),
                 });
                 if !flag("--ask-accept") {
                     break a;
@@ -7869,10 +8097,20 @@ fn responder(mut n: Node) -> i32 {
                     n.log(&format!("alert {}: its joining window passed before it could be shown", crate::pre(&a.case_hex, 8)));
                     continue;
                 }
-                match crate::commands::take(window, |x| {
-                    matches!(x, crate::commands::Command::Accept { case } | crate::commands::Command::Decline { case } if *case == cs)
-                        || matches!(x, crate::commands::Command::OffDuty)
-                }) {
+                let prompt_end = Instant::now() + window;
+                let decision = loop {
+                    if let Some(cmd) = crate::commands::take(Duration::ZERO, |x| {
+                        matches!(x, crate::commands::Command::Accept { case } | crate::commands::Command::Decline { case } if *case == cs)
+                            || matches!(x, crate::commands::Command::OffDuty)
+                    }) {
+                        break Some(cmd);
+                    }
+                    if Instant::now() >= prompt_end {
+                        break None;
+                    }
+                    n.pull(Duration::from_millis(250));
+                };
+                match decision {
                     Some(crate::commands::Command::Accept { .. }) => break a,
                     Some(crate::commands::Command::OffDuty) => {
                         n.log("off duty");
@@ -8169,11 +8407,91 @@ fn responder(mut n: Node) -> i32 {
     let my_ballot = if flag("--ask-vote") {
         // --ask-vote (the app): the attendee's own ballot, as it gives it. None given, or a malformed
         // one, and none is cast: never a ballot the attendee did not give (review of M4 step 1: a
-        // default ballot was committed in the silent attendee's name)
-        crate::events::emit(crate::events::Event::BallotDue { node: n.name.clone(), case: c.clone(), seats: r.seats.len(), my_seat });
+        // default ballot was committed in the silent attendee's name).
+        // Cutoff is chain-anchored: stop waiting when the commit window nears its closing block so
+        // a late ballot never commits after the window has closed, and pump `n.pull` while waiting.
+        let inc_h = n
+            .light
+            .as_ref()
+            .and_then(|cl| crate::light_client::ChainSource::tx_height(cl.as_ref(), &r.incident_txid).map(|t| t.value))
+            .or_else(|| n.rpc.tx_height(&r.incident_txid.to_string()))
+            .unwrap_or_else(|| n.tip());
+        let commit_end = inc_h + a.template.commit_blocks;
+        let margin = if a.template.commit_blocks >= 4 {
+            2
+        } else if a.template.commit_blocks == 3 {
+            1
+        } else {
+            0
+        };
+        let deadline_h = commit_end.saturating_sub(margin);
+        let cur_h = n.tip();
+        let rem_blocks = deadline_h.saturating_sub(cur_h);
+        let block_secs: u64 = match &n.light {
+            Some(cl) => cl.median_block_spacing_secs(),
+            None => match n.rpc.network() {
+                bitcoin::Network::Regtest => 2,
+                _ => 600,
+            },
+        };
+        let rem_secs = (rem_blocks as u64) * block_secs;
+        n.log(&format!(
+            "ballot due: {rem_blocks} block(s) (~{rem_secs} s at {block_secs} s/block) until commit cutoff at height {deadline_h} (window ends {commit_end})"
+        ));
+        crate::events::emit(crate::events::Event::BallotDue {
+            node: n.name.clone(),
+            case: c.clone(),
+            seats: r.seats.len(),
+            my_seat,
+            remaining_blocks: rem_blocks,
+            remaining_secs: rem_secs,
+        });
         let cs = c.clone();
-        match crate::commands::take(secs(3600), |x| matches!(x, crate::commands::Command::Vote { case, .. } if *case == cs)) {
-            Some(crate::commands::Command::Vote { classes, achieved, misuse, .. }) => ballot_of(r.seats.len(), &classes, achieved, misuse),
+        let wall_cap = Instant::now() + secs(crate::slow(3600));
+        let mut last_h = cur_h;
+        let got_vote = loop {
+            if let Some(cmd) = crate::commands::take(Duration::ZERO, |x| {
+                matches!(x, crate::commands::Command::Vote { case, .. } if *case == cs)
+            }) {
+                break Some(cmd);
+            }
+            let h = n.tip();
+            if h >= deadline_h {
+                n.log(&format!(
+                    "ballot window closed at height {h} (cutoff {deadline_h}); no ballot cast"
+                ));
+                break None;
+            }
+            if h > last_h {
+                last_h = h;
+                let rb = deadline_h.saturating_sub(h);
+                let bs = match &n.light {
+                    Some(cl) => cl.median_block_spacing_secs(),
+                    None => block_secs,
+                };
+                crate::events::emit(crate::events::Event::BallotTick {
+                    node: n.name.clone(),
+                    case: c.clone(),
+                    remaining_blocks: rb,
+                    remaining_secs: (rb as u64) * bs,
+                });
+            }
+            if Instant::now() >= wall_cap {
+                n.log("ballot wait wall-clock cap reached; no ballot cast");
+                break None;
+            }
+            n.pull(Duration::from_millis(250));
+        };
+        if got_vote.is_none() {
+            crate::events::emit(crate::events::Event::BallotClosed {
+                node: n.name.clone(),
+                case: c.clone(),
+            });
+        }
+        match got_vote {
+            Some(crate::commands::Command::Vote { classes, achieved, misuse, .. }) => {
+                ballot_of(r.seats.len(), &classes, achieved, misuse)
+            }
             _ => None,
         }
     } else {
@@ -8592,4 +8910,77 @@ fn collect_seizure(n: &mut Node, a: &Alerted, r: &Rostered, view: &PoolView) {
 #[allow(dead_code)]
 fn unused(_: OutPoint) -> Option<Scalar> {
     scalar_from("")
+}
+
+#[cfg(test)]
+mod auto_accept_tests {
+    use super::*;
+
+    #[test]
+    fn auto_accept_enforces_exact_cell_vertex_distance_pots_and_trust() {
+        let (lat, lon) = (13.6929, -89.2182);
+        let home = cell_of(lat, lon);
+        let home_str = home.to_string();
+        let farthest_home = max_distance_to_cell_m(lat, lon, &home_str).expect("valid home cell");
+        assert!(
+            farthest_home > 400.0 && farthest_home < 1200.0,
+            "res-8 home cell farthest vertex should be ~500-1000 m, got {farthest_home}"
+        );
+
+        let pots = [100_000, 200_000, 50_000];
+
+        // Positive: home cell inside limit, pots meet minimums, Core trusted, fresh accurate fix.
+        let limit = (farthest_home.ceil() as u64) + 50;
+        let ok = evaluate_auto_accept(true, false, lat, lon, 15.0, 10, &home_str, limit, pots, 100_000, 200_000, 50_000);
+        assert!(ok.is_ok(), "matching alert must auto-accept: {ok:?}");
+
+        // Negative: deposit, reward, or bounty below minimum.
+        assert!(evaluate_auto_accept(true, false, lat, lon, 15.0, 10, &home_str, limit, pots, 100_001, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, 15.0, 10, &home_str, limit, pots, 0, 200_001, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, 15.0, 10, &home_str, limit, pots, 0, 0, 50_001).is_err());
+
+        // Negative: limit tighter than the cell's farthest vertex (even though we are inside the cell!).
+        let too_tight = (farthest_home.floor() as u64).saturating_sub(10);
+        assert!(
+            evaluate_auto_accept(true, false, lat, lon, 0.0, 10, &home_str, too_tight, pots, 0, 0, 0).is_err(),
+            "cell whose farthest vertex exceeds limit must not auto-accept"
+        );
+
+        // Negative: accuracy radius pushes farthest vertex past limit.
+        let tight_with_acc = (farthest_home.ceil() as u64) + 10;
+        assert!(
+            evaluate_auto_accept(true, false, lat, lon, 25.0, 10, &home_str, tight_with_acc, pots, 0, 0, 0).is_err(),
+            "accuracy_m must be added to farthest vertex distance"
+        );
+
+        // Negative: stale fix (> 120 s), unknown age (u64::MAX), or inaccurate/unknown accuracy (> 100 m / INFINITY).
+        assert!(evaluate_auto_accept(true, false, lat, lon, 15.0, 121, &home_str, limit, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, 15.0, u64::MAX, &home_str, limit, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, 101.0, 10, &home_str, limit + 500, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, f64::INFINITY, 10, &home_str, limit + 500, pots, 0, 0, 0).is_err());
+
+        // Negative: responder moved ~5 km away after going on duty -> alert near A must NOT auto-accept.
+        let (moved_lat, moved_lon) = (lat + 0.045, lon); // ~5 km north
+        assert!(
+            evaluate_auto_accept(true, false, moved_lat, moved_lon, 10.0, 5, &home_str, 3_000, pots, 0, 0, 0).is_err(),
+            "moving 5 km away from A must reject auto-accept for alert at A"
+        );
+
+        // Negative: neighbor cell beyond limit.
+        let neighbor = home
+            .grid_disk::<Vec<_>>(1)
+            .into_iter()
+            .find(|c| *c != home)
+            .unwrap();
+        let farthest_nb = max_distance_to_cell_m(lat, lon, &neighbor.to_string()).unwrap();
+        assert!(farthest_nb > farthest_home);
+        assert!(
+            evaluate_auto_accept(true, false, lat, lon, 0.0, 10, &neighbor.to_string(), limit, pots, 0, 0, 0).is_err()
+        );
+
+        // Negative: Core distrusted, disabled, or max_distance_m == 0.
+        assert!(evaluate_auto_accept(true, true, lat, lon, 10.0, 10, &home_str, limit, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(false, false, lat, lon, 10.0, 10, &home_str, limit, pots, 0, 0, 0).is_err());
+        assert!(evaluate_auto_accept(true, false, lat, lon, 10.0, 10, &home_str, 0, pots, 0, 0, 0).is_err());
+    }
 }

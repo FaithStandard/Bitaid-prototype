@@ -19,6 +19,8 @@ data class AlertPrompt(
     val deposit: Long,
     val reward: Long,
     val bounty: Long,
+    val distanceM: Int? = null,
+    val positionAgeSecs: Long? = null,
 )
 
 data class VerifiedLocation(
@@ -31,6 +33,9 @@ data class BallotPrompt(
     val caseId: String,
     val seats: Int,
     val mySeat: Int,
+    val remainingBlocks: Int = 0,
+    val remainingSecs: Long = 0L,
+    val receivedAtMs: Long = System.currentTimeMillis(),
 )
 
 data class CheckLine(
@@ -161,6 +166,8 @@ object BitaidState {
                     )
                 }
                 "Alert" -> {
+                    val dist = if (obj.has("distance_m") && !obj.isNull("distance_m")) obj.optInt("distance_m") else null
+                    val posAge = if (obj.has("position_age_secs") && !obj.isNull("position_age_secs")) obj.optLong("position_age_secs") else null
                     cur.copy(
                         alert = AlertPrompt(
                             caseId = obj.optString("case"),
@@ -168,7 +175,21 @@ object BitaidState {
                             deposit = obj.optLong("deposit"),
                             reward = obj.optLong("reward"),
                             bounty = obj.optLong("bounty"),
+                            distanceM = dist,
+                            positionAgeSecs = posAge,
                         )
+                    )
+                }
+                "AutoAccepted" -> {
+                    markAcceptedNow()
+                    val distM = obj.optInt("max_distance_m", 0)
+                    val caseId = obj.optString("case")
+                    val line = "[app] Auto-accepted alert ${caseId.take(8)} (within $distM m)"
+                    cur.copy(
+                        status = ServiceStatus.ACTIVE_CASE,
+                        statusDetail = "Accepted automatically (within $distM m) — waiting for exact location",
+                        alert = null,
+                        logs = (cur.logs + line).takeLast(MAX_LOGS),
                     )
                 }
                 "Location" -> {
@@ -196,7 +217,34 @@ object BitaidState {
                             caseId = obj.optString("case"),
                             seats = obj.optInt("seats"),
                             mySeat = obj.optInt("my_seat"),
+                            remainingBlocks = obj.optInt("remaining_blocks", 0),
+                            remainingSecs = obj.optLong("remaining_secs", 0L),
+                            receivedAtMs = System.currentTimeMillis(),
                         )
+                    )
+                }
+                "BallotTick" -> {
+                    val tickCase = obj.optString("case")
+                    val bp = cur.ballotDue
+                    if (bp != null && bp.caseId == tickCase) {
+                        cur.copy(
+                            ballotDue = bp.copy(
+                                remainingBlocks = obj.optInt("remaining_blocks", bp.remainingBlocks),
+                                remainingSecs = obj.optLong("remaining_secs", bp.remainingSecs),
+                                receivedAtMs = System.currentTimeMillis(),
+                            )
+                        )
+                    } else {
+                        cur
+                    }
+                }
+                "BallotClosed" -> {
+                    val closedCase = obj.optString("case")
+                    val keep = cur.ballotDue?.takeIf { it.caseId != closedCase }
+                    val line = "[app] Ballot window closed for ${closedCase.take(8)}"
+                    cur.copy(
+                        ballotDue = keep,
+                        logs = (cur.logs + line).takeLast(MAX_LOGS),
                     )
                 }
                 "ReadyToAlert" -> {

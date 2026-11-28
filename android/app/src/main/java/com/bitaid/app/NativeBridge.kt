@@ -56,4 +56,5 @@ object NativeBridge {
         misuse: Boolean,
     ): Boolean
     external fun sendOffDuty()
+    external fun sendPosition(lat: Double, lon: Double, accuracyM: Float, atEpochSecs: Long)
 }

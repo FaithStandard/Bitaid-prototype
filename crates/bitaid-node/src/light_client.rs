@@ -563,6 +563,16 @@ impl CoreLight {
                         ancestors.len()
                     ));
                 }
+                let mut expected_prev = anchor_hdr.prev_blockhash;
+                for anc in ancestors.iter().rev() {
+                    if anc.block_hash() != expected_prev {
+                        return Err(format!(
+                            "Core anchor ancestor link broken: got {}, expected {expected_prev}",
+                            anc.block_hash()
+                        ));
+                    }
+                    expected_prev = anc.prev_blockhash;
+                }
                 let post_anchor = decoded[idx + 1..].to_vec();
                 return Ok((anchor_hdr, ancestors, post_anchor));
             }
@@ -714,6 +724,10 @@ impl CoreLight {
 
     pub fn verified_tip(&self) -> (u32, BlockHash) {
         self.state.lock().unwrap().headers.tip()
+    }
+
+    pub fn median_block_spacing_secs(&self) -> u64 {
+        self.state.lock().unwrap().headers.median_block_spacing_secs()
     }
 
     /// Returns cached `(unspent, spent_by, height, trust)` for an outpoint, if known.
