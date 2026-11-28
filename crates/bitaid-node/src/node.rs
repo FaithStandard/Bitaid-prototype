@@ -43,6 +43,12 @@ impl Net {
             Net::Relays(c) => c.relay_count(),
         }
     }
+    pub fn local_link(&self) -> Option<crate::gossip::LocalLink> {
+        match self {
+            Net::Gossip(g) => Some(g.local_link()),
+            Net::Relays(_) => None,
+        }
+    }
 }
 
 /// Bounds on what a hostile peer can make a node hold (see `gossip` for the link-level limits).
@@ -104,6 +110,8 @@ pub struct Node {
     pub keys: Keypair,
     pub client: Net,
     pub rpc: std::sync::Arc<Rpc>,
+    /// Phone-side light client when `BITAID_CHAIN=core` (replaces background RPC reads).
+    pub light: Option<std::sync::Arc<crate::light_client::CoreLight>>,
     pub case_keys: HashMap<String, [u8; 32]>,
     /// verified messages not yet asked for
     backlog: VecDeque<(Envelope, Event)>,
@@ -465,8 +473,10 @@ impl Node {
 
     fn with_net(name: &str, client: Net, rpc: Rpc, keys: Keypair) -> Node {
         let mut n = Self::bare(name, client, rpc, keys);
-        // in an app the chain is read by a thread of its own, never on the message thread
-        if crate::events::attached() {
+        // in an app the chain is read by a thread of its own, never on the message thread —
+        // unless `BITAID_CHAIN=core` is active, in which case `CoreLight::follow` replaces it
+        if crate::events::attached() && crate::config::var("BITAID_CHAIN").as_deref() != Ok("core")
+        {
             Rpc::follow(&n.rpc);
         }
         // every node reads the checkpoints: they say which messages each anchor on chain timestamps
@@ -480,6 +490,7 @@ impl Node {
             keys,
             client,
             rpc: std::sync::Arc::new(rpc),
+            light: None,
             case_keys: HashMap::new(),
             backlog: VecDeque::new(),
             places: HashMap::new(),
@@ -610,15 +621,22 @@ impl Node {
             // one anchorer could keep it out of the draw (review finding)
             let p = crate::checkpoint_blocks();
             let wait = if name == "seat-offer" || name == "seated" || name == "reseated" { p + 2 } else { 2 * p + 2 };
-            self.own_timed.insert(e.id.clone(), (self.rpc.height(), wait));
+            let h = self.height();
+            self.own_timed.insert(e.id.clone(), (h, wait));
         }
         e.id
     }
 
     /// The first block that anchors message `id` on chain: alone, or in a checkpoint this node has
-    /// the list of.
+    /// the list of. Under `BITAID_CHAIN=core`, reads from `CoreLight` with zero RPC calls.
     pub fn anchor_height(&self, id: &str) -> Option<u32> {
         let roots = self.listed.get(id);
+        if let Some(cl) = &self.light {
+            return std::iter::once(id)
+                .chain(roots.into_iter().flatten().map(|r| r.as_str()))
+                .filter_map(|r| cl.anchored(r))
+                .min();
+        }
         self.rpc.ledger(|l| {
             std::iter::once(id)
                 .chain(roots.into_iter().flatten().map(|r| r.as_str()))
@@ -631,7 +649,11 @@ impl Node {
     pub fn wait_anchored(&mut self, id: &str, timeout: Duration) -> Option<u32> {
         let end = Instant::now() + timeout;
         loop {
-            self.rpc.sync();
+            if let Some(cl) = &self.light {
+                let _ = cl.sync_anchors(Duration::from_secs(2));
+            } else {
+                self.rpc.sync();
+            }
             if let Some(h) = self.anchor_height(id) {
                 return Some(h);
             }
@@ -663,8 +685,13 @@ impl Node {
         if self.parked.is_empty() && self.own_timed.is_empty() {
             return;
         }
-        self.rpc.sync();
-        let tip = self.rpc.ledger(|l| l.tip()).unwrap_or(0);
+        let tip = if let Some(cl) = &self.light {
+            let _ = cl.sync_anchors(Duration::from_secs(2));
+            crate::light_client::ChainSource::height(cl.as_ref())
+        } else {
+            self.rpc.sync();
+            self.rpc.ledger(|l| l.tip()).unwrap_or(0)
+        };
         // deliver
         let parked = std::mem::take(&mut self.parked);
         for (sub, e, at) in parked {
@@ -744,8 +771,14 @@ impl Node {
     }
 
     /// The chain height, refreshed at most every 10 s, so a slow chain connection never delays
-    /// sending a message (the height in an envelope is informational).
+    /// sending a message (the height in an envelope is informational). Under `BITAID_CHAIN=core`,
+    /// reads from `CoreLight` with zero RPC calls.
     pub fn height(&mut self) -> u32 {
+        if let Some(cl) = &self.light {
+            let h = crate::light_client::ChainSource::height(cl.as_ref());
+            self.height_cache = h;
+            return h;
+        }
         if self
             .height_at
             .map(|t| t.elapsed() > Duration::from_secs(10))
@@ -1252,7 +1285,11 @@ impl Node {
                         && self.anchor_height(&e.id).is_none()
                         && !self.parked.iter().any(|p| p.1.id == e.id) =>
                     {
-                        let at = self.rpc.ledger(|l| l.tip()).unwrap_or(0);
+                        let at = if let Some(cl) = &self.light {
+                            crate::light_client::ChainSource::height(cl.as_ref())
+                        } else {
+                            self.rpc.ledger(|l| l.tip()).unwrap_or(0)
+                        };
                         self.parked.push_back((sub, e, at));
                         if self.parked.len() > MAX_LOCKED {
                             self.parked.pop_front();
@@ -1441,6 +1478,13 @@ impl Node {
     }
 
     pub fn summary(&self) -> i32 {
+        if self.light.is_some() || crate::config::var("BITAID_RPC_COUNT").is_ok() {
+            let asks = self.light.as_ref().map(|cl| cl.ask_count()).unwrap_or(0);
+            self.log(&format!(
+                "chain stats: rpc_calls={}, light_asks={asks}",
+                self.rpc.call_count()
+            ));
+        }
         crate::events::emit(crate::events::Event::Summary { node: self.name.clone(), passed: self.passed, failed: self.failed });
         println!(
             "[{}] {} passed, {} failed",

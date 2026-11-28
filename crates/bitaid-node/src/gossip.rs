@@ -184,6 +184,8 @@ struct Link {
     /// bounded, so a peer that stops reading is closed rather than queued for without end
     out: SyncSender<Arc<str>>,
     incoming: bool,
+    /// address dialled for outbound links (empty for incoming links)
+    peer: String,
     since: Instant,
     /// new, valid messages this link brought
     useful: u64,
@@ -388,10 +390,115 @@ enum Admit {
     Invalid,
 }
 
+/// Handle for sending and receiving link-local light messages (`LightAsk` / `LightAnswer`)
+/// over `Gossip` links without touching the gossip replay store or flooding peers.
+#[derive(Clone)]
+pub struct LocalLink {
+    shared: Arc<Mutex<Shared>>,
+    ask_rx: Arc<Mutex<Receiver<(u64, crate::wire::Envelope)>>>,
+    answer_rx: Arc<Mutex<Receiver<(u64, crate::wire::Envelope)>>>,
+}
+
+impl LocalLink {
+    fn encode_local(raw_envelope: &[u8]) -> Result<Arc<str>, String> {
+        if raw_envelope.len() > crate::wire::LIGHT_MAX_ANSWER_BYTES {
+            return Err(format!(
+                "local message too large: {} > {}",
+                raw_envelope.len(),
+                crate::wire::LIGHT_MAX_ANSWER_BYTES
+            ));
+        }
+        let line = serde_json::json!({ "local": crate::wire::b64(raw_envelope) }).to_string();
+        if line.len() > MAX_LINE {
+            return Err(format!("local frame exceeds MAX_LINE: {}", line.len()));
+        }
+        Ok(line.into())
+    }
+
+    /// Sends a signed `LightAsk` or `LightAnswer` envelope to a single authenticated link.
+    /// Never stores in the gossip replay log and never forwards to other peers.
+    pub fn send_to(&self, link_id: u64, raw_envelope: &[u8]) -> Result<(), String> {
+        let line = Self::encode_local(raw_envelope)?;
+        let g = self.shared.lock().unwrap();
+        let l = g
+            .links
+            .get(&link_id)
+            .filter(|l| l.authed)
+            .ok_or_else(|| format!("link {link_id} not connected or not authenticated"))?;
+        l.out
+            .try_send(line)
+            .map_err(|_| format!("link {link_id} queue full or closed"))
+    }
+
+    /// Returns the IDs of all established outbound links (e.g. phone → Core or caller → workers).
+    pub fn outbound_links(&self) -> Vec<u64> {
+        let g = self.shared.lock().unwrap();
+        let mut ids: Vec<u64> = g
+            .links
+            .iter()
+            .filter(|(_, l)| !l.incoming && l.authed)
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Returns `(link_id, peer_addr)` for every established outbound link.
+    pub fn outbound_peers(&self) -> Vec<(u64, String)> {
+        let g = self.shared.lock().unwrap();
+        let mut out: Vec<(u64, String)> = g
+            .links
+            .iter()
+            .filter(|(_, l)| !l.incoming && l.authed)
+            .map(|(id, l)| (*id, l.peer.clone()))
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
+    /// Sends a signed `LightAsk` envelope on an established outbound link, returning its link ID.
+    pub fn send_outbound(&self, raw_envelope: &[u8]) -> Result<u64, String> {
+        let line = Self::encode_local(raw_envelope)?;
+        let g = self.shared.lock().unwrap();
+        let (&link_id, l) = g
+            .links
+            .iter()
+            .find(|(_, l)| !l.incoming && l.authed)
+            .ok_or_else(|| "no established outbound link".to_string())?;
+        l.out
+            .try_send(line)
+            .map_err(|_| format!("link {link_id} queue full or closed"))?;
+        Ok(link_id)
+    }
+
+    /// Receives the next link-local `LightAsk` from any peer, waiting up to `timeout`.
+    pub fn recv_ask(&self, timeout: Duration) -> Option<(u64, crate::wire::Envelope)> {
+        self.ask_rx.lock().unwrap().recv_timeout(timeout).ok()
+    }
+
+    /// Non-blocking check for a link-local `LightAsk`.
+    pub fn try_recv_ask(&self) -> Option<(u64, crate::wire::Envelope)> {
+        self.ask_rx.lock().unwrap().try_recv().ok()
+    }
+
+    /// Receives the next link-local `LightAnswer` from any peer, waiting up to `timeout`.
+    pub fn recv_answer(&self, timeout: Duration) -> Option<(u64, crate::wire::Envelope)> {
+        self.answer_rx.lock().unwrap().recv_timeout(timeout).ok()
+    }
+
+    /// Non-blocking check for a link-local `LightAnswer`.
+    pub fn try_recv_answer(&self) -> Option<(u64, crate::wire::Envelope)> {
+        self.answer_rx.lock().unwrap().try_recv().ok()
+    }
+}
+
 pub struct Gossip {
     shared: Arc<Mutex<Shared>>,
     rx: Receiver<Event>,
     tx: Sender<Event>,
+    ask_rx: Arc<Mutex<Receiver<(u64, crate::wire::Envelope)>>>,
+    answer_rx: Arc<Mutex<Receiver<(u64, crate::wire::Envelope)>>>,
+    listen_addr: Option<std::net::SocketAddr>,
     subs: Vec<(String, Vec<Filter>)>,
     delivered: Bounded,
     pending: VecDeque<(String, Event)>,
@@ -502,6 +609,11 @@ fn dial_as(addr: &str, socks: Option<&str>, onion_only: bool) -> std::io::Result
 }
 
 fn admit(shared: &Arc<Mutex<Shared>>, e: &Event, src: &str) -> Admit {
+    // LightAsk / LightAnswer are strictly link-local: drop if anyone attempts to flood them
+    // inside a normal gossip Event.
+    if crate::wire::is_light_b64(&e.content) {
+        return Admit::Invalid;
+    }
     let mut g = shared.lock().unwrap();
     if g.seen.contains(&e.id) {
         // a later deliverer shares holding it, so the first one cannot take it down alone
@@ -682,10 +794,29 @@ fn check_proof(
     Ok((key, xk, stake))
 }
 
+/// Parses and verifies a link-local `{"local":"<b64>"}` frame carrying a `LightAsk` or `LightAnswer`.
+fn parse_local_frame(line: &[u8]) -> Result<crate::wire::Envelope, String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(line).map_err(|_| "malformed local frame".to_string())?;
+    let b64 = v
+        .get("local")
+        .and_then(|x| x.as_str())
+        .ok_or("missing local payload")?;
+    let raw = crate::wire::unb64(b64).ok_or_else(|| "bad base64 in local frame".to_string())?;
+    if raw.len() > crate::wire::LIGHT_MAX_ANSWER_BYTES {
+        return Err("local payload exceeds byte cap".into());
+    }
+    let env = crate::wire::verify(&raw).map_err(|e| format!("bad local envelope: {e}"))?;
+    env.msg.check_light_bounds(raw.len())?;
+    Ok(env)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_link(
     shared: Arc<Mutex<Shared>>,
     local: Sender<Event>,
+    ask_tx: Sender<(u64, crate::wire::Envelope)>,
+    answer_tx: Sender<(u64, crate::wire::Envelope)>,
     s: TcpStream,
     label: String,
     incoming: bool,
@@ -778,6 +909,7 @@ fn run_link(
             Link {
                 out: otx.clone(),
                 incoming,
+                peer: to.clone(),
                 since: Instant::now(),
                 useful: 0,
                 stream: s.try_clone().ok(),
@@ -866,6 +998,39 @@ fn run_link(
                     Ok(None) => break String::new(),
                     Err(e) => break format!(": {e}"),
                 }
+            }
+            if buf.starts_with(b"{\"local\"") {
+                if incoming {
+                    tokens = (tokens + t0.elapsed().as_secs_f64() * RATE).min(BURST);
+                    t0 = Instant::now();
+                    tokens -= 1.0;
+                    if tokens < 0.0 {
+                        break ": flooding (local messages above the rate limit)".into();
+                    }
+                }
+                match parse_local_frame(&buf) {
+                    Ok(env) => match env.msg {
+                        crate::wire::Msg::LightAsk { .. } => {
+                            let _ = ask_tx.send((id, env));
+                        }
+                        crate::wire::Msg::LightAnswer { .. } => {
+                            let _ = answer_tx.send((id, env));
+                        }
+                        _ => {
+                            junk += 1;
+                            if incoming && junk > MAX_JUNK {
+                                break ": too many invalid local messages".into();
+                            }
+                        }
+                    },
+                    Err(_) => {
+                        junk += 1;
+                        if incoming && junk > MAX_JUNK {
+                            break ": too many malformed local messages".into();
+                        }
+                    }
+                }
+                continue;
             }
             let e = match std::str::from_utf8(&buf)
                 .ok()
@@ -997,6 +1162,8 @@ impl Gossip {
     ) -> std::io::Result<Gossip> {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (tx, rx) = channel();
+        let (ask_tx, ask_rx) = channel();
+        let (answer_tx, answer_rx) = channel();
         if let Some(d) = demand.clone() {
             let sh = shared.clone();
             std::thread::spawn(move || loop {
@@ -1004,9 +1171,17 @@ impl Gossip {
                 recheck(&sh, &d.verify);
             });
         }
+        let mut listen_addr = None;
         if let Some(addr) = listen {
             let l = TcpListener::bind(addr)?;
-            let (sh, t, demand) = (shared.clone(), tx.clone(), demand.clone());
+            listen_addr = l.local_addr().ok();
+            let (sh, t, atx, ntx, demand) = (
+                shared.clone(),
+                tx.clone(),
+                ask_tx.clone(),
+                answer_tx.clone(),
+                demand.clone(),
+            );
             std::thread::spawn(move || {
                 for s in l.incoming().flatten() {
                     if !make_room(&sh) {
@@ -1014,19 +1189,24 @@ impl Gossip {
                         let _ = s.shutdown(std::net::Shutdown::Both);
                         continue;
                     }
-                    let (sh, t, d) = (sh.clone(), t.clone(), demand.clone());
+                    let (sh, t, atx, ntx, d) =
+                        (sh.clone(), t.clone(), atx.clone(), ntx.clone(), demand.clone());
                     let label = s
                         .peer_addr()
                         .map(|a| format!("incoming {a}"))
                         .unwrap_or("incoming".into());
-                    std::thread::spawn(move || run_link(sh, t, s, label, true, d, None, String::new()));
+                    std::thread::spawn(move || {
+                        run_link(sh, t, atx, ntx, s, label, true, d, None, String::new())
+                    });
                 }
             });
         }
         for p in peers {
-            let (sh, t, p, sx, c) = (
+            let (sh, t, atx, ntx, p, sx, c) = (
                 shared.clone(),
                 tx.clone(),
+                ask_tx.clone(),
+                answer_tx.clone(),
                 p.clone(),
                 socks.map(String::from),
                 cred.clone(),
@@ -1037,7 +1217,18 @@ impl Gossip {
                 loop {
                     let t0 = Instant::now();
                     match dial(&p, sx.as_deref()) {
-                        Ok(s) => run_link(sh.clone(), t.clone(), s, format!("to {p}"), false, None, c.clone(), p.clone()),
+                        Ok(s) => run_link(
+                            sh.clone(),
+                            t.clone(),
+                            atx.clone(),
+                            ntx.clone(),
+                            s,
+                            format!("to {p}"),
+                            false,
+                            None,
+                            c.clone(),
+                            p.clone(),
+                        ),
                         Err(e) => crate::say!("gossip: cannot reach {p}: {e}"),
                     }
                     if t0.elapsed() > Duration::from_secs(30) {
@@ -1052,11 +1243,32 @@ impl Gossip {
             shared,
             rx,
             tx,
+            ask_rx: Arc::new(Mutex::new(ask_rx)),
+            answer_rx: Arc::new(Mutex::new(answer_rx)),
+            listen_addr,
             subs: vec![],
             delivered: Bounded::new(MAX_SEEN),
             pending: VecDeque::new(),
             socks: socks.map(String::from),
         })
+    }
+
+    pub fn listen_addr(&self) -> Option<std::net::SocketAddr> {
+        self.listen_addr
+    }
+
+    /// Returns a clonable handle for link-local `LightAsk` / `LightAnswer` exchange.
+    pub fn local_link(&self) -> LocalLink {
+        LocalLink {
+            shared: self.shared.clone(),
+            ask_rx: self.ask_rx.clone(),
+            answer_rx: self.answer_rx.clone(),
+        }
+    }
+
+    /// Number of events currently stored in the gossip replay log (for diagnostics and tests).
+    pub fn store_len(&self) -> usize {
+        self.shared.lock().unwrap().store.len()
     }
 
     pub fn links(&self) -> usize {
@@ -1242,7 +1454,7 @@ mod tests {
             far.push(f);
             let (out, _rx) = std::sync::mpsc::sync_channel(1);
             let mut g = sh.lock().unwrap();
-            g.links.insert(id, Link { out, incoming: true, since: Instant::now(), useful: 0, stream: Some(near), authed: true });
+            g.links.insert(id, Link { out, incoming: true, peer: String::new(), since: Instant::now(), useful: 0, stream: Some(near), authed: true });
             g.stakes.insert(id, (k, stake.into()));
             std::mem::forget(_rx);
         }
@@ -1267,5 +1479,77 @@ mod tests {
         s.insert(e, l, "a", t);
         assert_eq!(s.len(), 1);
         assert_eq!(s.iter().next().unwrap().0.id, format!("{:064x}", 2));
+    }
+
+    #[test]
+    fn light_messages_are_link_local_never_flooded_or_stored() {
+        let secp = Secp256k1::new();
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+
+        let core = Gossip::start(Some("127.0.0.1:0"), &[], None).unwrap();
+        let addr = core.listen_addr().unwrap().to_string();
+        let phone = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
+        let mut bystander = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
+        bystander.subscribe("all", vec![Filter::default()]);
+
+        assert_eq!(core.wait_links(2, Duration::from_secs(5)), 2);
+        assert_eq!(phone.wait_links(1, Duration::from_secs(5)), 1);
+        assert_eq!(bystander.wait_links(1, Duration::from_secs(5)), 1);
+
+        let ask = crate::wire::Msg::LightAsk {
+            id: "01".repeat(16),
+            locator: vec![],
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ask_raw = crate::wire::sign(&phone_kp, 10, ask.clone());
+        let phone_local = phone.local_link();
+        let core_local = core.local_link();
+        let bystander_local = bystander.local_link();
+
+        phone_local.send_outbound(&ask_raw).unwrap();
+        let (link_id, got_ask) = core_local
+            .recv_ask(Duration::from_secs(5))
+            .expect("core receives link-local LightAsk");
+        assert_eq!(got_ask.msg, ask);
+
+        let ans = crate::wire::Msg::LightAnswer {
+            id: "01".repeat(16),
+            ask_hash: crate::wire::light_ask_hash(&ask),
+            tip_height: 10,
+            tip_hash: "aa".repeat(32),
+            headers_from: 10,
+            headers: vec![],
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            records_through: (10, u32::MAX),
+            covers: vec![],
+        };
+        let ans_raw = crate::wire::sign(&core_kp, 10, ans.clone());
+        core_local.send_to(link_id, &ans_raw).unwrap();
+        let (_plid, got_ans) = phone_local
+            .recv_answer(Duration::from_secs(5))
+            .expect("phone receives link-local LightAnswer");
+        assert_eq!(got_ans.msg, ans);
+
+        // Neither LightAsk nor LightAnswer entered the gossip replay store or reached bystander.
+        assert_eq!(core.store_len(), 0);
+        assert_eq!(phone.store_len(), 0);
+        assert_eq!(bystander.store_len(), 0);
+        assert!(bystander_local.recv_ask(Duration::from_millis(200)).is_none());
+        assert!(bystander_local.recv_answer(Duration::from_millis(200)).is_none());
+        assert!(bystander.next_event(Duration::from_millis(200)).is_none());
+
+        // Attempting to smuggle a LightAsk inside a regular flooded gossip Event is dropped by admit().
+        let smuggled = Event::new(&phone_kp, crate::nostr::kind::CASE, vec![], crate::wire::b64(&ask_raw));
+        phone.publish(&smuggled);
+        assert_eq!(phone.store_len(), 0);
+        assert_eq!(core.store_len(), 0);
+        assert!(bystander.next_event(Duration::from_millis(300)).is_none());
     }
 }

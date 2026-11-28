@@ -11,6 +11,7 @@
 pub mod endings;
 pub mod eventlog;
 pub mod hashes;
+pub mod light;
 pub mod musig;
 pub mod oracle;
 pub mod outputs;

@@ -113,6 +113,201 @@ fn chain_view(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBu
     move |op| rpc.utxo(op).map(|o| (o.value.to_sat(), o.script_pubkey))
 }
 
+/// Chain view backed by `CoreLight` (`BITAID_CHAIN=core`): returns cached credible/verified
+/// outputs immediately or fetches the outpoint in one `LightAsk` (fast alert check).
+fn light_chain_view(
+    cl: &crate::light_client::CoreLight,
+) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBuf)> + '_ {
+    use crate::light_client::ChainSource;
+    move |op| {
+        if let Some(t) = cl.utxo(op) {
+            return Some((t.value.value.to_sat(), t.value.script_pubkey));
+        }
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let _ = cl.sync_once_at(
+            vec![],
+            vec![op.to_string()],
+            None,
+            0,
+            Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
+            now_ts,
+        );
+        cl.utxo(op)
+            .map(|t| (t.value.value.to_sat(), t.value.script_pubkey))
+    }
+}
+
+/// Initializes `CoreLight` when `BITAID_CHAIN=core` is set. Returns `None` for the default `Rpc`
+/// path so existing suites and binaries are unchanged unless explicitly asked for `core`.
+fn init_responder_light(n: &Node) -> Option<std::sync::Arc<crate::light_client::CoreLight>> {
+    let mode = crate::config::var("BITAID_CHAIN").unwrap_or_default();
+    if mode != "core" {
+        return None;
+    }
+    let link = match n.client.local_link() {
+        Some(l) => l,
+        None => {
+            n.log("BITAID_CHAIN=core requires gossip transport; falling back to Rpc");
+            return None;
+        }
+    };
+    let core_pubkey = crate::config::var("BITAID_CORE_KEY").unwrap_or_default();
+    if core_pubkey.trim().len() != 64 {
+        crate::stop(
+            3,
+            "BITAID_CHAIN=core requires BITAID_CORE_KEY (64-char hex Core pubkey)".into(),
+        );
+    }
+    let network = n.rpc.network();
+    let (anchor_h, anchor_hash) = if let Ok(spec) = crate::config::var("BITAID_ANCHOR") {
+        let Some((hs, hash)) = spec.split_once(':') else {
+            crate::stop(3, format!("BITAID_ANCHOR must be height:hash, got {spec}"));
+        };
+        let h: u32 = hs
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| crate::stop(3, format!("BITAID_ANCHOR bad height: {e}")));
+        let hash = hash.trim().to_ascii_lowercase();
+        if hash.len() != 64 || hex::decode(&hash).is_err() {
+            crate::stop(3, format!("BITAID_ANCHOR bad 32-byte hash: {hash}"));
+        }
+        (h, hash)
+    } else {
+        let tip = n.rpc.height();
+        let params = bitcoin::params::Params::from(network);
+        let h = if params.no_pow_retargeting {
+            tip.saturating_sub(12)
+        } else {
+            (tip / 2_016) * 2_016
+        };
+        let hash = n
+            .rpc
+            .block_hash_at(h)
+            .unwrap_or_else(|| crate::stop(3, format!("BITAID_CHAIN=core: cannot read anchor hash at {h}")));
+        (h, hash)
+    };
+    let anchor_raw = n
+        .rpc
+        .raw_header(&anchor_hash)
+        .unwrap_or_else(|| crate::stop(3, format!("BITAID_CHAIN=core: cannot read anchor header at {anchor_h}")));
+    let anchor_hdr: bitcoin::block::Header =
+        bitcoin::consensus::Decodable::consensus_decode(&mut anchor_raw.as_slice())
+            .unwrap_or_else(|e| crate::stop(3, format!("BITAID_CHAIN=core: bad anchor header: {e}")));
+    if anchor_hdr.block_hash().to_string() != anchor_hash {
+        crate::stop(
+            3,
+            format!(
+                "BITAID_CHAIN=core: anchor header hash mismatch: got {}, expected {anchor_hash}",
+                anchor_hdr.block_hash()
+            ),
+        );
+    }
+
+    // Fetch up to 10 ancestor headers immediately preceding `anchor_h` by following `prev_blockhash`
+    // backwards: cryptographically hash-linked to the pinned `anchor_hdr` so the 11-block BIP113
+    // MTP window is exact from the very first header after the anchor.
+    let mut ancestors_rev: Vec<bitcoin::block::Header> = Vec::new();
+    let mut prev_hash = anchor_hdr.prev_blockhash;
+    for _ in 0..anchor_h.min(10) {
+        let raw = n.rpc.raw_header(&prev_hash.to_string()).unwrap_or_else(|| {
+            crate::stop(
+                3,
+                format!("BITAID_CHAIN=core: cannot read ancestor header {prev_hash}"),
+            )
+        });
+        let hdr: bitcoin::block::Header =
+            bitcoin::consensus::Decodable::consensus_decode(&mut raw.as_slice()).unwrap_or_else(
+                |e| crate::stop(3, format!("BITAID_CHAIN=core: bad ancestor header: {e}")),
+            );
+        prev_hash = hdr.prev_blockhash;
+        ancestors_rev.push(hdr);
+    }
+    ancestors_rev.reverse();
+
+    let cl = std::sync::Arc::new(
+        crate::light_client::CoreLight::new_with_ancestors(
+            network,
+            anchor_h,
+            anchor_hdr,
+            &ancestors_rev,
+            core_pubkey,
+            link.clone(),
+            n.keys,
+        )
+        .unwrap_or_else(|e| crate::stop(3, format!("BITAID_CHAIN=core: {e}"))),
+    );
+
+    // Pin the Core's outbound link and wire any independent worker TipSources from
+    // `BITAID_TIP_SOURCES` (format: `pubkey1@peer1,pubkey2@peer2` or `pubkey1,pubkey2`).
+    // Wait briefly so all configured outbound links (Core + TipSources) finish connecting.
+    let tip_spec = crate::config::var("BITAID_TIP_SOURCES").unwrap_or_default();
+    let tip_items: Vec<&str> = tip_spec
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let want_links = 1 + tip_items.len();
+    let wait_end = Instant::now() + Duration::from_secs(10);
+    while link.outbound_peers().len() < want_links && Instant::now() < wait_end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let peers = link.outbound_peers();
+    let core_peer = crate::config::var("BITAID_CORE_PEER").ok();
+    let core_lid = core_peer
+        .as_deref()
+        .and_then(|cp| peers.iter().find(|(_, p)| p == cp).map(|(id, _)| *id))
+        .or_else(|| peers.first().map(|(id, _)| *id));
+    if let Some(id) = core_lid {
+        cl.set_core_link(id);
+    }
+    if !tip_items.is_empty() {
+        let non_core: Vec<(u64, String)> = peers
+            .iter()
+            .filter(|(id, _)| Some(*id) != core_lid)
+            .cloned()
+            .collect();
+        for (idx, item) in tip_items.iter().enumerate() {
+            let (pk, lid) = if let Some((pk, addr)) = item.split_once('@') {
+                let lid = peers.iter().find(|(_, p)| p == addr).map(|(id, _)| *id);
+                (pk.trim().to_string(), lid)
+            } else {
+                ((*item).to_string(), non_core.get(idx).map(|(id, _)| *id))
+            };
+            if let Some(lid) = lid {
+                cl.add_tip_source(Box::new(crate::light_client::LinkTipSource::new(
+                    pk,
+                    link.clone(),
+                    lid,
+                    n.keys,
+                    Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
+                )));
+            }
+        }
+    }
+
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let _ = cl.sync_once_at(
+        vec![],
+        vec![],
+        None,
+        anchor_h.max(1),
+        Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
+        now_ts,
+    );
+    crate::light_client::CoreLight::follow(&cl, n.rpc.clone(), Duration::from_secs(2));
+    n.log(&format!(
+        "light client active (BITAID_CHAIN=core, anchor {anchor_h}, core {})",
+        crate::pre(cl.core_pubkey(), 12)
+    ));
+    Some(cl)
+}
+
 /// The chain as an observer (archivist, arbitrator) checks an alert: the funding output as its
 /// transaction created it, spent or not, since an observer busy elsewhere may read a case's alert
 /// only after the incident has already spent the funding.
@@ -361,8 +556,23 @@ fn main_inner() -> i32 {
         node.client.relay_count(),
         crate::pre(&node.me(), 16)
     ));
+    if let Ok(path) = crate::config::var("BITAID_PUBKEY_FILE") {
+        let _ = std::fs::write(&path, node.me());
+    }
+    // Every bonded worker listening on gossip (Core, pool member, archivist, arbitrator) answers
+    // link-local `LightAsk` queries from its own bitcoind (§7.2), bounded by AskScheduler.
+    if listen.is_some()
+        && matches!(
+            role.as_str(),
+            "core" | "pool-member" | "oracle" | "archivist" | "arbitrator"
+        )
+    {
+        if let Some(link) = node.client.local_link() {
+            crate::light_server::spawn(link, node.rpc.clone(), node.keys);
+        }
+    }
     let code = match role.as_str() {
-        // a Core that only carries gossip: the hub other Cores and apps dial
+        // a Core that carries gossip and answers link-local LightAsk queries from its own bitcoind
         "core" => {
             let mut n = node;
             n.subscribe("all", vec![crate::nostr::Filter::default()]);
@@ -7452,9 +7662,15 @@ fn responder(mut n: Node) -> i32 {
     let okey = view.key_hex();
     let opid = view.pool_id();
     let archivists = n.all_services("archivist", num("--archivists", 1usize), secs(60));
+    let light = init_responder_light(&n);
+    n.light = light.clone();
     // ------------------------------------------------ bond
     let (bond_scoped, bond_cold) = (random_scalar(), random_scalar());
-    let bf = n.rpc.height() + fallback_blocks();
+    let tip_now = light
+        .as_ref()
+        .map(|cl| crate::light_client::ChainSource::height(cl.as_ref()))
+        .unwrap_or_else(|| n.rpc.height());
+    let bf = tip_now + fallback_blocks();
     keep_keys("bond", &name_of(&n), &bond_scoped, &bond_cold, &okey, bf);
     let btree = outputs::bond(
         &secp,
@@ -7515,8 +7731,16 @@ fn responder(mut n: Node) -> i32 {
             n.check("an alert arrived in my cells", false, "");
             return n.summary();
         };
-        match Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid) {
-            Ok(a) if a.fallback_height < n.rpc.height() + funding_margin() => {
+        let checked = match &light {
+            Some(cl) => Alerted::check(&env.sender, &env.msg, light_chain_view(cl), &opid),
+            None => Alerted::check(&env.sender, &env.msg, chain_view(&n.rpc), &opid),
+        };
+        let cur_h = light
+            .as_ref()
+            .map(|cl| crate::light_client::ChainSource::height(cl.as_ref()))
+            .unwrap_or_else(|| n.rpc.height());
+        match checked {
+            Ok(a) if a.fallback_height < cur_h + funding_margin() => {
                 n.log("alert whose funding fallback is too near; ignored")
             }
             Ok(a) if a.template.pots[2] >= min_bounty
@@ -7642,9 +7866,13 @@ fn responder(mut n: Node) -> i32 {
         }
         // my own entry is what I accepted with, and the refund is a full refund delay away: a caller
         // cannot redirect my pay or refund the pots right after the incident confirms
+        let cur_h = light
+            .as_ref()
+            .map(|cl| crate::light_client::ChainSource::height(cl.as_ref()))
+            .unwrap_or_else(|| n.rpc.height());
         let mine_ok = r.musig_keys.get(seat) == Some(&(sk * G))
             && r.payout_spks.get(seat) == Some(&payout)
-            && r.refund_height + 12 >= n.rpc.height() + a.template.refund_delay;
+            && r.refund_height + 12 >= cur_h + a.template.refund_delay;
         if !mine_ok {
             n.check(
                 "roster carries my signing key and payout script, and a full refund delay",
@@ -7659,6 +7887,37 @@ fn responder(mut n: Node) -> i32 {
                 n.log(&format!("roster v{} not confirmed: {e}; waiting for another", r.set_version));
                 continue;
             }
+        }
+        // Light client sign gate (`design/phone_light.md`): before signing any forfeiture or
+        // pre-signed payout set, verify the funding output and our bond against the PoW header
+        // chain, Merkle proofs, and >= 2 independent tip/unspent sources.
+        if let Some(cl) = &light {
+            use crate::light_client::ChainSource;
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32;
+            let _ = cl.sync_once_at(
+                vec![],
+                vec![a.funding.to_string(), bond.to_string()],
+                None,
+                0,
+                Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
+                now_ts,
+            );
+            if let Err(why) = cl.sign_gate(&[], &[a.funding, bond]) {
+                n.check(
+                    "light sign gate (verified proofs + 2-source tip and unspent cross-check)",
+                    false,
+                    &why,
+                );
+                return n.summary();
+            }
+            n.check(
+                "light sign gate (verified proofs + 2-source tip and unspent cross-check)",
+                true,
+                "",
+            );
         }
         // the loser pays (§9): pre-sign, before the incident, a forfeiture of one tier-1 panel fee
         // from my bond into the case's seizure output, taken only if a panel rules against my ballot
@@ -7765,11 +8024,38 @@ fn responder(mut n: Node) -> i32 {
         Msg::Incident { case_id, txid } if *case_id == c && env.sender == cid => Some(txid.clone()),
         _ => None,
     });
-    let live = set
-        .pot_outpoints
-        .iter()
-        .flatten()
-        .all(|op| n.rpc.utxo(op).is_some());
+    let live = match &light {
+        Some(cl) => {
+            use crate::light_client::ChainSource;
+            let ops: Vec<String> = set
+                .pot_outpoints
+                .iter()
+                .flatten()
+                .map(|op| op.to_string())
+                .collect();
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32;
+            let _ = cl.sync_once_at(
+                vec![],
+                ops,
+                Some(c.clone()),
+                0,
+                Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
+                now_ts,
+            );
+            set.pot_outpoints
+                .iter()
+                .flatten()
+                .all(|op| cl.utxo(op).is_some())
+        }
+        None => set
+            .pot_outpoints
+            .iter()
+            .flatten()
+            .all(|op| n.rpc.utxo(op).is_some()),
+    };
     n.check(
         "incident transaction on chain: every pot output exists",
         inc.is_some() && live,
