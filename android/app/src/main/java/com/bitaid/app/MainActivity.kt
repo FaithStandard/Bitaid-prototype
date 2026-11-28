@@ -31,6 +31,7 @@ import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -38,49 +39,52 @@ import org.json.JSONArray
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * M4 step 3: Minimal Kotlin shell around `bitaid-node` + `bitaid-tor`.
+ * M4 Android shell around `bitaid-node` + `bitaid-tor`.
  *
+ * - Separate Caller ("Ask for help") and Responder ("Help others") modes, selectable on first
+ *   launch and switchable at any time.
+ * - Plain-language labels and help lines on every field; technical checks, logs, and test-network
+ *   knobs live behind collapsible sections.
  * - Masked RPC URL: once stored encrypted in Keystore, never repopulated into a plaintext EditText.
- * - Live progress line under status while `BOOTSTRAPPING_TOR` / `CONNECTING`.
- * - Configurable `--pool`, `BITAID_SAT_SCALE`, `BITAID_TIME_SCALE`.
  */
 class MainActivity : AppCompatActivity() {
+
+    private lateinit var callerTabBtn: Button
+    private lateinit var responderTabBtn: Button
 
     private lateinit var statusView: TextView
     private lateinit var progressView: TextView
     private lateinit var warningBanner: TextView
-    private lateinit var dutySwitch: Switch
-    private lateinit var peerEdit: EditText
-    private lateinit var coreKeyEdit: EditText
-    private lateinit var tipSourcesEdit: EditText
-    private lateinit var anchorEdit: EditText
-    private lateinit var rpcStatusView: TextView
-    private lateinit var rpcReplaceBtn: Button
-    private lateinit var rpcInputRow: LinearLayout
-    private lateinit var rpcEdit: EditText
-    private lateinit var rpcShowCheck: CheckBox
-    private lateinit var rpcSaveBtn: Button
-    private lateinit var walletEdit: EditText
-    private lateinit var poolEdit: EditText
-    private lateinit var satScaleEdit: EditText
-    private lateinit var timeScaleEdit: EditText
-    private lateinit var nameEdit: EditText
-    private lateinit var latEdit: EditText
-    private lateinit var lonEdit: EditText
-    private lateinit var batteryBtn: Button
+
+    // Mode containers
+    private lateinit var callerSection: LinearLayout
+    private lateinit var responderSection: LinearLayout
+    private lateinit var responderSettingsSection: LinearLayout
+
+    // Caller controls
+    private lateinit var callerStateHint: TextView
     private lateinit var prepareCallerBtn: Button
     private lateinit var sosBtn: Button
     private lateinit var cancelCallerBtn: Button
 
+    // Responder controls
+    private lateinit var dutySwitch: Switch
+    private lateinit var batteryBtn: Button
+
+    // Alert card
     private lateinit var alertCard: LinearLayout
     private lateinit var alertText: TextView
+    private lateinit var alertDetailsBtn: Button
+    private lateinit var alertDetailsText: TextView
     private lateinit var acceptBtn: Button
     private lateinit var declineBtn: Button
 
+    // Verified Location card
     private lateinit var locCard: LinearLayout
     private lateinit var locText: TextView
     private lateinit var mapsBtn: Button
 
+    // Ballot card
     private lateinit var ballotCard: LinearLayout
     private lateinit var ballotCountdownText: TextView
     private lateinit var ballotSeatsBox: LinearLayout
@@ -88,12 +92,41 @@ class MainActivity : AppCompatActivity() {
     private lateinit var misuseCheck: CheckBox
     private lateinit var voteBtn: Button
 
+    // Connection settings (shared)
+    private lateinit var nameEdit: EditText
+    private lateinit var peerEdit: EditText
+    private lateinit var coreKeyEdit: EditText
+    private lateinit var tipSourcesEdit: EditText
+    private lateinit var anchorEdit: EditText
+
+    // Wallet settings (Responder)
+    private lateinit var rpcStatusView: TextView
+    private lateinit var rpcReplaceBtn: Button
+    private lateinit var rpcInputRow: LinearLayout
+    private lateinit var rpcEdit: EditText
+    private lateinit var rpcShowCheck: CheckBox
+    private lateinit var rpcSaveBtn: Button
+    private lateinit var walletEdit: EditText
+
+    // Advanced / Test network (collapsible)
+    private lateinit var advancedToggleBtn: Button
+    private lateinit var advancedSection: LinearLayout
+    private lateinit var poolEdit: EditText
+    private lateinit var satScaleEdit: EditText
+    private lateinit var timeScaleEdit: EditText
+    private lateinit var latEdit: EditText
+    private lateinit var lonEdit: EditText
+
+    // Technical Details: Checks & Logs (collapsible, closed by default)
+    private lateinit var detailsToggleBtn: Button
+    private lateinit var detailsSection: LinearLayout
     private lateinit var summaryView: TextView
     private lateinit var checksView: TextView
     private lateinit var logsView: TextView
 
     private var secretStore: KeystoreSecretStore? = null
     private var suppressSwitch = false
+    private var uiMode: String = MODE_RESPONDER
     private var renderedBallotCase: String? = null
     private val seatSpinners = mutableListOf<Spinner>()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -110,10 +143,20 @@ class MainActivity : AppCompatActivity() {
             secretStore = KeystoreSecretStore(applicationContext)
         } catch (e: Exception) {
             BitaidState.update {
-                it.copy(status = ServiceStatus.FAULT, statusDetail = "The secure store cannot be opened: ${e.message}")
+                it.copy(
+                    status = ServiceStatus.FAULT,
+                    statusDetail = "The secure store cannot be opened: ${e.message}",
+                )
             }
         }
         loadPrefs()
+        val savedMode = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("ui_mode", "").orEmpty()
+        if (savedMode == MODE_CALLER || savedMode == MODE_RESPONDER) {
+            applyMode(savedMode, persist = false)
+        } else {
+            applyMode(MODE_RESPONDER, persist = false)
+            showFirstLaunchModeDialog()
+        }
     }
 
     private val ballotCountdownTick = object : Runnable {
@@ -138,22 +181,92 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
     }
 
+    private fun showFirstLaunchModeDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("How will you use Bitaid?")
+            .setMessage("Choose your main screen. You can switch modes at any time from the top of the screen.")
+            .setCancelable(false)
+            .setPositiveButton("To help others") { _, _ ->
+                applyMode(MODE_RESPONDER, persist = true)
+            }
+            .setNegativeButton("To ask for help") { _, _ ->
+                applyMode(MODE_CALLER, persist = true)
+            }
+            .show()
+    }
+
+    private fun applyMode(mode: String, persist: Boolean) {
+        uiMode = if (mode == MODE_CALLER) MODE_CALLER else MODE_RESPONDER
+        val isCaller = uiMode == MODE_CALLER
+
+        callerSection.visibility = if (isCaller) View.VISIBLE else View.GONE
+        responderSection.visibility = if (isCaller) View.GONE else View.VISIBLE
+        responderSettingsSection.visibility = if (isCaller) View.GONE else View.VISIBLE
+
+        styleTabButton(callerTabBtn, active = isCaller)
+        styleTabButton(responderTabBtn, active = !isCaller)
+
+        if (persist) {
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString("ui_mode", uiMode)
+                .apply()
+        }
+        render(BitaidState.snapshot)
+    }
+
+    private fun styleTabButton(btn: Button, active: Boolean) {
+        if (active) {
+            btn.setBackgroundColor(Color.parseColor("#1565C0"))
+            btn.setTextColor(Color.WHITE)
+            btn.setTypeface(null, Typeface.BOLD)
+        } else {
+            btn.setBackgroundColor(Color.parseColor("#E0E0E0"))
+            btn.setTextColor(Color.DKGRAY)
+            btn.setTypeface(null, Typeface.NORMAL)
+        }
+    }
+
     private fun buildUi(): View {
         val pad = (16 * resources.displayMetrics.density).toInt()
+        val halfPad = pad / 2
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
         }
 
+        // Mode switcher tabs
+        val modeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, halfPad)
+        }
+        callerTabBtn = Button(this).apply {
+            text = "Ask for help"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, halfPad / 2, 0)
+            }
+            setOnClickListener { applyMode(MODE_CALLER, persist = true) }
+        }
+        responderTabBtn = Button(this).apply {
+            text = "Help others"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(halfPad / 2, 0, 0, 0)
+            }
+            setOnClickListener { applyMode(MODE_RESPONDER, persist = true) }
+        }
+        modeRow.addView(callerTabBtn)
+        modeRow.addView(responderTabBtn)
+        root.addView(modeRow)
+
+        // Status header
         statusView = TextView(this).apply {
             textSize = 18f
             setTypeface(null, Typeface.BOLD)
-            setPadding(0, 0, 0, 2)
+            setPadding(0, 4, 0, 2)
         }
         progressView = TextView(this).apply {
             textSize = 12f
             setTextColor(Color.DKGRAY)
-            setPadding(0, 0, 0, pad / 2)
+            setPadding(0, 0, 0, halfPad)
             visibility = View.GONE
         }
         root.addView(statusView)
@@ -170,41 +283,30 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(warningBanner)
 
-        dutySwitch = Switch(this).apply {
-            text = "Responder On Duty (Foreground Service)"
-            textSize = 16f
-            setOnCheckedChangeListener { _, isChecked ->
-                if (suppressSwitch) return@setOnCheckedChangeListener
-                savePrefs()
-                if (isChecked) {
-                    startRoleService(BitaidService.ACTION_START_RESPONDER)
-                } else {
-                    sendServiceAction(BitaidService.ACTION_STOP)
-                }
-            }
+        // ================= CALLER SCREEN =================
+        callerSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, halfPad, 0, halfPad)
         }
-        root.addView(dutySwitch)
+        callerStateHint = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, 0, 0, halfPad)
+            text = "Connect to your home node first, then press SOS if you need help."
+        }
+        callerSection.addView(callerStateHint)
 
-        // Caller controls
-        val callerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, pad / 2, 0, pad / 2)
-        }
-        prepareCallerBtn = Button(this).apply {
-            text = "Prepare Caller"
-            setOnClickListener {
-                savePrefs()
-                startRoleService(BitaidService.ACTION_START_CALLER)
-            }
-        }
         sosBtn = Button(this).apply {
-            text = "SOS ALERT"
+            text = "SOS — ASK FOR HELP"
+            textSize = 18f
+            setTypeface(null, Typeface.BOLD)
             setBackgroundColor(Color.parseColor("#B71C1C"))
             setTextColor(Color.WHITE)
+            setPadding(pad, pad, pad, pad)
             isEnabled = false
             setOnClickListener {
                 sosBtn.isEnabled = false
-                BitaidState.update { it.copy(statusDetail = "Getting fresh GPS fix (up to 10 s)...") }
+                BitaidState.update { it.copy(statusDetail = "Getting your GPS location (up to 10 s)...") }
                 requestFreshFix { fix ->
                     if (fix != null) {
                         NativeBridge.sendRaiseAlert(true, fix.first, fix.second)
@@ -219,20 +321,58 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        callerSection.addView(sosBtn)
+
+        val callerSubRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, halfPad, 0, 0)
+        }
+        prepareCallerBtn = Button(this).apply {
+            text = "Connect"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                savePrefs()
+                startRoleService(BitaidService.ACTION_START_CALLER)
+            }
+        }
         cancelCallerBtn = Button(this).apply {
             text = "Cancel"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener { sendServiceAction(BitaidService.ACTION_STOP) }
         }
-        callerRow.addView(prepareCallerBtn)
-        callerRow.addView(sosBtn)
-        callerRow.addView(cancelCallerBtn)
-        root.addView(callerRow)
+        callerSubRow.addView(prepareCallerBtn)
+        callerSubRow.addView(cancelCallerBtn)
+        callerSection.addView(callerSubRow)
+        root.addView(callerSection)
+
+        // ================= RESPONDER SCREEN =================
+        responderSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, halfPad, 0, halfPad)
+        }
+
+        dutySwitch = Switch(this).apply {
+            text = "Go on duty"
+            textSize = 16f
+            setTypeface(null, Typeface.BOLD)
+            setOnCheckedChangeListener { _, isChecked ->
+                if (suppressSwitch) return@setOnCheckedChangeListener
+                savePrefs()
+                if (isChecked) {
+                    startRoleService(BitaidService.ACTION_START_RESPONDER)
+                } else {
+                    sendServiceAction(BitaidService.ACTION_STOP)
+                }
+            }
+        }
+        responderSection.addView(dutySwitch)
+        responderSection.addView(helpText("While on duty, alerts near you reach this phone, even with the screen off."))
 
         batteryBtn = Button(this).apply {
-            text = "Allow Unrestricted Battery (Screen-Off Duty)"
+            text = "Keep running with the screen off"
             setOnClickListener { requestBatteryExemption() }
         }
-        root.addView(batteryBtn)
+        responderSection.addView(batteryBtn)
 
         // Incoming Alert card
         alertCard = cardBox("#FFF3E0").apply { visibility = View.GONE }
@@ -240,20 +380,41 @@ class MainActivity : AppCompatActivity() {
             textSize = 15f
             setTypeface(null, Typeface.BOLD)
         }
+        alertDetailsBtn = Button(this).apply {
+            text = "Details"
+            textSize = 12f
+            setOnClickListener {
+                val show = alertDetailsText.visibility != View.VISIBLE
+                alertDetailsText.visibility = if (show) View.VISIBLE else View.GONE
+                text = if (show) "Hide details" else "Details"
+            }
+        }
+        alertDetailsText = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.DKGRAY)
+            visibility = View.GONE
+        }
         acceptBtn = Button(this).apply {
-            text = "ACCEPT"
+            text = "Accept"
             setBackgroundColor(Color.parseColor("#2E7D32"))
             setTextColor(Color.WHITE)
             setOnClickListener {
                 BitaidState.snapshot.alert?.let { a ->
                     BitaidState.markAcceptedNow()
                     NativeBridge.sendAccept(a.caseId)
-                    BitaidState.update { it.copy(alert = null, status = ServiceStatus.ACTIVE_CASE, statusDetail = "Accepted — awaiting verified location") }
+                    BitaidState.update {
+                        it.copy(
+                            alert = null,
+                            status = ServiceStatus.ACTIVE_CASE,
+                            statusDetail = "Accepted — waiting for exact location",
+                        )
+                    }
                 }
             }
         }
         declineBtn = Button(this).apply {
-            text = "DECLINE"
+            text = "Decline"
             setOnClickListener {
                 BitaidState.snapshot.alert?.let { a ->
                     NativeBridge.sendDecline(a.caseId)
@@ -265,10 +426,12 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             addView(acceptBtn)
             addView(declineBtn)
+            addView(alertDetailsBtn)
         }
         alertCard.addView(alertText)
+        alertCard.addView(alertDetailsText)
         alertCard.addView(alertBtns)
-        root.addView(alertCard)
+        responderSection.addView(alertCard)
 
         // Verified Location card
         locCard = cardBox("#E8F5E9").apply { visibility = View.GONE }
@@ -284,14 +447,16 @@ class MainActivity : AppCompatActivity() {
         }
         locCard.addView(locText)
         locCard.addView(mapsBtn)
-        root.addView(locCard)
+        responderSection.addView(locCard)
 
         // Ballot card
         ballotCard = cardBox("#E3F2FD").apply { visibility = View.GONE }
         ballotCard.addView(TextView(this).apply {
-            text = "Ballot Due — classify each seat (I = Intervened, D = Documented, N = Neither)"
+            text = "How did each responder act?"
+            textSize = 16f
             setTypeface(null, Typeface.BOLD)
         })
+        ballotCard.addView(helpText("For each person who came: Intervened, Documented, or Neither."))
         ballotCountdownText = TextView(this).apply {
             textSize = 13f
             setTypeface(null, Typeface.BOLD)
@@ -300,15 +465,20 @@ class MainActivity : AppCompatActivity() {
         }
         ballotCard.addView(ballotCountdownText)
         ballotSeatsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        achievedCheck = CheckBox(this).apply { text = "Outcome achieved"; isChecked = true }
-        misuseCheck = CheckBox(this).apply { text = "Force misused"; isChecked = false }
+        achievedCheck = CheckBox(this).apply { text = "The emergency was resolved"; isChecked = true }
+        misuseCheck = CheckBox(this).apply { text = "Someone used more force than needed"; isChecked = false }
         voteBtn = Button(this).apply {
-            text = "SUBMIT VOTE"
+            text = "Submit my vote"
             setOnClickListener {
                 val prompt = BitaidState.snapshot.ballotDue ?: return@setOnClickListener
                 val arr = JSONArray()
                 for (sp in seatSpinners) {
-                    arr.put(sp.selectedItem.toString())
+                    val code = when (sp.selectedItem.toString()) {
+                        "Intervened" -> "I"
+                        "Documented" -> "D"
+                        else -> "N"
+                    }
+                    arr.put(code)
                 }
                 val ok = NativeBridge.sendVote(prompt.caseId, arr.toString(), achievedCheck.isChecked, misuseCheck.isChecked)
                 if (ok) {
@@ -322,26 +492,67 @@ class MainActivity : AppCompatActivity() {
         ballotCard.addView(achievedCheck)
         ballotCard.addView(misuseCheck)
         ballotCard.addView(voteBtn)
-        root.addView(ballotCard)
+        responderSection.addView(ballotCard)
 
-        // Settings section
-        root.addView(sectionHeader("Signet Settings"))
-        nameEdit = labeledEdit(root, "Node name", "phone1")
-        peerEdit = labeledEdit(root, "Core peer (.onion:port)", "")
+        root.addView(responderSection)
+
+        // ================= SETTINGS: CONNECTION (shared) =================
+        root.addView(sectionHeader("Connection"))
+        root.addView(helpText("How this phone reaches your own Bitaid node at home."))
+
+        nameEdit = labeledEditWithHelp(
+            root,
+            "Name of this phone",
+            "Only you see it, in your node's logs.",
+            "phone1",
+        )
+        peerEdit = labeledEditWithHelp(
+            root,
+            "Your home node's address",
+            "The private Tor address of your Bitaid node (.onion:port). It's in app_light.txt on your PC.",
+            "",
+        )
+
         root.addView(Button(this).apply {
-            text = "Paste Light Config (app_light.txt)"
+            text = "Paste connection details"
             setOnClickListener { pasteLightConfigFromClipboard() }
         })
-        coreKeyEdit = labeledEdit(root, "Core pubkey (64-hex; enables light client BITAID_CHAIN=core)", "")
-        tipSourcesEdit = labeledEdit(root, "Tip sources (pk1@onion:port,pk2@onion:port)", "")
-        anchorEdit = labeledEdit(root, "Anchor checkpoint (optional height:hash)", "")
+        root.addView(helpText("Copy all of app_light.txt from your PC, then tap here. It fills the three fields below."))
 
-        // Masked RPC URL (never repopulated into plaintext once stored)
-        root.addView(TextView(this).apply { text = "Wallet bitcoind RPC (http://user:pass@onion:port; wallet calls only under light client)"; textSize = 12f })
+        coreKeyEdit = labeledEditWithHelp(
+            root,
+            "Your home node's key",
+            "Lets the phone be sure it's talking to your node and nobody else (64-hex Core pubkey).",
+            "",
+        )
+        tipSourcesEdit = labeledEditWithHelp(
+            root,
+            "Second opinions",
+            "Two other nodes the phone checks your node against before signing anything with money in it (Tip sources).",
+            "",
+        )
+        anchorEdit = labeledEditWithHelp(
+            root,
+            "Starting block (optional)",
+            "A recent block the phone trusts as its starting point, so it doesn't download the chain's history (height:hash).",
+            "",
+        )
+
+        // ================= SETTINGS: WALLET (Responder) =================
+        responderSettingsSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        responderSettingsSection.addView(sectionHeader("Wallet"))
+        responderSettingsSection.addView(TextView(this).apply {
+            text = "Your wallet's address"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+        })
+        responderSettingsSection.addView(helpText("Where your bond and payouts come from. Stored encrypted on this phone."))
         val rpcStatusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         rpcStatusView = TextView(this).apply { text = "Not set"; textSize = 13f }
         rpcReplaceBtn = Button(this).apply {
-            text = "Set / Replace"
+            text = "Set"
             setOnClickListener {
                 rpcEdit.setText("")
                 rpcInputRow.visibility = View.VISIBLE
@@ -349,7 +560,7 @@ class MainActivity : AppCompatActivity() {
         }
         rpcStatusRow.addView(rpcStatusView)
         rpcStatusRow.addView(rpcReplaceBtn)
-        root.addView(rpcStatusRow)
+        responderSettingsSection.addView(rpcStatusRow)
 
         rpcInputRow = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -361,7 +572,7 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         rpcShowCheck = CheckBox(this).apply {
-            text = "Show RPC URL"
+            text = "Show"
             setOnCheckedChangeListener { _, show ->
                 rpcEdit.inputType = if (show) {
                     InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
@@ -372,7 +583,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         rpcSaveBtn = Button(this).apply {
-            text = "Save RPC (Encrypted)"
+            text = "Save (encrypted)"
             setOnClickListener {
                 val url = rpcEdit.text.toString().trim()
                 if (url.isNotEmpty()) {
@@ -386,39 +597,113 @@ class MainActivity : AppCompatActivity() {
         rpcInputRow.addView(rpcEdit)
         rpcInputRow.addView(rpcShowCheck)
         rpcInputRow.addView(rpcSaveBtn)
-        root.addView(rpcInputRow)
+        responderSettingsSection.addView(rpcInputRow)
 
-        walletEdit = labeledEdit(root, "RPC wallet", "w")
-        poolEdit = labeledEdit(root, "Pool name (bitaid or tor1)", "bitaid")
-        satScaleEdit = labeledEdit(root, "BITAID_SAT_SCALE (1 for local/custom signet, 100 for anchored)", "1")
-        timeScaleEdit = labeledEdit(root, "BITAID_TIME_SCALE (1 for local/custom signet, 30 for anchored)", "1")
-        latEdit = labeledEdit(root, "Override latitude (optional; blank uses GPS)", "")
-        lonEdit = labeledEdit(root, "Override longitude (optional; blank uses GPS)", "")
+        walletEdit = labeledEditWithHelp(
+            responderSettingsSection,
+            "Wallet name",
+            "The wallet's name inside your node. Leave as is unless you changed it.",
+            "w",
+        )
+        root.addView(responderSettingsSection)
 
-        // Live checks and logs
+        // ================= ADVANCED / TEST NETWORK (collapsed by default) =================
+        advancedToggleBtn = Button(this).apply {
+            text = "Show test network & location overrides"
+            setOnClickListener {
+                val show = advancedSection.visibility != View.VISIBLE
+                advancedSection.visibility = if (show) View.VISIBLE else View.GONE
+                text = if (show) "Hide test network & location overrides" else "Show test network & location overrides"
+            }
+        }
+        root.addView(advancedToggleBtn)
+
+        advancedSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        poolEdit = labeledEditWithHelp(
+            advancedSection,
+            "Pool name",
+            "The oracle pool name (bitaid or tor1).",
+            "bitaid",
+        )
+        satScaleEdit = labeledEditWithHelp(
+            advancedSection,
+            "Amount scale (BITAID_SAT_SCALE)",
+            "1 for local/custom signet, 100 for anchored.",
+            "1",
+        )
+        timeScaleEdit = labeledEditWithHelp(
+            advancedSection,
+            "Time scale (BITAID_TIME_SCALE)",
+            "1 for 20-second signet blocks, 30 for 10-minute blocks.",
+            "1",
+        )
+        latEdit = labeledEditWithHelp(
+            advancedSection,
+            "Manual latitude (optional)",
+            "Leave blank to use GPS.",
+            "",
+        )
+        lonEdit = labeledEditWithHelp(
+            advancedSection,
+            "Manual longitude (optional)",
+            "Leave blank to use GPS.",
+            "",
+        )
+        root.addView(advancedSection)
+
+        // ================= DETAILS: CHECKS & LOGS (collapsed by default) =================
+        detailsToggleBtn = Button(this).apply {
+            text = "Show details (checks & logs)"
+            setOnClickListener {
+                val show = detailsSection.visibility != View.VISIBLE
+                detailsSection.visibility = if (show) View.VISIBLE else View.GONE
+                text = if (show) "Hide details (checks & logs)" else "Show details (checks & logs)"
+            }
+        }
+        root.addView(detailsToggleBtn)
+
+        detailsSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
         val checksHeaderRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        checksHeaderRow.addView(sectionHeader("Live Checks  "))
+        checksHeaderRow.addView(sectionHeader("What this phone has verified  "))
         checksHeaderRow.addView(Button(this).apply {
-            text = "Copy Logs"
+            text = "Copy report"
             setOnClickListener { copyLogsToClipboard() }
         })
-        root.addView(checksHeaderRow)
+        detailsSection.addView(checksHeaderRow)
+        detailsSection.addView(helpText("For sending to whoever helps you test."))
         summaryView = TextView(this).apply { setTypeface(null, Typeface.BOLD) }
         checksView = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 12f
         }
-        root.addView(summaryView)
-        root.addView(checksView)
+        detailsSection.addView(summaryView)
+        detailsSection.addView(checksView)
 
-        root.addView(sectionHeader("Logs"))
+        detailsSection.addView(sectionHeader("Logs"))
         logsView = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 11f
         }
-        root.addView(logsView)
+        detailsSection.addView(logsView)
+        root.addView(detailsSection)
 
         return ScrollView(this).apply { addView(root) }
+    }
+
+    private fun plainStatusLabel(status: ServiceStatus): String = when (status) {
+        ServiceStatus.OFF_DUTY -> if (uiMode == MODE_CALLER) "Not connected" else "Off duty"
+        ServiceStatus.BOOTSTRAPPING_TOR -> "Connecting privately"
+        ServiceStatus.CONNECTING -> "Connecting"
+        ServiceStatus.ON_DUTY -> "On duty"
+        ServiceStatus.CALLER_READY -> "Ready to ask for help"
+        ServiceStatus.ACTIVE_CASE -> if (uiMode == MODE_CALLER) "Help requested" else "Responding"
+        ServiceStatus.FAULT -> "Stopped: needs attention"
     }
 
     private fun copyLogsToClipboard() {
@@ -437,8 +722,8 @@ class MainActivity : AppCompatActivity() {
             sb.append(line).append('\n')
         }
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("Bitaid Logs", sb.toString()))
-        Toast.makeText(this, "Copied checks & logs to clipboard", Toast.LENGTH_SHORT).show()
+        cm.setPrimaryClip(ClipData.newPlainText("Bitaid Report", sb.toString()))
+        Toast.makeText(this, "Copied report to clipboard", Toast.LENGTH_SHORT).show()
     }
 
     private fun pasteLightConfigFromClipboard() {
@@ -492,12 +777,12 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(
                 this,
                 "Clipboard did not match app_light.txt (Core pubkey / Tip sources / Anchor)",
-                Toast.LENGTH_LONG
+                Toast.LENGTH_LONG,
             ).show()
             return
         }
         savePrefs()
-        Toast.makeText(this, "Pasted $filled light config field(s)", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Pasted $filled connection field(s)", Toast.LENGTH_SHORT).show()
     }
 
     private fun refreshRpcStatus() {
@@ -516,7 +801,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun render(snap: AppSnapshot) {
-        statusView.text = "${snap.status.name}: ${snap.statusDetail}"
+        val label = plainStatusLabel(snap.status)
+        statusView.text = if (snap.statusDetail.isNotBlank() && !snap.statusDetail.equals(label, ignoreCase = true)) {
+            "$label — ${snap.statusDetail}"
+        } else {
+            label
+        }
         statusView.setTextColor(
             when (snap.status) {
                 ServiceStatus.FAULT -> Color.parseColor("#B71C1C")
@@ -537,7 +827,7 @@ class MainActivity : AppCompatActivity() {
 
         if (!snap.warning.isNullOrBlank()) {
             warningBanner.visibility = View.VISIBLE
-            warningBanner.text = "WARNING: ${snap.warning}"
+            warningBanner.text = "Signing is off: your home node gave a wrong answer.\n${snap.warning}"
         } else {
             warningBanner.visibility = View.GONE
         }
@@ -550,21 +840,31 @@ class MainActivity : AppCompatActivity() {
         suppressSwitch = false
 
         sosBtn.isEnabled = snap.status == ServiceStatus.CALLER_READY
+        callerStateHint.text = when (snap.status) {
+            ServiceStatus.CALLER_READY -> "Connected. Press the red SOS button to ask for help."
+            ServiceStatus.BOOTSTRAPPING_TOR, ServiceStatus.CONNECTING -> "Connecting to your home node..."
+            ServiceStatus.ACTIVE_CASE -> "Help requested. Stay on this screen while responders come."
+            ServiceStatus.FAULT -> "Stopped: check your connection details below."
+            else -> "Tap Connect first, then press SOS if you need help."
+        }
 
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         batteryBtn.visibility = if (pm.isIgnoringBatteryOptimizations(packageName)) View.GONE else View.VISIBLE
 
         if (snap.alert != null) {
             alertCard.visibility = View.VISIBLE
-            alertText.text = "ALERT ${snap.alert.caseId.take(8)} in cell ${snap.alert.cell}\n" +
-                "deposit=${snap.alert.deposit}  reward=${snap.alert.reward}  bounty=${snap.alert.bounty} sats"
+            alertText.text = "Emergency nearby\n" +
+                "Deposit ${snap.alert.deposit} · Reward ${snap.alert.reward} · Bounty ${snap.alert.bounty} sats"
+            alertDetailsText.text = "Case ${snap.alert.caseId.take(8)} · Cell ${snap.alert.cell}"
         } else {
             alertCard.visibility = View.GONE
+            alertDetailsText.visibility = View.GONE
+            alertDetailsBtn.text = "Details"
         }
 
         if (snap.location != null) {
             locCard.visibility = View.VISIBLE
-            locText.text = "Verified location (${snap.location.caseId.take(8)}):\n" +
+            locText.text = "Verified location:\n" +
                 "lat=${snap.location.lat}, lon=${snap.location.lon}"
         } else {
             locCard.visibility = View.GONE
@@ -580,11 +880,11 @@ class MainActivity : AppCompatActivity() {
                 renderedBallotCase = bp.caseId
                 ballotSeatsBox.removeAllViews()
                 seatSpinners.clear()
-                val opts = arrayOf("I", "D", "N")
+                val opts = arrayOf("Intervened", "Documented", "Neither")
                 for (i in 0 until bp.seats) {
                     val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                     val lbl = TextView(this).apply {
-                        text = if (i == bp.mySeat) "Seat $i (you): " else "Seat $i: "
+                        text = if (i == bp.mySeat) "Responder ${i + 1} (you): " else "Responder ${i + 1}: "
                     }
                     val sp = Spinner(this).apply {
                         adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, opts)
@@ -613,7 +913,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateBallotCountdown(bp: BallotPrompt) {
         if (bp.remainingSecs <= 0L && bp.remainingBlocks <= 0) {
-            ballotCountdownText.text = "Ballot window closing now — submit immediately"
+            ballotCountdownText.text = "Voting window closing now — submit immediately"
             return
         }
         val elapsedSecs = ((System.currentTimeMillis() - bp.receivedAtMs).coerceAtLeast(0L)) / 1000L
@@ -632,7 +932,7 @@ class MainActivity : AppCompatActivity() {
         val pos = manualCoords() ?: recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L)?.first
         if (action == BitaidService.ACTION_START_RESPONDER && pos == null) {
             BitaidState.update {
-                it.copy(status = ServiceStatus.OFF_DUTY, statusDetail = "No position — enable GPS or enter coordinates")
+                it.copy(status = ServiceStatus.OFF_DUTY, statusDetail = "No GPS location — enable GPS or enter coordinates")
             }
             return
         }
@@ -785,8 +1085,26 @@ class MainActivity : AppCompatActivity() {
         setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, 4)
     }
 
-    private fun labeledEdit(parent: LinearLayout, label: String, def: String): EditText {
-        parent.addView(TextView(this).apply { text = label; textSize = 12f })
+    private fun helpText(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+        setTextColor(Color.parseColor("#555555"))
+        setPadding(0, 0, 0, (6 * resources.displayMetrics.density).toInt())
+    }
+
+    private fun labeledEditWithHelp(
+        parent: LinearLayout,
+        label: String,
+        help: String,
+        def: String,
+    ): EditText {
+        parent.addView(TextView(this).apply {
+            text = label
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, (6 * resources.displayMetrics.density).toInt(), 0, 0)
+        })
+        parent.addView(helpText(help))
         val et = EditText(this).apply { setText(def); isSingleLine = true }
         parent.addView(et)
         return et
@@ -810,6 +1128,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun savePrefs() {
         getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString("ui_mode", uiMode)
             .putString("name", nameEdit.text.toString().trim())
             .putString("peer", peerEdit.text.toString().trim())
             .putString("core_key", coreKeyEdit.text.toString().trim())
@@ -834,5 +1153,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PREFS = "bitaid_ui_prefs"
+        private const val MODE_CALLER = "caller"
+        private const val MODE_RESPONDER = "responder"
     }
 }
