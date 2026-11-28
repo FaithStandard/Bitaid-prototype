@@ -216,8 +216,8 @@ pub struct Ledger {
     pub registrations: Vec<Registration>,
     /// anchored roots (hex) and the block that confirmed each, in chain order
     pub anchors: Vec<(String, u32)>,
-    /// anchored roots with their confirming txid and height (for light-server Merkle proofs)
-    pub anchor_txs: Vec<(String, Txid, u32)>,
+    /// anchored roots with their confirming `(root, txid, height, tx_pos)` (for light-server pagination)
+    pub anchor_txs: Vec<(String, Txid, u32, u32)>,
     /// recorded outputs still unspent: (is a posting, index)
     watch: HashMap<OutPoint, (bool, usize)>,
     /// every block read: (height, hash), oldest first
@@ -312,7 +312,7 @@ impl Ledger {
                 (Some(&KIND_ANCHOR), 37) => {
                     let root = hex::encode(&p[5..37]);
                     self.anchors.push((root.clone(), height));
-                    self.anchor_txs.push((root, txid, height));
+                    self.anchor_txs.push((root, txid, height, pos as u32));
                 }
                 (Some(&KIND_TIER), 70) => self.tiers.push(TierRec {
                     case: hex::encode(&p[5..37]),

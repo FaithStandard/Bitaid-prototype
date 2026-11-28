@@ -156,7 +156,7 @@ impl ChainSource for Rpc {
     fn case_records(&self, case_id: &str, from_height: u32) -> Vec<Trusted<ProvenRecord>> {
         let mut out = Vec::new();
         let txs = crate::light_server::LightBackend::case_record_txs(self, case_id, from_height);
-        for (txid_s, h) in txs {
+        for (txid_s, h, _pos) in txs {
             let Some((raw, bh_s, _)) = self.raw_tx_and_block(&txid_s) else {
                 continue;
             };
@@ -264,6 +264,7 @@ impl TipSource for LinkTipSource {
             outpoints: outpoints.iter().map(|o| o.to_string()).collect(),
             case_id: None,
             from_height: 0,
+            from_index: 0,
         };
         let ask_hash = light_ask_hash(&ask);
         let raw = wire::sign(&self.keys, 0, ask);
@@ -342,8 +343,10 @@ struct LightState {
     records: HashMap<String, Vec<Trusted<ProvenRecord>>>,
     /// `KIND_ANCHOR` roots -> `(earliest_height, block_hash, trust)`, fed from `LightRecord`s.
     anchors: HashMap<String, (u32, BlockHash, Trust)>,
-    anchors_synced_to: u32,
-    last_records_through: u32,
+    /// Inclusive `(height, tx_pos)` cursor up to which anchor records have been synced.
+    anchors_cursor: (u32, u32),
+    last_records_through: (u32, u32),
+    logged_legacy_core: bool,
     last_anchor_sync: Option<Instant>,
     /// Set to true if any proof from the Core fails: stops trusting the Core and blocks signing.
     distrusted: bool,
@@ -409,8 +412,9 @@ impl CoreLight {
                 outputs: HashMap::new(),
                 records: HashMap::new(),
                 anchors: HashMap::new(),
-                anchors_synced_to: anchor_height,
-                last_records_through: anchor_height,
+                anchors_cursor: (anchor_height, u32::MAX),
+                last_records_through: (anchor_height, u32::MAX),
+                logged_legacy_core: false,
                 last_anchor_sync: None,
                 distrusted: false,
                 distrust_reason: None,
@@ -435,15 +439,25 @@ impl CoreLight {
         st.anchors.get(root_hex).map(|(h, _, _)| *h)
     }
 
-    /// Pulls new headers and any new `KIND_ANCHOR` records since the last synced height,
-    /// paginating by the Core's signed `records_through` height so responses truncated at
-    /// `LIGHT_MAX_RECORDS` never lose records. Throttled to at most once per `min_interval`.
+    /// Advances an inclusive `(height, tx_pos)` cursor to the next record position to request.
+    fn next_cursor(cur: (u32, u32)) -> (u32, u32) {
+        if cur.1 == u32::MAX {
+            (cur.0.saturating_add(1), 0)
+        } else {
+            (cur.0, cur.1.saturating_add(1))
+        }
+    }
+
+    /// Pulls new headers and any new `KIND_ANCHOR` records since the last synced cursor,
+    /// paginating by the Core's signed `(height, tx_index)` `records_through` cursor so a block
+    /// stuffed with > `LIGHT_MAX_RECORDS` records never stalls pagination and an unprovable record
+    /// is retried rather than silently skipped. Throttled to at most once per `min_interval`.
     pub fn sync_anchors(&self, min_interval: Duration) -> Result<(), String> {
         self.sync_anchors_at(min_interval, Self::now_secs())
     }
 
     pub fn sync_anchors_at(&self, min_interval: Duration, now_secs: u32) -> Result<(), String> {
-        let mut from_h = {
+        let mut cursor = {
             let mut st = self.state.lock().unwrap();
             if st.distrusted {
                 return Err("Core is distrusted".into());
@@ -456,15 +470,17 @@ impl CoreLight {
                 return Ok(());
             }
             st.last_anchor_sync = Some(Instant::now());
-            st.anchors_synced_to.saturating_sub(2).max(1)
+            let next = Self::next_cursor(st.anchors_cursor);
+            (next.0.max(1), if next.0 == 0 { 0 } else { next.1 })
         };
-        const MAX_PAGES: usize = 8;
+        const MAX_PAGES: usize = 16;
         for _ in 0..MAX_PAGES {
-            self.sync_once_at(
+            self.sync_once_cursor_at(
                 vec![],
                 vec![],
                 None,
-                from_h,
+                cursor.0,
+                cursor.1,
                 Duration::from_secs(REFRESH_TIMEOUT_SECS),
                 now_secs,
             )?;
@@ -472,19 +488,21 @@ impl CoreLight {
                 let mut st = self.state.lock().unwrap();
                 let through = st.last_records_through;
                 let tip = st.headers.tip().0;
-                if through > st.anchors_synced_to {
-                    st.anchors_synced_to = through;
+                if through > st.anchors_cursor {
+                    st.anchors_cursor = through;
                 }
                 (through, tip)
             };
-            if through >= tip {
+            if through >= (tip, u32::MAX) {
                 break;
             }
-            let next_from = through.saturating_add(1);
-            if next_from <= from_h {
+            let next = Self::next_cursor(through);
+            if next <= cursor {
+                // Unprovable record at `cursor` or legacy Core returning `(0, 0)`: stop this round
+                // and retry on the next round instead of spinning.
                 break;
             }
-            from_h = next_from;
+            cursor = next;
         }
         Ok(())
     }
@@ -802,6 +820,11 @@ impl CoreLight {
                 recs.retain(|r| active.height_of(&r.value.block_hash).is_some());
             }
             cached_anchors.retain(|_, (_, bh, _)| active.height_of(bh).is_some());
+            // If a reorg replaced blocks at or below `anchors_cursor.0`, rewind the cursor to
+            // just before `headers_from` so records on the new fork are fetched.
+            if *headers_from <= st.anchors_cursor.0 {
+                st.anchors_cursor = (headers_from.saturating_sub(1), u32::MAX);
+            }
         }
 
         // If the Core's declared tip is at our verified height, its hash must match our chain.
@@ -893,7 +916,16 @@ impl CoreLight {
                 }
             }
         }
-        st.last_records_through = (*records_through).min(st.headers.tip().0);
+        if *records_through == (0, 0) && *tip_height > 0 && !st.logged_legacy_core {
+            st.logged_legacy_core = true;
+            crate::say!("Core does not page records; update it");
+        }
+        let tip_h = st.headers.tip().0;
+        st.last_records_through = if records_through.0 > tip_h {
+            (tip_h, u32::MAX)
+        } else {
+            *records_through
+        };
 
         Ok(())
     }
@@ -991,6 +1023,20 @@ impl CoreLight {
         timeout: Duration,
         now_secs: u32,
     ) -> Result<(), String> {
+        self.sync_once_cursor_at(txids, outpoints, case_id, from_height, 0, timeout, now_secs)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_once_cursor_at(
+        &self,
+        txids: Vec<String>,
+        outpoints: Vec<String>,
+        case_id: Option<String>,
+        from_height: u32,
+        from_index: u32,
+        timeout: Duration,
+        now_secs: u32,
+    ) -> Result<(), String> {
         let req_id = hex::encode(rand::random::<[u8; 16]>());
         let ask = Msg::LightAsk {
             id: req_id.clone(),
@@ -999,6 +1045,7 @@ impl CoreLight {
             outpoints,
             case_id,
             from_height,
+            from_index,
         };
         let ask_hash = light_ask_hash(&ask);
         let tip_h = self.height();
@@ -1504,6 +1551,7 @@ mod tests {
         blocks: Mutex<Vec<MemBlock>>,
         unspent: Mutex<HashMap<OutPoint, u32>>,
         case_records: Mutex<HashMap<String, Vec<(String, u32)>>>,
+        unprovable: Mutex<HashSet<String>>,
     }
 
     impl MemChain {
@@ -1518,6 +1566,7 @@ mod tests {
                 }]),
                 unspent: Mutex::new(HashMap::new()),
                 case_records: Mutex::new(HashMap::new()),
+                unprovable: Mutex::new(HashSet::new()),
             }
         }
 
@@ -1594,6 +1643,9 @@ mod tests {
             None
         }
         fn merkle_proof(&self, txid: &str, bh: &str) -> Option<Vec<u8>> {
+            if self.unprovable.lock().unwrap().contains(txid) {
+                return None;
+            }
             let b = self.blocks.lock().unwrap();
             let blk = b.iter().find(|x| x.hash.to_string() == bh)?;
             let txids: Vec<_> = blk.txs.iter().map(|t| t.compute_txid()).collect();
@@ -1607,7 +1659,7 @@ mod tests {
         fn output_state(&self, op: &OutPoint) -> Result<Option<u32>, String> {
             Ok(self.unspent.lock().unwrap().get(op).copied())
         }
-        fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32)> {
+        fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32, u32)> {
             self.case_records
                 .lock()
                 .unwrap()
@@ -1616,19 +1668,20 @@ mod tests {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|(_, h)| *h >= from_height)
+                .map(|(txid, h)| (txid, h, 0))
                 .collect()
         }
-        fn anchor_record_txs(&self, from_height: u32) -> Vec<(String, u32)> {
+        fn anchor_record_txs(&self, from_height: u32) -> Vec<(String, u32, u32)> {
             let b = self.blocks.lock().unwrap();
             let mut out = Vec::new();
             for blk in b.iter() {
                 if blk.height < from_height {
                     continue;
                 }
-                for tx in &blk.txs {
+                for (pos, tx) in blk.txs.iter().enumerate() {
                     if let Some(p) = crate::ledger::record_of(tx) {
                         if anchor_record_root(&p).is_some() {
-                            out.push((tx.compute_txid().to_string(), blk.height));
+                            out.push((tx.compute_txid().to_string(), blk.height, pos as u32));
                         }
                     }
                 }
@@ -1736,6 +1789,7 @@ mod tests {
             outpoints: vec![fund_op.to_string()],
             case_id: None,
             from_height: 0,
+            from_index: 0,
         };
         let ask_hash = light_ask_hash(&ask);
         let (_, signed) = answer_ask(&*chain, &core_kp, &ask).unwrap();
@@ -1883,6 +1937,7 @@ mod tests {
             outpoints: vec![],
             case_id: None,
             from_height: 0,
+            from_index: 0,
         };
         let ask_hash = light_ask_hash(&ask);
         let (mut ans, _) = answer_ask(&*chain, &core_kp, &ask).unwrap();
@@ -2058,6 +2113,117 @@ mod tests {
                 light.anchored(root_hex),
                 Some(*h),
                 "anchor at height {h} must not be dropped by 64-record cap"
+            );
+        }
+    }
+
+    #[test]
+    fn single_block_70_plus_1_paginates_by_cursor_and_stops_on_unprovable_record() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let chain = Arc::new(MemChain::new(genesis, gen_tx));
+
+        let mk_anchor_tx = |id: u32| -> (Transaction, String) {
+            let mut root_bytes = [0u8; 32];
+            root_bytes[..4].copy_from_slice(&id.to_le_bytes());
+            let anc_payload = crate::ledger::anchor_record(&root_bytes);
+            let mut spk = vec![0x6a, anc_payload.len() as u8];
+            spk.extend_from_slice(&anc_payload);
+            let tx = make_tx(
+                id,
+                vec![TxOut {
+                    value: Amount::from_sat(0),
+                    script_pubkey: ScriptBuf::from_bytes(spk),
+                }],
+            );
+            (tx, hex::encode(root_bytes))
+        };
+
+        // Block 1 holds 70 anchor records (> LIGHT_MAX_RECORDS = 64) in ONE block; Block 2 holds 1.
+        let mut blk1_txs = Vec::new();
+        let mut expected: Vec<(String, u32)> = Vec::new();
+        let mut blocked_txid = String::new();
+        for i in 1..=70u32 {
+            let (tx, root_hex) = mk_anchor_tx(i);
+            if i == 67 {
+                blocked_txid = tx.compute_txid().to_string();
+            }
+            blk1_txs.push(tx);
+            expected.push((root_hex, 1));
+        }
+        let (h1, _, _) = chain.push(blk1_txs, base_time + 60);
+        assert_eq!(h1, 1);
+
+        let (tx71, root71) = mk_anchor_tx(71);
+        let (h2, _, _) = chain.push(vec![tx71], base_time + 120);
+        assert_eq!(h2, 2);
+        expected.push((root71, 2));
+
+        // Simulate a transient Core proof failure on record #67 (index 66 in block 1):
+        // Core must stop BEFORE #67 (records_through = (1, 65)), never sign past it!
+        chain.unprovable.lock().unwrap().insert(blocked_txid.clone());
+
+        let core_g = Gossip::start(Some("127.0.0.1:0"), &[], None).unwrap();
+        let addr = core_g.listen_addr().unwrap().to_string();
+        let phone_g = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
+        assert_eq!(core_g.wait_links(1, Duration::from_secs(5)), 1);
+        assert_eq!(phone_g.wait_links(1, Duration::from_secs(5)), 1);
+
+        let core_link = core_g.local_link();
+        let chain_srv = chain.clone();
+        std::thread::spawn(move || loop {
+            if let Some((lid, env)) = core_link.recv_ask(Duration::from_secs(5)) {
+                if let Ok((_, signed)) = answer_ask(&*chain_srv, &core_kp, &env.msg) {
+                    let _ = core_link.send_to(lid, &signed);
+                }
+            }
+        });
+
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            phone_g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        // Round 1: gets 1..=64 (page 1), then 65..=66 (page 2) and stops before unprovable #67.
+        light
+            .sync_anchors_at(Duration::ZERO, base_time + 200)
+            .unwrap();
+        assert!(light.ask_count() >= 2);
+        for (root_hex, h) in &expected[..66] {
+            assert_eq!(light.anchored(root_hex), Some(*h));
+        }
+        assert_eq!(
+            light.anchored(&expected[66].0),
+            None,
+            "unprovable record #67 must not be silently skipped"
+        );
+        assert_eq!(
+            light.anchored(&expected[70].0),
+            None,
+            "block 2 record #71 must wait until #67 is proved"
+        );
+
+        // Clear the transient hiccup -> Round 2 resumes right at (1, 66) and delivers #67..=#71!
+        chain.unprovable.lock().unwrap().remove(&blocked_txid);
+        light
+            .sync_anchors_at(Duration::ZERO, base_time + 260)
+            .unwrap();
+        for (root_hex, h) in &expected {
+            assert_eq!(
+                light.anchored(root_hex),
+                Some(*h),
+                "all 71 records (70 in block 1 + 1 in block 2) must arrive"
             );
         }
     }
