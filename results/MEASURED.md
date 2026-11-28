@@ -200,3 +200,20 @@ What it took, found in these runs:
 - a late or overlapping answer, or a lighter fork, is ignored, not taken as a lie: only a failed proof distrusts the Core.
 
 Still open (step 7): in the app, the 46 `getblock` reads come from a path that still refreshes the ledger by RPC on the message thread. It is to move off that thread, or onto `LightAsk { case }`.
+
+## The light client on the phone, end to end over Tor, 2026-11-28 (phone-light step 7, APK `9fcccd7`)
+
+`PC_20_APP_RUN.bat` (custom signet, a block every 20 s; Core, pool, archivist and arbitrators on the PC) and `PC_21_APP_ALERT.bat`, the Redmi as the only responder, set with the PC's `app_light.txt`: the Core's key, 2 tip sources (pool members 1 and 2 on their own onion ports) and an anchor on the retarget block 8064. Every link over Tor.
+
+| | Light client (this run) | Plain RPC (`af254ad`, 27 Nov) |
+| --- | --- | --- |
+| Checks on the phone | **10 passed, 0 failed** | 9 passed |
+| Light client ready after start (headers from 8064) | 22.9 s | — |
+| Location read after accepting | **1.1 s** (the app: 2.9 s) | 0.6 s |
+| Light sign gate (proofs + 2 sources on tip and outputs) | PASS | — |
+| Pre-signed set | 1.42 s | 1.20 s |
+| Chain calls over the whole case | 53 (wallet, bond, the anchor's ancestors) | hundreds, block by block |
+| LightAsks to its Core | 173 | 0 |
+| Shares at the payout address | 900,000 sats | 900,000 sats |
+
+In this test the two tip sources run on the same PC as the Core: the run exercises the path, not their independence. Still to move off the message thread: two pauses of 24 to 32 s ("no message read"), one while posting the bond and one after the evidence; neither touched the response.
