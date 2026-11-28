@@ -49,6 +49,12 @@ fn main() {
         .collect();
     let no_accept = settings.get("BITAID_APP_NO_ACCEPT").is_some_and(|v| v == "1");
     let vote_delay: u64 = settings.get("BITAID_APP_VOTE_DELAY_S").and_then(|v| v.parse().ok()).unwrap_or(0);
+    // BITAID_APP_MOVE_TO="lat,lon" (tests): once on duty, the phone reports it has moved there (a fresh,
+    // accurate fix), as the service's location updates would
+    let move_to: Option<(f64, f64)> = settings.get("BITAID_APP_MOVE_TO").and_then(|v| {
+        let (a, b) = v.split_once(',')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    });
     let store = settings
         .get("BITAID_LINK_DIR")
         .cloned()
@@ -69,6 +75,12 @@ fn main() {
                 }
                 match e {
                     Event::ReadyToAlert { .. } => commands::send(Command::RaiseAlert { at: None }),
+                    Event::Listening { .. } => {
+                        if let Some((lat, lon)) = move_to {
+                            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                            commands::send(Command::Position { lat, lon, accuracy_m: 10.0, at });
+                        }
+                    }
                     Event::Alert { case, .. } => {
                         alerts += 1;
                         // BITAID_APP_NO_ACCEPT=1 (tests): the attendee never taps Accept, so only the
