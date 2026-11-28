@@ -173,6 +173,10 @@ enum WireEvent {
         node: String,
         text: String,
     },
+    Warning {
+        node: String,
+        text: String,
+    },
     Alert {
         node: String,
         case: String,
@@ -231,6 +235,7 @@ impl From<Event> for WireEvent {
                 failed,
             },
             Event::Fatal { node, text } => WireEvent::Fatal { node, text },
+            Event::Warning { node, text } => WireEvent::Warning { node, text },
             Event::Alert {
                 node,
                 case,
@@ -428,6 +433,20 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_startRole(
         if let Some(rpc) = settings.get("BITAID_RPC") {
             if !rpc.is_empty() && !is_onion_target(rpc) {
                 return to_jstring(&mut env, "RPC URL must be .onion");
+            }
+        }
+        if let Some(cp) = settings.get("BITAID_CORE_PEER") {
+            if !cp.is_empty() && !is_onion_target(cp) {
+                return to_jstring(&mut env, "Core peer must be .onion");
+            }
+        }
+        if let Some(ts) = settings.get("BITAID_TIP_SOURCES") {
+            for item in ts.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                if let Some((_, addr)) = item.split_once('@') {
+                    if !is_onion_target(addr.trim()) {
+                        return to_jstring(&mut env, "tip source address must be .onion");
+                    }
+                }
             }
         }
         let mut iter = args.iter();

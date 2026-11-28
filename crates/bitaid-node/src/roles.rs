@@ -115,11 +115,18 @@ fn chain_view(rpc: &Rpc) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBu
 
 /// Chain view backed by `CoreLight` (`BITAID_CHAIN=core`): returns cached credible/verified
 /// outputs immediately or fetches the outpoint in one `LightAsk` (fast alert check).
+/// When the Core is distrusted, falls back to the 2 independent `TipSource`s (credible-only;
+/// `sign_gate` remains permanently blocked).
 fn light_chain_view(
     cl: &crate::light_client::CoreLight,
 ) -> impl Fn(&OutPoint) -> Option<(u64, bitcoin::ScriptBuf)> + '_ {
     use crate::light_client::ChainSource;
     move |op| {
+        if cl.is_distrusted() {
+            return cl
+                .credible_utxo_from_tip_sources(op)
+                .map(|o| (o.value.to_sat(), o.script_pubkey));
+        }
         if let Some(t) = cl.utxo(op) {
             return Some((t.value.value.to_sat(), t.value.script_pubkey));
         }
@@ -2735,8 +2742,36 @@ fn settle(
         match set.complete(p, &label, sc) {
             Some(tx) => {
                 if broadcast {
-                    // another party may have broadcast it first: then it is already in the mempool or a block
-                    let known = |n: &Node| n.rpc.knows(&tx.compute_txid());
+                    // another party may have broadcast it first: then it is already in the mempool or a block.
+                    // Under `BITAID_CHAIN=core`, check via a single `LightAsk` (payout txid + pot outpoint)
+                    // instead of `n.rpc.knows` (which falls back to block-by-block `Rpc::sync_now`).
+                    let txid = tx.compute_txid();
+                    let pot_op = tx.input.first().map(|i| i.previous_output);
+                    let known = |n: &Node| {
+                        if let Some(cl) = &n.light {
+                            use crate::light_client::ChainSource;
+                            let ops: Vec<String> = pot_op.iter().map(|o| o.to_string()).collect();
+                            let now_ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as u32;
+                            let _ = cl.sync_once_at(
+                                vec![txid.to_string()],
+                                ops,
+                                None,
+                                0,
+                                Duration::from_secs(crate::light_client::REFRESH_TIMEOUT_SECS),
+                                now_ts,
+                            );
+                            cl.confirmations(&txid) > 0
+                                || pot_op.is_some_and(|op| {
+                                    cl.output_status(&op)
+                                        .is_some_and(|(unspent, _, _, _)| !unspent)
+                                })
+                        } else {
+                            n.rpc.knows(&txid)
+                        }
+                    };
                     let (ok, how) = if known(n) {
                         (true, "already broadcast by another party".to_string())
                     } else {

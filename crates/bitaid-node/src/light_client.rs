@@ -211,6 +211,9 @@ pub struct TipCheck {
     pub hash: BlockHash,
     /// For each requested outpoint, whether this independent source reports it unspent.
     pub unspent: HashMap<OutPoint, bool>,
+    /// Optional creating `TxOut`s parsed from the worker's `LightAnswer.txs` (used only for
+    /// credible-only alert fallback when the user's own Core is distrusted; never for signing).
+    pub txouts: HashMap<OutPoint, TxOut>,
 }
 
 /// Independent source of the current chain tip and output unspent status (§7.2 anti-omission
@@ -293,6 +296,7 @@ impl TipSource for LinkTipSource {
                 ask_hash: ah,
                 tip_height,
                 tip_hash,
+                txs,
                 outputs,
                 ..
             } = env.msg
@@ -301,16 +305,31 @@ impl TipSource for LinkTipSource {
                     continue;
                 }
                 let hash = BlockHash::from_str(&tip_hash).map_err(|e| e.to_string())?;
+                let mut decoded_txs: HashMap<Txid, Transaction> = HashMap::new();
+                for p in txs {
+                    if let Ok(tx) = Transaction::consensus_decode(&mut p.raw.as_slice()) {
+                        decoded_txs.insert(tx.compute_txid(), tx);
+                    }
+                }
                 let mut unspent = HashMap::new();
+                let mut txouts = HashMap::new();
                 for o in outputs {
                     if let Ok(op) = OutPoint::from_str(&o.outpoint) {
                         unspent.insert(op, o.unspent);
+                        if let Some(out) = decoded_txs
+                            .get(&op.txid)
+                            .and_then(|tx| tx.output.get(op.vout as usize))
+                            .cloned()
+                        {
+                            txouts.insert(op, out);
+                        }
                     }
                 }
                 return Ok(TipCheck {
                     height: tip_height,
                     hash,
                     unspent,
+                    txouts,
                 });
             }
         }
@@ -603,10 +622,49 @@ impl CoreLight {
     }
 
     fn mark_distrusted(st: &mut LightState, why: String) -> String {
-        crate::say!("FAIL: your Core gave a bad proof ({why}); signing is off");
+        let msg = format!("Your Core gave a bad proof ({why}); signing is off");
+        crate::say!("FAIL: {msg}");
+        crate::events::emit(crate::events::Event::Warning {
+            node: String::new(),
+            text: msg,
+        });
         st.distrusted = true;
         st.distrust_reason = Some(why.clone());
         why
+    }
+
+    /// Credible-only fallback when the user's own Core is distrusted: queries the independent
+    /// `TipSource`s for `op` and returns its `TxOut` only if at least `MIN_TIP_SOURCES` (2)
+    /// distinct sources agree it is unspent with identical `(value, script_pubkey)` and none
+    /// reports it spent. NEVER marks anything `Verified` and NEVER unlocks `sign_gate`.
+    pub fn credible_utxo_from_tip_sources(&self, op: &OutPoint) -> Option<TxOut> {
+        let sources = self.tip_sources.lock().unwrap();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut agreed: Vec<TxOut> = Vec::new();
+        for src in sources.iter() {
+            let pk = src.pubkey().trim().to_ascii_lowercase();
+            if pk.is_empty() || pk == self.core_pubkey || !seen.insert(pk) {
+                continue;
+            }
+            let Ok(chk) = src.check(&[*op]) else {
+                continue;
+            };
+            match chk.unspent.get(op) {
+                Some(&false) => return None,
+                Some(&true) => {
+                    if let Some(out) = chk.txouts.get(op) {
+                        agreed.push(out.clone());
+                    }
+                }
+                None => {}
+            }
+        }
+        if agreed.len() < MIN_TIP_SOURCES {
+            return None;
+        }
+        let first = &agreed[0];
+        let matches = agreed.iter().filter(|o| *o == first).count();
+        (matches >= MIN_TIP_SOURCES).then(|| first.clone())
     }
 
     /// Stage 1 (Credible): ingests a signed `LightAnswer` immediately into the cache as
@@ -1182,6 +1240,7 @@ impl CoreLight {
                     height,
                     hash,
                     unspent: HashMap::new(),
+                    txouts: HashMap::new(),
                 },
                 None => match src.check(outpoints) {
                     Ok(c) => {
@@ -1743,6 +1802,7 @@ mod tests {
                 height: g.0,
                 hash: g.1,
                 unspent,
+                txouts: HashMap::new(),
             })
         }
     }
@@ -2378,5 +2438,117 @@ mod tests {
             .unwrap();
         assert!(!light.is_distrusted());
         assert_eq!(light.verified_tip(), (3, h3_hash));
+    }
+
+    #[test]
+    fn distrusted_core_falls_back_to_tip_sources_credible_only_never_signs() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let w1_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let w2_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+        let w1_pk = hex::encode(w1_kp.x_only_public_key().0.serialize());
+        let w2_pk = hex::encode(w2_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let g = Gossip::start(None, &[], None).unwrap();
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        let spk = ScriptBuf::from_bytes(vec![0x51, 0x20, 0x99, 0xaa]);
+        let expected_out = TxOut {
+            value: Amount::from_sat(123_456),
+            script_pubkey: spk,
+        };
+        let fund_tx = make_tx(5, vec![expected_out.clone()]);
+        let op = OutPoint {
+            txid: fund_tx.compute_txid(),
+            vout: 0,
+        };
+
+        struct FallbackSrc {
+            pk: String,
+            op: OutPoint,
+            unspent: bool,
+            out: TxOut,
+        }
+        impl TipSource for FallbackSrc {
+            fn pubkey(&self) -> &str {
+                &self.pk
+            }
+            fn check(&self, _ops: &[OutPoint]) -> Result<TipCheck, String> {
+                let mut unspent = HashMap::new();
+                let mut txouts = HashMap::new();
+                unspent.insert(self.op, self.unspent);
+                txouts.insert(self.op, self.out.clone());
+                Ok(TipCheck {
+                    height: 1,
+                    hash: BlockHash::all_zeros(),
+                    unspent,
+                    txouts,
+                })
+            }
+        }
+
+        // Distrust the Core with a bad header.
+        let ask = Msg::LightAsk {
+            id: "dd".repeat(16),
+            locator: light.build_locator(),
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah = light_ask_hash(&ask);
+        let bad_ans = Msg::LightAnswer {
+            id: "dd".repeat(16),
+            ask_hash: ah.clone(),
+            tip_height: 1,
+            tip_hash: "00".repeat(32),
+            headers_from: 1,
+            headers: vec![vec![0u8; 80]], // invalid PoW/linkage
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            records_through: (1, u32::MAX),
+            covers: vec![],
+        };
+        let bad_raw = wire::sign(&core_kp, 1, bad_ans);
+        assert!(light
+            .apply_answer_at(&ah, &wire::verify(&bad_raw).unwrap(), bad_raw.len(), base_time + 60)
+            .is_err());
+        assert!(light.is_distrusted());
+
+        // With 2 agreeing independent TipSources, credible fallback works for alert checks,
+        // while sign_gate remains permanently blocked!
+        light.add_tip_source(Box::new(FallbackSrc {
+            pk: w1_pk,
+            op,
+            unspent: true,
+            out: expected_out.clone(),
+        }));
+        assert_eq!(light.credible_utxo_from_tip_sources(&op), None, "1 source is not enough");
+        light.add_tip_source(Box::new(FallbackSrc {
+            pk: w2_pk,
+            op,
+            unspent: true,
+            out: expected_out.clone(),
+        }));
+        assert_eq!(light.credible_utxo_from_tip_sources(&op), Some(expected_out));
+        assert!(
+            light.sign_gate(&[], &[op]).is_err(),
+            "distrusted Core must NEVER pass sign_gate even when credible fallback succeeds"
+        );
     }
 }
