@@ -23,6 +23,7 @@ use bitcoin::secp256k1::Keypair;
 use bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -155,7 +156,7 @@ impl ChainSource for Rpc {
     fn case_records(&self, case_id: &str, from_height: u32) -> Vec<Trusted<ProvenRecord>> {
         let mut out = Vec::new();
         let txs = crate::light_server::LightBackend::case_record_txs(self, case_id, from_height);
-        for (txid_s, h) in txs {
+        for (txid_s, h, _pos) in txs {
             let Some((raw, bh_s, _)) = self.raw_tx_and_block(&txid_s) else {
                 continue;
             };
@@ -263,6 +264,7 @@ impl TipSource for LinkTipSource {
             outpoints: outpoints.iter().map(|o| o.to_string()).collect(),
             case_id: None,
             from_height: 0,
+            from_index: 0,
         };
         let ask_hash = light_ask_hash(&ask);
         let raw = wire::sign(&self.keys, 0, ask);
@@ -339,6 +341,13 @@ struct LightState {
     txs: HashMap<Txid, CachedTx>,
     outputs: HashMap<OutPoint, CachedOutput>,
     records: HashMap<String, Vec<Trusted<ProvenRecord>>>,
+    /// `KIND_ANCHOR` roots -> `(earliest_height, block_hash, trust)`, fed from `LightRecord`s.
+    anchors: HashMap<String, (u32, BlockHash, Trust)>,
+    /// Inclusive `(height, tx_pos)` cursor up to which anchor records have been synced.
+    anchors_cursor: (u32, u32),
+    last_records_through: (u32, u32),
+    logged_legacy_core: bool,
+    last_anchor_sync: Option<Instant>,
     /// Set to true if any proof from the Core fails: stops trusting the Core and blocks signing.
     distrusted: bool,
     distrust_reason: Option<String>,
@@ -355,6 +364,9 @@ pub struct CoreLight {
     keys: Keypair,
     state: Mutex<LightState>,
     tip_sources: Mutex<Vec<Box<dyn TipSource>>>,
+    /// Serializes outbound `LightAsk` round-trips so two threads never race overlapping locators.
+    syncing: Mutex<()>,
+    asks: AtomicU64,
 }
 
 impl CoreLight {
@@ -369,12 +381,26 @@ impl CoreLight {
         link: LocalLink,
         keys: Keypair,
     ) -> Result<Self, String> {
+        Self::new_with_ancestors(network, anchor_height, anchor_header, &[], core_pubkey, link, keys)
+    }
+
+    /// Creates a `CoreLight` anchored at `(anchor_height, anchor_header)` along with up to 10
+    /// hash-linked ancestor headers immediately preceding `anchor_height` (for exact BIP113 MTP).
+    pub fn new_with_ancestors(
+        network: Network,
+        anchor_height: u32,
+        anchor_header: Header,
+        ancestors: &[Header],
+        core_pubkey: String,
+        link: LocalLink,
+        keys: Keypair,
+    ) -> Result<Self, String> {
         let core_pubkey = core_pubkey.trim().to_ascii_lowercase();
         if core_pubkey.len() != 64 || hex::decode(&core_pubkey).is_err() {
             return Err("CoreLight requires a valid 32-byte hex core_pubkey".into());
         }
-        let headers =
-            HeaderChain::new(network, anchor_height, anchor_header).map_err(|e| e.to_string())?;
+        let headers = HeaderChain::new_with_ancestors(network, anchor_height, anchor_header, ancestors)
+            .map_err(|e| e.to_string())?;
         let (h, bh) = headers.tip();
         Ok(Self {
             core_pubkey,
@@ -387,40 +413,138 @@ impl CoreLight {
                 txs: HashMap::new(),
                 outputs: HashMap::new(),
                 records: HashMap::new(),
+                anchors: HashMap::new(),
+                anchors_cursor: (anchor_height, u32::MAX),
+                last_records_through: (anchor_height, u32::MAX),
+                logged_legacy_core: false,
+                last_anchor_sync: None,
                 distrusted: false,
                 distrust_reason: None,
                 tip_checks: HashMap::new(),
             }),
             tip_sources: Mutex::new(Vec::new()),
+            syncing: Mutex::new(()),
+            asks: AtomicU64::new(0),
         })
+    }
+
+    pub fn ask_count(&self) -> u64 {
+        self.asks.load(Ordering::Relaxed)
     }
 
     pub fn set_core_link(&self, link_id: u64) {
         *self.core_link_id.lock().unwrap() = Some(link_id);
     }
 
-    /// Spawns a lightweight background header-sync thread that sends one locator-only `LightAsk`
-    /// every `interval` instead of reading whole blocks over RPC.
-    pub fn follow(light: &std::sync::Arc<CoreLight>, interval: Duration) {
+    /// Earliest block height anchoring `root_hex` (`KIND_ANCHOR` OP_RETURN), credible or verified.
+    pub fn anchored(&self, root_hex: &str) -> Option<u32> {
+        let st = self.state.lock().unwrap();
+        st.anchors.get(root_hex).map(|(h, _, _)| *h)
+    }
+
+    /// Advances an inclusive `(height, tx_pos)` cursor to the next record position to request.
+    fn next_cursor(cur: (u32, u32)) -> (u32, u32) {
+        if cur.1 == u32::MAX {
+            (cur.0.saturating_add(1), 0)
+        } else {
+            (cur.0, cur.1.saturating_add(1))
+        }
+    }
+
+    /// Pulls new headers and any new `KIND_ANCHOR` records since the last synced cursor,
+    /// paginating by the Core's signed `(height, tx_index)` `records_through` cursor so a block
+    /// stuffed with > `LIGHT_MAX_RECORDS` records never stalls pagination and an unprovable record
+    /// is retried rather than silently skipped. Throttled to at most once per `min_interval`.
+    pub fn sync_anchors(&self, min_interval: Duration) -> Result<(), String> {
+        self.sync_anchors_at(min_interval, Self::now_secs())
+    }
+
+    pub fn sync_anchors_at(&self, min_interval: Duration, now_secs: u32) -> Result<(), String> {
+        // When throttled (message thread), skip immediately if a LightAsk is already in flight
+        // so the message thread never blocks waiting on the network.
+        if !min_interval.is_zero() && self.syncing.try_lock().is_err() {
+            return Ok(());
+        }
+        let mut cursor = {
+            let mut st = self.state.lock().unwrap();
+            if st.distrusted {
+                return Err("Core is distrusted".into());
+            }
+            if !min_interval.is_zero()
+                && st
+                    .last_anchor_sync
+                    .is_some_and(|t| t.elapsed() < min_interval)
+            {
+                return Ok(());
+            }
+            st.last_anchor_sync = Some(Instant::now());
+            let next = Self::next_cursor(st.anchors_cursor);
+            (next.0.max(1), if next.0 == 0 { 0 } else { next.1 })
+        };
+        const MAX_PAGES: usize = 16;
+        for _ in 0..MAX_PAGES {
+            self.sync_once_cursor_at(
+                vec![],
+                vec![],
+                None,
+                cursor.0,
+                cursor.1,
+                Duration::from_secs(REFRESH_TIMEOUT_SECS),
+                now_secs,
+            )?;
+            let (through, tip) = {
+                let mut st = self.state.lock().unwrap();
+                let through = st.last_records_through;
+                let tip = st.headers.tip().0;
+                if through > st.anchors_cursor {
+                    st.anchors_cursor = through;
+                }
+                (through, tip)
+            };
+            if through >= (tip, u32::MAX) {
+                break;
+            }
+            let next = Self::next_cursor(through);
+            if next <= cursor {
+                // Unprovable record at `cursor` or legacy Core returning `(0, 0)`: stop this round
+                // and retry on the next round instead of spinning.
+                break;
+            }
+            cursor = next;
+        }
+        Ok(())
+    }
+
+    /// Spawns a lightweight background thread that sends one `LightAsk` (headers + `KIND_ANCHOR`
+    /// records) every `interval` instead of reading whole blocks over RPC, and logs periodic
+    /// `chain stats` every 60 s so even a stalled run reports its counts.
+    pub fn follow(
+        light: &std::sync::Arc<CoreLight>,
+        rpc: std::sync::Arc<Rpc>,
+        interval: Duration,
+    ) {
         let w = std::sync::Arc::downgrade(light);
         let _ = std::thread::Builder::new()
             .name("bitaid-light-follow".into())
-            .spawn(move || loop {
-                std::thread::sleep(interval);
-                let Some(cl) = w.upgrade() else {
-                    break;
-                };
-                if cl.is_distrusted() {
-                    break;
+            .spawn(move || {
+                let mut last_stats = Instant::now();
+                loop {
+                    std::thread::sleep(interval);
+                    let Some(cl) = w.upgrade() else {
+                        break;
+                    };
+                    if !cl.is_distrusted() {
+                        let _ = cl.sync_anchors(Duration::ZERO);
+                    }
+                    if last_stats.elapsed() >= Duration::from_secs(60) {
+                        last_stats = Instant::now();
+                        crate::say!(
+                            "chain stats: rpc_calls={}, light_asks={}",
+                            rpc.call_count(),
+                            cl.ask_count()
+                        );
+                    }
                 }
-                let _ = cl.sync_once_at(
-                    vec![],
-                    vec![],
-                    None,
-                    0,
-                    Duration::from_secs(REFRESH_TIMEOUT_SECS),
-                    Self::now_secs(),
-                );
             });
     }
 
@@ -479,7 +603,7 @@ impl CoreLight {
     }
 
     fn mark_distrusted(st: &mut LightState, why: String) -> String {
-        crate::say!("FAIL: Core light proof failed ({why}); distrusting Core");
+        crate::say!("FAIL: your Core gave a bad proof ({why}); signing is off");
         st.distrusted = true;
         st.distrust_reason = Some(why.clone());
         why
@@ -592,6 +716,24 @@ impl CoreLight {
             let Some(payload) = crate::ledger::record_of(&tx) else {
                 continue;
             };
+            if let Some(root_hex) = anchor_record_root(&payload) {
+                let keep = st
+                    .anchors
+                    .get(&root_hex)
+                    .is_some_and(|(h, _, t)| *t == Trust::Verified && *h <= r.height);
+                if !keep {
+                    st.anchors
+                        .entry(root_hex)
+                        .and_modify(|(h, cur_bh, t)| {
+                            if r.height < *h {
+                                *h = r.height;
+                                *cur_bh = bh;
+                                *t = Trust::Credible;
+                            }
+                        })
+                        .or_insert((r.height, bh, Trust::Credible));
+                }
+            }
             if let Some(cid) = record_case_id(&payload) {
                 let list = st.records.entry(cid).or_default();
                 if !list.iter().any(|x| x.value.txid == txid) {
@@ -630,6 +772,7 @@ impl CoreLight {
             txs,
             outputs,
             records,
+            records_through,
             ..
         } = &env.msg
         else {
@@ -647,7 +790,10 @@ impl CoreLight {
             ));
         }
 
-        // 1. Verify and apply headers (handles extensions and heavier reorgs).
+        // 1. Verify and apply headers (handles extensions, already-held overlaps, and reorgs).
+        // A valid fork with <= our cumulative work is a stale answer or reorg race, NOT a lie:
+        // ignore its headers and skip items on blocks we do not hold, without distrusting.
+        let mut ignored_lighter_fork = false;
         if !headers.is_empty() {
             let mut decoded = Vec::with_capacity(headers.len());
             for (i, raw) in headers.iter().enumerate() {
@@ -656,33 +802,60 @@ impl CoreLight {
                 })?;
                 decoded.push(h);
             }
-            if let Err(e) = st.headers.apply_fork_at(&decoded, Some(now_secs)) {
-                return Err(Self::mark_distrusted(&mut st, format!("header chain rejected: {e}")));
+            let prev_tip_hash = st.headers.tip().1;
+            match st.headers.apply_fork_at(&decoded, Some(now_secs)) {
+                Ok(_) => {
+                    let first_h = decoded[0].block_hash();
+                    let actual_from = st.headers.height_of(&first_h);
+                    if actual_from != Some(*headers_from) {
+                        return Err(Self::mark_distrusted(
+                            &mut st,
+                            format!(
+                                "headers_from mismatch: declared {headers_from}, actual {actual_from:?}"
+                            ),
+                        ));
+                    }
+                    let reorged = st.headers.height_of(&prev_tip_hash).is_none();
+                    // Evict any previously cached txs/outputs/records whose block was orphaned by a reorg.
+                    let LightState {
+                        headers: active,
+                        txs: cached_txs,
+                        outputs: cached_outputs,
+                        records: cached_records,
+                        anchors: cached_anchors,
+                        ..
+                    } = &mut *st;
+                    cached_txs.retain(|_, c| active.height_of(&c.block_hash).is_some());
+                    cached_outputs
+                        .retain(|_, c| c.block_hash.is_none_or(|bh| active.height_of(&bh).is_some()));
+                    for recs in cached_records.values_mut() {
+                        recs.retain(|r| active.height_of(&r.value.block_hash).is_some());
+                    }
+                    cached_anchors.retain(|_, (_, bh, _)| active.height_of(bh).is_some());
+                    if reorged && *headers_from <= st.anchors_cursor.0 {
+                        st.anchors_cursor = (headers_from.saturating_sub(1), u32::MAX);
+                    }
+                }
+                Err(bitaid_core::light::LightError::ForkNotHeavier) => {
+                    crate::say!(
+                        "light-client: ignoring stale/lighter fork from Core (tip_height={tip_height}, ours={})",
+                        st.headers.tip().0
+                    );
+                    ignored_lighter_fork = true;
+                }
+                Err(e) => {
+                    return Err(Self::mark_distrusted(
+                        &mut st,
+                        format!("header chain rejected: {e}"),
+                    ));
+                }
             }
-            let first_h = decoded[0].block_hash();
-            let actual_from = st.headers.height_of(&first_h);
-            if actual_from != Some(*headers_from) {
-                return Err(Self::mark_distrusted(
-                    &mut st,
-                    format!(
-                        "headers_from mismatch: declared {headers_from}, actual {actual_from:?}"
-                    ),
-                ));
-            }
-            // Evict any previously cached txs/outputs/records whose block was orphaned by a reorg.
-            let LightState {
-                headers: active,
-                txs: cached_txs,
-                outputs: cached_outputs,
-                records: cached_records,
-                ..
-            } = &mut *st;
-            cached_txs.retain(|_, c| active.height_of(&c.block_hash).is_some());
-            cached_outputs
-                .retain(|_, c| c.block_hash.is_none_or(|bh| active.height_of(&bh).is_some()));
-            for recs in cached_records.values_mut() {
-                recs.retain(|r| active.height_of(&r.value.block_hash).is_some());
-            }
+        }
+
+        if ignored_lighter_fork {
+            // Do not advance `last_records_through` or distrust Core on a stale lighter fork;
+            // caller will simply ask again on the next round.
+            return Ok(());
         }
 
         // If the Core's declared tip is at our verified height, its hash must match our chain.
@@ -749,10 +922,22 @@ impl CoreLight {
             );
         }
 
-        // 4. Verify every case record Merkle proof against the active HeaderChain.
+        // 4. Verify every case record and `KIND_ANCHOR` Merkle proof against the active HeaderChain.
         for r in records {
             let (rec, cid) = Self::verify_record_proof(&st.headers, r)
                 .map_err(|e| Self::mark_distrusted(&mut st, e))?;
+            if let Some(root_hex) = anchor_record_root(&rec.payload) {
+                st.anchors
+                    .entry(root_hex)
+                    .and_modify(|(h, bh, t)| {
+                        if rec.height <= *h || *t != Trust::Verified {
+                            *h = rec.height;
+                            *bh = rec.block_hash;
+                            *t = Trust::Verified;
+                        }
+                    })
+                    .or_insert((rec.height, rec.block_hash, Trust::Verified));
+            }
             if let Some(cid) = cid {
                 let list = st.records.entry(cid).or_default();
                 if let Some(slot) = list.iter_mut().find(|x| x.value.txid == rec.txid) {
@@ -762,6 +947,16 @@ impl CoreLight {
                 }
             }
         }
+        if *records_through == (0, 0) && *tip_height > 0 && !st.logged_legacy_core {
+            st.logged_legacy_core = true;
+            crate::say!("Core does not page records; update it");
+        }
+        let tip_h = st.headers.tip().0;
+        st.last_records_through = if records_through.0 > tip_h {
+            (tip_h, u32::MAX)
+        } else {
+            *records_through
+        };
 
         Ok(())
     }
@@ -859,6 +1054,21 @@ impl CoreLight {
         timeout: Duration,
         now_secs: u32,
     ) -> Result<(), String> {
+        self.sync_once_cursor_at(txids, outpoints, case_id, from_height, 0, timeout, now_secs)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_once_cursor_at(
+        &self,
+        txids: Vec<String>,
+        outpoints: Vec<String>,
+        case_id: Option<String>,
+        from_height: u32,
+        from_index: u32,
+        timeout: Duration,
+        now_secs: u32,
+    ) -> Result<(), String> {
+        let _sync_guard = self.syncing.lock().unwrap();
         let req_id = hex::encode(rand::random::<[u8; 16]>());
         let ask = Msg::LightAsk {
             id: req_id.clone(),
@@ -867,10 +1077,12 @@ impl CoreLight {
             outpoints,
             case_id,
             from_height,
+            from_index,
         };
         let ask_hash = light_ask_hash(&ask);
         let tip_h = self.height();
         let raw = wire::sign(&self.keys, tip_h, ask);
+        self.asks.fetch_add(1, Ordering::Relaxed);
         let link_id = match *self.core_link_id.lock().unwrap() {
             Some(id) => {
                 self.link.send_to(id, &raw)?;
@@ -1100,6 +1312,18 @@ impl CoreLight {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as u32
+    }
+}
+
+/// Extracts the 32-byte anchor root hex from a `KIND_ANCHOR` OP_RETURN payload.
+fn anchor_record_root(payload: &[u8]) -> Option<String> {
+    if payload.len() == 37
+        && &payload[..4] == crate::ledger::MAGIC
+        && payload[4] == crate::ledger::KIND_ANCHOR
+    {
+        Some(hex::encode(&payload[5..37]))
+    } else {
+        None
     }
 }
 
@@ -1359,6 +1583,7 @@ mod tests {
         blocks: Mutex<Vec<MemBlock>>,
         unspent: Mutex<HashMap<OutPoint, u32>>,
         case_records: Mutex<HashMap<String, Vec<(String, u32)>>>,
+        unprovable: Mutex<HashSet<String>>,
     }
 
     impl MemChain {
@@ -1373,6 +1598,7 @@ mod tests {
                 }]),
                 unspent: Mutex::new(HashMap::new()),
                 case_records: Mutex::new(HashMap::new()),
+                unprovable: Mutex::new(HashSet::new()),
             }
         }
 
@@ -1449,6 +1675,9 @@ mod tests {
             None
         }
         fn merkle_proof(&self, txid: &str, bh: &str) -> Option<Vec<u8>> {
+            if self.unprovable.lock().unwrap().contains(txid) {
+                return None;
+            }
             let b = self.blocks.lock().unwrap();
             let blk = b.iter().find(|x| x.hash.to_string() == bh)?;
             let txids: Vec<_> = blk.txs.iter().map(|t| t.compute_txid()).collect();
@@ -1462,7 +1691,7 @@ mod tests {
         fn output_state(&self, op: &OutPoint) -> Result<Option<u32>, String> {
             Ok(self.unspent.lock().unwrap().get(op).copied())
         }
-        fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32)> {
+        fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32, u32)> {
             self.case_records
                 .lock()
                 .unwrap()
@@ -1471,7 +1700,25 @@ mod tests {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|(_, h)| *h >= from_height)
+                .map(|(txid, h)| (txid, h, 0))
                 .collect()
+        }
+        fn anchor_record_txs(&self, from_height: u32) -> Vec<(String, u32, u32)> {
+            let b = self.blocks.lock().unwrap();
+            let mut out = Vec::new();
+            for blk in b.iter() {
+                if blk.height < from_height {
+                    continue;
+                }
+                for (pos, tx) in blk.txs.iter().enumerate() {
+                    if let Some(p) = crate::ledger::record_of(tx) {
+                        if anchor_record_root(&p).is_some() {
+                            out.push((tx.compute_txid().to_string(), blk.height, pos as u32));
+                        }
+                    }
+                }
+            }
+            out
         }
     }
 
@@ -1574,6 +1821,7 @@ mod tests {
             outpoints: vec![fund_op.to_string()],
             case_id: None,
             from_height: 0,
+            from_index: 0,
         };
         let ask_hash = light_ask_hash(&ask);
         let (_, signed) = answer_ask(&*chain, &core_kp, &ask).unwrap();
@@ -1721,6 +1969,7 @@ mod tests {
             outpoints: vec![],
             case_id: None,
             from_height: 0,
+            from_index: 0,
         };
         let ask_hash = light_ask_hash(&ask);
         let (mut ans, _) = answer_ask(&*chain, &core_kp, &ask).unwrap();
@@ -1752,5 +2001,382 @@ mod tests {
         fn assert_chain_source<T: ChainSource>() {}
         assert_chain_source::<Rpc>();
         assert_chain_source::<CoreLight>();
+    }
+
+    #[test]
+    fn anchor_records_verified_through_light_ask_and_evicted_on_reorg() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let chain = Arc::new(MemChain::new(genesis, gen_tx));
+
+        let root_bytes = [0x42u8; 32];
+        let root_hex = hex::encode(root_bytes);
+        let anc_payload = crate::ledger::anchor_record(&root_bytes);
+        let mut spk = vec![0x6a, anc_payload.len() as u8];
+        spk.extend_from_slice(&anc_payload);
+        let anc_tx = make_tx(
+            1,
+            vec![TxOut {
+                value: Amount::from_sat(0),
+                script_pubkey: ScriptBuf::from_bytes(spk),
+            }],
+        );
+        let (h1, _, _) = chain.push(vec![anc_tx], base_time + 60);
+        assert_eq!(h1, 1);
+
+        let core_g = Gossip::start(Some("127.0.0.1:0"), &[], None).unwrap();
+        let addr = core_g.listen_addr().unwrap().to_string();
+        let phone_g = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
+        assert_eq!(core_g.wait_links(1, Duration::from_secs(5)), 1);
+        assert_eq!(phone_g.wait_links(1, Duration::from_secs(5)), 1);
+
+        let core_link = core_g.local_link();
+        let chain_srv = chain.clone();
+        std::thread::spawn(move || loop {
+            if let Some((lid, env)) = core_link.recv_ask(Duration::from_secs(5)) {
+                if let Ok((_, signed)) = answer_ask(&*chain_srv, &core_kp, &env.msg) {
+                    let _ = core_link.send_to(lid, &signed);
+                }
+            }
+        });
+
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            phone_g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        light
+            .sync_once_at(vec![], vec![], None, 1, Duration::from_secs(5), base_time + 120)
+            .unwrap();
+        assert_eq!(light.anchored(&root_hex), Some(1));
+
+        // Reorg from height 1 without the anchor tx -> anchor must be evicted.
+        chain.reorg_from(
+            1,
+            vec![
+                (vec![make_tx(10, vec![])], base_time + 70),
+                (vec![make_tx(11, vec![])], base_time + 130),
+            ],
+        );
+        light
+            .sync_once_at(vec![], vec![], None, 1, Duration::from_secs(5), base_time + 200)
+            .unwrap();
+        assert_eq!(light.verified_tip().0, 2);
+        assert_eq!(light.anchored(&root_hex), None);
+    }
+
+    #[test]
+    fn anchor_pagination_does_not_drop_records_past_cap() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let chain = Arc::new(MemChain::new(genesis, gen_tx));
+
+        // Create 70 blocks (> LIGHT_MAX_RECORDS = 64), each with 1 KIND_ANCHOR record.
+        let mut expected: Vec<(String, u32)> = Vec::new();
+        for i in 1..=70u32 {
+            let mut root_bytes = [0u8; 32];
+            root_bytes[..4].copy_from_slice(&i.to_le_bytes());
+            let anc_payload = crate::ledger::anchor_record(&root_bytes);
+            let mut spk = vec![0x6a, anc_payload.len() as u8];
+            spk.extend_from_slice(&anc_payload);
+            let tx = make_tx(
+                i,
+                vec![TxOut {
+                    value: Amount::from_sat(0),
+                    script_pubkey: ScriptBuf::from_bytes(spk),
+                }],
+            );
+            let (h, _, _) = chain.push(vec![tx], base_time + i * 10);
+            expected.push((hex::encode(root_bytes), h));
+        }
+
+        let core_g = Gossip::start(Some("127.0.0.1:0"), &[], None).unwrap();
+        let addr = core_g.listen_addr().unwrap().to_string();
+        let phone_g = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
+        assert_eq!(core_g.wait_links(1, Duration::from_secs(5)), 1);
+        assert_eq!(phone_g.wait_links(1, Duration::from_secs(5)), 1);
+
+        let core_link = core_g.local_link();
+        let chain_srv = chain.clone();
+        std::thread::spawn(move || loop {
+            if let Some((lid, env)) = core_link.recv_ask(Duration::from_secs(5)) {
+                if let Ok((_, signed)) = answer_ask(&*chain_srv, &core_kp, &env.msg) {
+                    let _ = core_link.send_to(lid, &signed);
+                }
+            }
+        });
+
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            phone_g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        light
+            .sync_anchors_at(Duration::ZERO, base_time + 1000)
+            .unwrap();
+        assert!(
+            light.ask_count() >= 2,
+            "70 records (> 64 cap) must paginate across at least 2 LightAsks"
+        );
+        for (root_hex, h) in &expected {
+            assert_eq!(
+                light.anchored(root_hex),
+                Some(*h),
+                "anchor at height {h} must not be dropped by 64-record cap"
+            );
+        }
+    }
+
+    #[test]
+    fn single_block_70_plus_1_paginates_by_cursor_and_stops_on_unprovable_record() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let chain = Arc::new(MemChain::new(genesis, gen_tx));
+
+        let mk_anchor_tx = |id: u32| -> (Transaction, String) {
+            let mut root_bytes = [0u8; 32];
+            root_bytes[..4].copy_from_slice(&id.to_le_bytes());
+            let anc_payload = crate::ledger::anchor_record(&root_bytes);
+            let mut spk = vec![0x6a, anc_payload.len() as u8];
+            spk.extend_from_slice(&anc_payload);
+            let tx = make_tx(
+                id,
+                vec![TxOut {
+                    value: Amount::from_sat(0),
+                    script_pubkey: ScriptBuf::from_bytes(spk),
+                }],
+            );
+            (tx, hex::encode(root_bytes))
+        };
+
+        // Block 1 holds 70 anchor records (> LIGHT_MAX_RECORDS = 64) in ONE block; Block 2 holds 1.
+        let mut blk1_txs = Vec::new();
+        let mut expected: Vec<(String, u32)> = Vec::new();
+        let mut blocked_txid = String::new();
+        for i in 1..=70u32 {
+            let (tx, root_hex) = mk_anchor_tx(i);
+            if i == 67 {
+                blocked_txid = tx.compute_txid().to_string();
+            }
+            blk1_txs.push(tx);
+            expected.push((root_hex, 1));
+        }
+        let (h1, _, _) = chain.push(blk1_txs, base_time + 60);
+        assert_eq!(h1, 1);
+
+        let (tx71, root71) = mk_anchor_tx(71);
+        let (h2, _, _) = chain.push(vec![tx71], base_time + 120);
+        assert_eq!(h2, 2);
+        expected.push((root71, 2));
+
+        // Simulate a transient Core proof failure on record #67 (index 66 in block 1):
+        // Core must stop BEFORE #67 (records_through = (1, 65)), never sign past it!
+        chain.unprovable.lock().unwrap().insert(blocked_txid.clone());
+
+        let core_g = Gossip::start(Some("127.0.0.1:0"), &[], None).unwrap();
+        let addr = core_g.listen_addr().unwrap().to_string();
+        let phone_g = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
+        assert_eq!(core_g.wait_links(1, Duration::from_secs(5)), 1);
+        assert_eq!(phone_g.wait_links(1, Duration::from_secs(5)), 1);
+
+        let core_link = core_g.local_link();
+        let chain_srv = chain.clone();
+        std::thread::spawn(move || loop {
+            if let Some((lid, env)) = core_link.recv_ask(Duration::from_secs(5)) {
+                if let Ok((_, signed)) = answer_ask(&*chain_srv, &core_kp, &env.msg) {
+                    let _ = core_link.send_to(lid, &signed);
+                }
+            }
+        });
+
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            phone_g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        // Round 1: gets 1..=64 (page 1), then 65..=66 (page 2) and stops before unprovable #67.
+        light
+            .sync_anchors_at(Duration::ZERO, base_time + 200)
+            .unwrap();
+        assert!(light.ask_count() >= 2);
+        for (root_hex, h) in &expected[..66] {
+            assert_eq!(light.anchored(root_hex), Some(*h));
+        }
+        assert_eq!(
+            light.anchored(&expected[66].0),
+            None,
+            "unprovable record #67 must not be silently skipped"
+        );
+        assert_eq!(
+            light.anchored(&expected[70].0),
+            None,
+            "block 2 record #71 must wait until #67 is proved"
+        );
+
+        // Clear the transient hiccup -> Round 2 resumes right at (1, 66) and delivers #67..=#71!
+        chain.unprovable.lock().unwrap().remove(&blocked_txid);
+        light
+            .sync_anchors_at(Duration::ZERO, base_time + 260)
+            .unwrap();
+        for (root_hex, h) in &expected {
+            assert_eq!(
+                light.anchored(root_hex),
+                Some(*h),
+                "all 71 records (70 in block 1 + 1 in block 2) must arrive"
+            );
+        }
+    }
+
+    #[test]
+    fn overlapping_same_locator_answers_and_lighter_fork_do_not_distrust() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let chain = Arc::new(MemChain::new(genesis, gen_tx));
+        let (h1, _, h1_hash) = chain.push(vec![make_tx(1, vec![])], base_time + 60);
+        assert_eq!(h1, 1);
+
+        let g = Gossip::start(None, &[], None).unwrap();
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        // Sync to height 1 first.
+        let ask1 = Msg::LightAsk {
+            id: "01".repeat(16),
+            locator: light.build_locator(),
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah1 = light_ask_hash(&ask1);
+        let (_, s1) = answer_ask(&*chain, &core_kp, &ask1).unwrap();
+        light
+            .apply_answer_at(&ah1, &wire::verify(&s1).unwrap(), s1.len(), base_time + 100)
+            .unwrap();
+        assert_eq!(light.verified_tip(), (1, h1_hash));
+
+        // Two overlapping asks built on the SAME locator (at height 1):
+        // Core answers ask_a at height 2, then block 3 lands and Core answers ask_b at height 3.
+        let loc_at_1 = light.build_locator();
+        let (h2, _, _) = chain.push(vec![make_tx(2, vec![])], base_time + 120);
+        assert_eq!(h2, 2);
+        let ask_a = Msg::LightAsk {
+            id: "0a".repeat(16),
+            locator: loc_at_1.clone(),
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah_a = light_ask_hash(&ask_a);
+        let (_, sa) = answer_ask(&*chain, &core_kp, &ask_a).unwrap();
+
+        let (h3, _, h3_hash) = chain.push(vec![make_tx(3, vec![])], base_time + 180);
+        assert_eq!(h3, 3);
+        let ask_b = Msg::LightAsk {
+            id: "0b".repeat(16),
+            locator: loc_at_1,
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah_b = light_ask_hash(&ask_b);
+        let (_, sb) = answer_ask(&*chain, &core_kp, &ask_b).unwrap();
+
+        // Deliver in REVERSE order: height-3 answer arrives first, height-2 answer arrives second.
+        light
+            .apply_answer_at(&ah_b, &wire::verify(&sb).unwrap(), sb.len(), base_time + 240)
+            .unwrap();
+        assert_eq!(light.verified_tip(), (3, h3_hash));
+
+        // Second (older/overlapping) answer must be a clean no-op, NOT a distrust!
+        light
+            .apply_answer_at(&ah_a, &wire::verify(&sa).unwrap(), sa.len(), base_time + 240)
+            .unwrap();
+        assert!(!light.is_distrusted());
+        assert_eq!(light.verified_tip(), (3, h3_hash));
+
+        // A valid lighter fork (height 2 on a competing branch, less work than our height 3)
+        // must be ignored, NOT distrusted!
+        let (fork_h2, fork_h2_hash) = mine_block(h1_hash, &[make_tx(99, vec![])], base_time + 125);
+        let ask_c = Msg::LightAsk {
+            id: "0c".repeat(16),
+            locator: vec![h1_hash.to_string()],
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah_c = light_ask_hash(&ask_c);
+        let lighter_ans = Msg::LightAnswer {
+            id: "0c".repeat(16),
+            ask_hash: ah_c.clone(),
+            tip_height: 2,
+            tip_hash: fork_h2_hash.to_string(),
+            headers_from: 2,
+            headers: vec![encode_header(&fork_h2)],
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            records_through: (2, u32::MAX),
+            covers: vec![],
+        };
+        let sc = wire::sign(&core_kp, 2, lighter_ans);
+        light
+            .apply_answer_at(&ah_c, &wire::verify(&sc).unwrap(), sc.len(), base_time + 240)
+            .unwrap();
+        assert!(!light.is_distrusted());
+        assert_eq!(light.verified_tip(), (3, h3_hash));
     }
 }

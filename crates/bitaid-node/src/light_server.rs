@@ -123,8 +123,12 @@ pub trait LightBackend: Send + Sync {
     fn merkle_proof(&self, txid: &str, block_hash: &str) -> Option<Vec<u8>>;
     /// Returns `Ok(Some(confirmations))` if `op` is unspent, `Ok(None)` if spent or missing.
     fn output_state(&self, op: &OutPoint) -> Result<Option<u32>, String>;
-    /// Returns `(txid_hex, height)` for all on-chain Bitaid records of `case_id` at `height >= from_height`.
-    fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32)>;
+    /// Returns `(txid_hex, height, tx_pos)` for all on-chain Bitaid records of `case_id` at `height >= from_height`.
+    fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32, u32)>;
+    /// Returns `(txid_hex, height, tx_pos)` for all `KIND_ANCHOR` checkpoint/message anchor records at `height >= from_height`.
+    fn anchor_record_txs(&self, _from_height: u32) -> Vec<(String, u32, u32)> {
+        Vec::new()
+    }
 }
 
 impl LightBackend for Rpc {
@@ -160,25 +164,35 @@ impl LightBackend for Rpc {
         self.utxo_state(op).map(|opt| opt.map(|(_, conf)| conf))
     }
 
-    fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32)> {
+    fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32, u32)> {
         self.ledger(|l| {
             let mut out = Vec::new();
             for inc in &l.incidents {
                 if inc.case == case_id && inc.height >= from_height {
-                    out.push((inc.txid.to_string(), inc.height));
+                    out.push((inc.txid.to_string(), inc.height, inc.pos as u32));
                 }
             }
             for post in &l.postings {
                 if post.case == case_id && post.at.height >= from_height {
-                    out.push((post.at.op.txid.to_string(), post.at.height));
+                    out.push((post.at.op.txid.to_string(), post.at.height, post.at.pos as u32));
                 }
             }
             for tier in &l.tiers {
                 if tier.case == case_id && tier.height >= from_height {
-                    out.push((tier.txid.to_string(), tier.height));
+                    out.push((tier.txid.to_string(), tier.height, tier.pos as u32));
                 }
             }
             out
+        })
+    }
+
+    fn anchor_record_txs(&self, from_height: u32) -> Vec<(String, u32, u32)> {
+        self.ledger(|l| {
+            l.anchor_txs
+                .iter()
+                .filter(|(_, _, h, _)| *h >= from_height)
+                .map(|(_, txid, h, pos)| (txid.to_string(), *h, *pos))
+                .collect()
         })
     }
 }
@@ -203,6 +217,7 @@ pub fn answer_ask<B: LightBackend>(
         outpoints,
         case_id,
         from_height,
+        from_index,
     } = ask
     else {
         return Err("expected Msg::LightAsk".into());
@@ -319,18 +334,58 @@ pub fn answer_ask<B: LightBackend>(
         covers.push(LightCover::Output(op_str.clone()));
     }
 
-    // 4. Case on-chain records from `from_height`.
+    // 4. Case on-chain records and `KIND_ANCHOR` checkpoint records at `(h, pos) >= (from_height, from_index)`.
+    // Ordered deterministically by `(height, tx_pos)`. Stops at `LIGHT_MAX_RECORDS` OR at the
+    // first record that cannot be proved (never silently dropping an unprovable record while
+    // signing the range as complete). `records_through` is signed as the exact last complete cursor.
     let mut records: Vec<LightRecord> = Vec::new();
+    let mut records_through: (u32, u32) = (tip_height, u32::MAX);
+    let mut want_recs: Vec<(String, u32, u32)> = Vec::new();
     if let Some(cid) = case_id {
-        let mut recs = backend.case_record_txs(cid, *from_height);
-        recs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        recs.dedup_by(|a, b| a.0 == b.0);
-        for (txid, _h) in recs.into_iter().take(LIGHT_MAX_RECORDS) {
-            let Some((raw, block_hash, height)) = backend.raw_tx_and_block(&txid) else {
-                continue;
+        want_recs.extend(backend.case_record_txs(cid, *from_height));
+    }
+    if *from_height > 0 {
+        want_recs.extend(backend.anchor_record_txs(*from_height));
+    }
+    if !want_recs.is_empty() {
+        want_recs.retain(|(_, h, pos)| (*h, *pos) >= (*from_height, *from_index));
+        want_recs.sort_by(|a, b| (a.1, a.2, &a.0).cmp(&(b.1, b.2, &b.0)));
+        want_recs.dedup_by(|a, b| a.1 == b.1 && a.2 == b.2 && a.0 == b.0);
+        let mut last_included: Option<(u32, u32)> = None;
+        let mut stopped_early = false;
+        for (i, (txid, rec_h, rec_pos)) in want_recs.iter().enumerate() {
+            if i >= LIGHT_MAX_RECORDS {
+                stopped_early = true;
+                records_through = last_included.unwrap_or_else(|| {
+                    if *rec_pos > 0 {
+                        (*rec_h, *rec_pos - 1)
+                    } else {
+                        (rec_h.saturating_sub(1), u32::MAX)
+                    }
+                });
+                break;
+            }
+            let Some((raw, block_hash, height)) = backend.raw_tx_and_block(txid) else {
+                stopped_early = true;
+                records_through = last_included.unwrap_or_else(|| {
+                    if *rec_pos > 0 {
+                        (*rec_h, *rec_pos - 1)
+                    } else {
+                        (rec_h.saturating_sub(1), u32::MAX)
+                    }
+                });
+                break;
             };
-            let Some(merkle_path) = backend.merkle_proof(&txid, &block_hash) else {
-                continue;
+            let Some(merkle_path) = backend.merkle_proof(txid, &block_hash) else {
+                stopped_early = true;
+                records_through = last_included.unwrap_or_else(|| {
+                    if *rec_pos > 0 {
+                        (*rec_h, *rec_pos - 1)
+                    } else {
+                        (rec_h.saturating_sub(1), u32::MAX)
+                    }
+                });
+                break;
             };
             records.push(LightRecord {
                 txid: txid.clone(),
@@ -339,7 +394,11 @@ pub fn answer_ask<B: LightBackend>(
                 merkle_path,
                 record: raw,
             });
-            covers.push(LightCover::Record(txid));
+            covers.push(LightCover::Record(txid.clone()));
+            last_included = Some((*rec_h, *rec_pos));
+        }
+        if !stopped_early {
+            records_through = (tip_height, u32::MAX);
         }
     }
 
@@ -361,6 +420,7 @@ pub fn answer_ask<B: LightBackend>(
             txs: txs.clone(),
             outputs: outputs.clone(),
             records: records.clone(),
+            records_through,
             covers: covers.clone(),
         };
         let signed = wire::sign(keys, tip_height, ans.clone());
@@ -593,7 +653,7 @@ mod tests {
             Ok(self.unspent.lock().unwrap().get(op).copied())
         }
 
-        fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32)> {
+        fn case_record_txs(&self, case_id: &str, from_height: u32) -> Vec<(String, u32, u32)> {
             self.case_records
                 .lock()
                 .unwrap()
@@ -602,6 +662,7 @@ mod tests {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|(_, h)| *h >= from_height)
+                .map(|(txid, h)| (txid, h, 0))
                 .collect()
         }
     }
@@ -710,6 +771,7 @@ mod tests {
             outpoints: vec![fund_op.to_string()],
             case_id: Some(case_id.clone()),
             from_height: 1,
+            from_index: 0,
         };
         let ask_hash = light_ask_hash(&ask);
         let ask_raw = wire::sign(&phone_kp, 0, ask);
@@ -811,6 +873,7 @@ mod tests {
             outpoints: vec![],
             case_id: None,
             from_height: 0,
+            from_index: 0,
         };
         let ask2_raw = wire::sign(&phone_kp, 3, ask2);
         phone_link.send_outbound(&ask2_raw).unwrap();
@@ -876,6 +939,7 @@ mod tests {
             outpoints: vec![op.to_string()],
             case_id: Some(case_id),
             from_height: h0,
+            from_index: 0,
         };
         let (ans, signed) = answer_ask(&rpc, &core_kp, &ask).unwrap();
         assert_eq!(wire::verify(&signed).unwrap().msg, ans);
@@ -930,6 +994,7 @@ mod tests {
                 outpoints: vec![],
                 case_id: None,
                 from_height: 0,
+                from_index: 0,
             };
             wire::verify(&wire::sign(kp, 1, ask)).unwrap()
         };

@@ -27,6 +27,8 @@ pub const MAX_FUTURE_BLOCK_TIME: u32 = 7_200;
 pub enum LightError {
     /// Anchor height must lie on a retarget boundary (`height % 2016 == 0`) on networks that retarget.
     InvalidAnchorHeight { height: u32 },
+    /// Ancestor headers supplied with an anchor failed hash-linkage or PoW validation.
+    InvalidAncestors(String),
     /// Header's `prev_blockhash` does not match the expected parent hash.
     BrokenLink { height: u32 },
     /// Header hash does not meet its declared target, or target exceeds network maximum.
@@ -35,6 +37,8 @@ pub enum LightError {
     MissingRetargetWindow { height: u32 },
     /// Header `bits` does not match the expected difficulty for this height and network.
     InvalidBits { height: u32, expected: u32, got: u32 },
+    /// Fewer than 11 ancestor headers were available for the BIP113 MTP check at `height >= 11`.
+    MissingMtpWindow { height: u32, have: usize },
     /// Header timestamp is not strictly greater than the median time of the prior 11 blocks.
     TimestampTooOld { height: u32, time: u32, mtp: u32 },
     /// Header timestamp is more than 2 hours ahead of the node's current time.
@@ -47,8 +51,10 @@ pub enum LightError {
     /// Partial Merkle tree is malformed, its root does not match the header's `merkle_root`,
     /// or the transaction's txid is not among the matched leaves.
     InvalidMerkleProof(String),
-    /// A reorg fork has less than or equal cumulative work compared to the active chain,
-    /// or its ancestor is unknown.
+    /// A valid fork has less than or equal cumulative work compared to the active chain
+    /// (stale answer or reorg race — not a proof of dishonesty).
+    ForkNotHeavier,
+    /// A reorg fork is empty or its ancestor is unknown.
     ForkRejected(String),
 }
 
@@ -58,6 +64,7 @@ impl fmt::Display for LightError {
             LightError::InvalidAnchorHeight { height } => {
                 write!(f, "anchor height {height} is not on a 2016-block retarget boundary")
             }
+            LightError::InvalidAncestors(s) => write!(f, "invalid anchor ancestors: {s}"),
             LightError::BrokenLink { height } => write!(f, "broken header link at height {height}"),
             LightError::InsufficientWork { height } => {
                 write!(f, "insufficient proof of work at height {height}")
@@ -73,6 +80,12 @@ impl fmt::Display for LightError {
                 f,
                 "invalid bits at height {height}: expected {expected:#x}, got {got:#x}"
             ),
+            LightError::MissingMtpWindow { height, have } => {
+                write!(
+                    f,
+                    "missing 11-block MTP window at height {height} (only {have} headers)"
+                )
+            }
             LightError::TimestampTooOld { height, time, mtp } => {
                 write!(f, "timestamp {time} <= MTP {mtp} at height {height}")
             }
@@ -87,6 +100,9 @@ impl fmt::Display for LightError {
             LightError::HeaderNotInChain(h) => write!(f, "header {h} is not in the verified chain"),
             LightError::InvalidTransaction(s) => write!(f, "invalid transaction: {s}"),
             LightError::InvalidMerkleProof(s) => write!(f, "invalid Merkle proof: {s}"),
+            LightError::ForkNotHeavier => {
+                write!(f, "fork does not have strictly more work")
+            }
             LightError::ForkRejected(s) => write!(f, "fork rejected: {s}"),
         }
     }
@@ -144,6 +160,15 @@ pub fn verify_next_header(
     }
     let hash = check_header_pow(next, height, network)?;
 
+    // Fail closed when a full 11-block BIP113 MTP window exists on chain (`height >= 11`)
+    // but fewer than 11 ancestor headers were supplied.
+    let need = (height as usize).min(11);
+    if recent.len() < need {
+        return Err(LightError::MissingMtpWindow {
+            height,
+            have: recent.len(),
+        });
+    }
     if let Some(mtp) = median_time_past(recent) {
         if next.time <= mtp {
             return Err(LightError::TimestampTooOld {
@@ -251,6 +276,10 @@ pub fn verify_txid_merkle(
 pub struct HeaderChain {
     network: Network,
     start_height: u32,
+    /// Up to 10 hash-linked ancestor headers immediately preceding `start_height` (oldest-first),
+    /// cryptographically bound to `anchor.prev_blockhash` so the 11-block BIP113 MTP window is
+    /// exact from `start_height + 1`.
+    ancestors: Vec<Header>,
     headers: Vec<Header>,
     hashes: Vec<BlockHash>,
     by_hash: HashMap<BlockHash, u32>,
@@ -258,9 +287,22 @@ pub struct HeaderChain {
 }
 
 impl HeaderChain {
-    /// Creates a new chain anchored at `anchor` at `start_height` after verifying its PoW and
-    /// retarget-boundary alignment.
+    /// Creates a new chain anchored at `anchor` at `start_height` with no prior ancestors.
+    /// For `start_height >= 11`, prefer `new_with_ancestors` with the 10 hash-linked ancestors
+    /// preceding `anchor`, otherwise `verify_next_header` fails closed with `MissingMtpWindow`.
     pub fn new(network: Network, start_height: u32, anchor: Header) -> Result<Self, LightError> {
+        Self::new_with_ancestors(network, start_height, anchor, &[])
+    }
+
+    /// Creates a new chain anchored at `anchor` at `start_height` along with its immediately
+    /// preceding `ancestors` (oldest-first, up to 10 headers). Every ancestor is verified to
+    /// hash-link forward into `anchor.prev_blockhash`, so a server cannot choose fake timestamps.
+    pub fn new_with_ancestors(
+        network: Network,
+        start_height: u32,
+        anchor: Header,
+        ancestors: &[Header],
+    ) -> Result<Self, LightError> {
         let params = Params::from(network);
         if !params.no_pow_retargeting && start_height % DIFFICULTY_ADJUSTMENT_INTERVAL != 0 {
             return Err(LightError::InvalidAnchorHeight {
@@ -268,17 +310,57 @@ impl HeaderChain {
             });
         }
         let hash = check_header_pow(&anchor, start_height, network)?;
+        if ancestors.len() > start_height as usize {
+            return Err(LightError::InvalidAncestors(format!(
+                "more ancestors ({}) than start_height ({start_height})",
+                ancestors.len()
+            )));
+        }
+        // Keep at most the last 10 ancestors, and verify exact hash-linkage into `anchor`.
+        let keep = if ancestors.len() > 10 {
+            &ancestors[ancestors.len() - 10..]
+        } else {
+            ancestors
+        };
+        if !keep.is_empty() {
+            let mut expected_hash = anchor.prev_blockhash;
+            for (i, hdr) in keep.iter().enumerate().rev() {
+                if hdr.block_hash() != expected_hash {
+                    return Err(LightError::InvalidAncestors(format!(
+                        "ancestor {i} hash {} does not match expected prev_blockhash {expected_hash}",
+                        hdr.block_hash()
+                    )));
+                }
+                expected_hash = hdr.prev_blockhash;
+            }
+        }
         let work = anchor.work();
         let mut by_hash = HashMap::new();
         by_hash.insert(hash, start_height);
         Ok(Self {
             network,
             start_height,
+            ancestors: keep.to_vec(),
             headers: vec![anchor],
             hashes: vec![hash],
             by_hash,
             cum_work: vec![work],
         })
+    }
+
+    /// Returns up to the last 11 headers ending at the current tip, combining `ancestors` and
+    /// `headers` when near `start_height`.
+    fn recent_window(&self) -> Vec<Header> {
+        let have = self.headers.len();
+        if have >= 11 {
+            return self.headers[have - 11..].to_vec();
+        }
+        let need_from_anc = (11 - have).min(self.ancestors.len());
+        let anc_start = self.ancestors.len() - need_from_anc;
+        let mut out = Vec::with_capacity(need_from_anc + have);
+        out.extend_from_slice(&self.ancestors[anc_start..]);
+        out.extend_from_slice(&self.headers);
+        out
     }
 
     pub fn network(&self) -> Network {
@@ -334,12 +416,13 @@ impl HeaderChain {
         } else {
             None
         };
+        let recent = self.recent_window();
         let hash = verify_next_header(
             prev,
             prev_height,
             &header,
             self.network,
-            &self.headers,
+            &recent,
             window_start,
             now,
         )?;
@@ -386,9 +469,23 @@ impl HeaderChain {
         fork: &[Header],
         now: Option<u32>,
     ) -> Result<(u32, BlockHash), LightError> {
-        let first = fork
-            .first()
-            .ok_or_else(|| LightError::ForkRejected("empty fork".into()))?;
+        if fork.is_empty() {
+            return Err(LightError::ForkRejected("empty fork".into()));
+        }
+        // Skip leading headers already present in our verified chain (e.g. an overlapping or
+        // slightly stale answer built from an older locator). If every header is already held,
+        // this is a clean no-op.
+        let mut remaining = fork;
+        while let Some(first) = remaining.first() {
+            if self.height_of(&first.block_hash()).is_some() {
+                remaining = &remaining[1..];
+            } else {
+                break;
+            }
+        }
+        let Some(first) = remaining.first() else {
+            return Ok(self.tip());
+        };
         let ancestor_height = self
             .height_of(&first.prev_blockhash)
             .ok_or_else(|| LightError::ForkRejected("unknown fork ancestor".into()))?;
@@ -396,6 +493,7 @@ impl HeaderChain {
         let mut candidate = HeaderChain {
             network: self.network,
             start_height: self.start_height,
+            ancestors: self.ancestors.clone(),
             headers: self.headers[..keep_len].to_vec(),
             hashes: self.hashes[..keep_len].to_vec(),
             by_hash: self.hashes[..keep_len]
@@ -405,13 +503,11 @@ impl HeaderChain {
                 .collect(),
             cum_work: self.cum_work[..keep_len].to_vec(),
         };
-        for h in fork {
+        for h in remaining {
             candidate.append_at(*h, now)?;
         }
         if candidate.total_work() <= self.total_work() {
-            return Err(LightError::ForkRejected(
-                "fork does not have strictly more work".into(),
-            ));
+            return Err(LightError::ForkNotHeavier);
         }
         *self = candidate;
         Ok(self.tip())
@@ -643,9 +739,9 @@ mod tests {
         let h1a = mine_header(chain.tip().1, root, 1_700_000_010, REGTEST_BITS);
         chain.append(h1a).unwrap();
 
-        // Equal-work competing fork of length 1 is rejected
+        // Equal-work competing fork of length 1 is rejected as ForkNotHeavier
         let h1b = mine_header(h0.block_hash(), root, 1_700_000_011, REGTEST_BITS);
-        assert!(matches!(chain.apply_fork(&[h1b]), Err(LightError::ForkRejected(_))));
+        assert!(matches!(chain.apply_fork(&[h1b]), Err(LightError::ForkNotHeavier)));
         assert_eq!(chain.tip(), (1, h1a.block_hash()));
 
         // Strictly longer (more work) fork succeeds
@@ -699,5 +795,57 @@ mod tests {
         // MissingRetargetWindow by checking that `HeaderChain::new` enforces boundary alignment
         // AND verify_next_header rejects `window_start = None` whenever PoW passes.
         assert!(check_header_pow(&gen, 0, Network::Bitcoin).is_ok());
+    }
+
+    #[test]
+    fn mtp_anchor_with_ten_ancestors_passes_tie_and_fails_at_mtp_or_missing_window() {
+        let root = TxMerkleNode::all_zeros();
+        let mut chain_hdrs = Vec::new();
+        let mut prev = BlockHash::all_zeros();
+        let t0 = 1_700_000_000u32;
+        // Mine 15 blocks (heights 0..=14) with 10 s spacing; anchor at height 14 (time = t0 + 140).
+        for i in 0..=14u32 {
+            let h = mine_header(prev, root, t0 + i * 10, REGTEST_BITS);
+            prev = h.block_hash();
+            chain_hdrs.push(h);
+        }
+        let anchor = chain_hdrs[14];
+        let ancestors = &chain_hdrs[4..14]; // 10 ancestors: heights 4..=13, times t0+40..=t0+130
+        // True 11-block MTP at height 14 is median of [40,50,60,70,80,90,100,110,120,130,140] = t0 + 90.
+        let true_mtp = t0 + 90;
+
+        // 1. Anchor without ancestors at height >= 11 must fail closed (MissingMtpWindow).
+        let mut no_anc = HeaderChain::new(Network::Regtest, 14, anchor).unwrap();
+        let child_tie = mine_header(anchor.block_hash(), root, anchor.time, REGTEST_BITS);
+        assert!(matches!(
+            no_anc.append(child_tie),
+            Err(LightError::MissingMtpWindow { height: 15, have: 1 })
+        ));
+
+        // 2. Tampered ancestor hash-link must be rejected at construction.
+        let mut bad_anc = ancestors.to_vec();
+        bad_anc[5] = mine_header(BlockHash::all_zeros(), root, t0, REGTEST_BITS);
+        assert!(matches!(
+            HeaderChain::new_with_ancestors(Network::Regtest, 14, anchor, &bad_anc),
+            Err(LightError::InvalidAncestors(_))
+        ));
+
+        // 3. With 10 hash-linked ancestors: child whose time ties anchor.time (> true_mtp) PASSES!
+        let mut with_anc =
+            HeaderChain::new_with_ancestors(Network::Regtest, 14, anchor, ancestors).unwrap();
+        assert!(with_anc.append(child_tie).is_ok());
+
+        // 4. Child at or below true 11-block MTP MUST FAIL.
+        let mut with_anc2 =
+            HeaderChain::new_with_ancestors(Network::Regtest, 14, anchor, ancestors).unwrap();
+        let child_old = mine_header(anchor.block_hash(), root, true_mtp, REGTEST_BITS);
+        assert!(matches!(
+            with_anc2.append(child_old),
+            Err(LightError::TimestampTooOld {
+                height: 15,
+                time,
+                mtp,
+            }) if time == true_mtp && mtp == true_mtp
+        ));
     }
 }

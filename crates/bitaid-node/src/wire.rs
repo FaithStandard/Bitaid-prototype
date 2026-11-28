@@ -565,6 +565,10 @@ pub enum Msg {
         outpoints: Vec<String>,
         case_id: Option<Hex32>,
         from_height: u32,
+        /// 0-based transaction index within `from_height` to resume record pagination from
+        /// (together `(from_height, from_index)` forms a non-gameable intra-block cursor).
+        #[serde(default)]
+        from_index: u32,
     },
     /// Signed answer to `LightAsk` (§7.2): carries new 80-byte headers, Merkle-proven transactions,
     /// output status, and case records. `ask_hash` binds the answer to the exact question, and
@@ -582,6 +586,11 @@ pub enum Msg {
         txs: Vec<LightTxProof>,
         outputs: Vec<LightOutput>,
         records: Vec<LightRecord>,
+        /// Cursor `(height, tx_index)` up to and including which `records` is complete (signed by
+        /// the Core). `(tip_height, u32::MAX)` means complete through `tip_height`; anything lower
+        /// tells the client the exact next `(height, index)` to resume from.
+        #[serde(default)]
+        records_through: (u32, u32),
         covers: Vec<LightCover>,
     },
 }
@@ -1050,6 +1059,7 @@ mod tests {
             outpoints: vec![format!("{}:0", "bb".repeat(32))],
             case_id: Some("cc".repeat(32)),
             from_height: 90,
+            from_index: 0,
         };
         let ask_hash = light_ask_hash(&ask);
         let ask_bytes = sign(&phone, 100, ask.clone());
@@ -1088,6 +1098,7 @@ mod tests {
                 merkle_path: vec![8, 9],
                 record: vec![10, 11, 12],
             }],
+            records_through: (102, u32::MAX),
             covers: vec![
                 LightCover::Tx("aa".repeat(32)),
                 LightCover::Output(format!("{}:0", "bb".repeat(32))),
@@ -1117,6 +1128,7 @@ mod tests {
             txs: vec![],
             outputs: vec![],
             records: vec![],
+            records_through: (102, u32::MAX),
             covers: vec![],
         };
         assert!(bad_hdr_len.check_light_bounds(100).is_err());
@@ -1131,6 +1143,7 @@ mod tests {
             txs: vec![],
             outputs: vec![],
             records: vec![],
+            records_through: (3000, u32::MAX),
             covers: vec![],
         };
         assert!(too_many_hdrs.check_light_bounds(200_000).is_err());
@@ -1152,6 +1165,7 @@ mod tests {
             txs: vec![],
             outputs: vec![],
             records: vec![],
+            records_through: (102, u32::MAX),
             covers: vec![],
         };
         let empty_bytes = sign(&core, 102, empty.clone());

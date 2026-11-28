@@ -1504,6 +1504,7 @@ mod tests {
             outpoints: vec![],
             case_id: None,
             from_height: 0,
+            from_index: 0,
         };
         let ask_raw = crate::wire::sign(&phone_kp, 10, ask.clone());
         let phone_local = phone.local_link();
@@ -1526,6 +1527,7 @@ mod tests {
             txs: vec![],
             outputs: vec![],
             records: vec![],
+            records_through: (10, u32::MAX),
             covers: vec![],
         };
         let ans_raw = crate::wire::sign(&core_kp, 10, ans.clone());

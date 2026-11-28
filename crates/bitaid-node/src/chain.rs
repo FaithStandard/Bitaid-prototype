@@ -6,6 +6,7 @@ use bitcoin::{Address, Amount, Network, OutPoint, ScriptBuf, Transaction, TxIn, 
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 pub struct Rpc {
@@ -27,6 +28,8 @@ pub struct Rpc {
     syncing: Mutex<()>,
     /// transactions this node has broadcast and not yet seen confirmed: `mine` waits for them
     sent: Mutex<Vec<Txid>>,
+    /// total JSON-RPC calls issued (for light-client measurement in Step 6)
+    calls: AtomicU64,
 }
 
 impl Rpc {
@@ -50,7 +53,13 @@ impl Rpc {
             synced: Mutex::new(None),
             syncing: Mutex::new(()),
             sent: Mutex::new(vec![]),
+            calls: AtomicU64::new(0),
         }
+    }
+
+    /// Total JSON-RPC requests issued (including retries of failed calls).
+    pub fn call_count(&self) -> u64 {
+        self.calls.load(Ordering::Relaxed)
     }
 
     pub fn from_env() -> Rpc {
@@ -61,6 +70,7 @@ impl Rpc {
     }
 
     fn post(&self, wallet: bool, method: &str, params: Value) -> Result<Value, String> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
         let url = if wallet {
             format!("{}/wallet/{}", self.base, self.wallet)
         } else {
@@ -511,7 +521,8 @@ impl Rpc {
     /// once: on a phone each read crosses Tor, and a refresh on the message thread held a location
     /// back 87 s behind one tick (third app run, 2026-11-27).
     pub fn sync(&self) {
-        if crate::events::attached() {
+        if crate::events::attached() && crate::config::var("BITAID_CHAIN").as_deref() != Ok("core")
+        {
             return;
         }
         self.sync_now();
