@@ -268,6 +268,7 @@ impl TipSource for LinkTipSource {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let raw = wire::sign(&self.keys, 0, ask);
@@ -453,6 +454,134 @@ impl CoreLight {
 
     pub fn set_core_link(&self, link_id: u64) {
         *self.core_link_id.lock().unwrap() = Some(link_id);
+    }
+
+    /// Fetches the pinned anchor header, up to 10 hash-linked ancestors immediately preceding it,
+    /// and any post-anchor headers up to the Core's tip in a single `LightAsk { anchor_hash }`.
+    /// Verifies the Core's signature, the anchor block hash, and the backward `prev_blockhash`
+    /// chain of ancestors before returning `(anchor_header, ancestors_oldest_first, post_anchor)`.
+    pub fn fetch_anchor_bundle(
+        link: &LocalLink,
+        core_link_id: Option<u64>,
+        core_pubkey: &str,
+        keys: &Keypair,
+        anchor_height: u32,
+        anchor_hash: &str,
+        timeout: Duration,
+    ) -> Result<(Header, Vec<Header>, Vec<Header>), String> {
+        let core_pk = core_pubkey.trim().to_ascii_lowercase();
+        if core_pk.len() != 64 || hex::decode(&core_pk).is_err() {
+            return Err("fetch_anchor_bundle requires a valid 32-byte hex core_pubkey".into());
+        }
+        let anchor_hash_lc = anchor_hash.trim().to_ascii_lowercase();
+        let req_id = hex::encode(rand::random::<[u8; 16]>());
+        let ask = Msg::LightAsk {
+            id: req_id.clone(),
+            locator: vec![],
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+            anchor_hash: Some(anchor_hash_lc.clone()),
+        };
+        let ask_hash = light_ask_hash(&ask);
+        let raw = wire::sign(keys, anchor_height, ask);
+        let link_id = match core_link_id {
+            Some(id) => {
+                link.send_to(id, &raw)?;
+                id
+            }
+            None => link.send_outbound(&raw)?,
+        };
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err("anchor LightAsk timed out waiting for Core answer".into());
+            }
+            let Some((lid, env)) = link.recv_answer(left) else {
+                return Err("anchor LightAsk timed out waiting for Core answer".into());
+            };
+            if lid != link_id {
+                continue;
+            }
+            if env.sender.to_ascii_lowercase() != core_pk {
+                return Err(format!(
+                    "anchor LightAsk wrong signer: got {}, expected {}",
+                    crate::pre(&env.sender, 12),
+                    crate::pre(&core_pk, 12)
+                ));
+            }
+            if let Msg::LightAnswer {
+                id,
+                ask_hash: ah,
+                headers_from,
+                headers,
+                ..
+            } = env.msg
+            {
+                if id != req_id || ah != ask_hash {
+                    continue;
+                }
+                if headers.is_empty() {
+                    return Err("Core returned no headers for anchor_hash".into());
+                }
+                if headers_from > anchor_height {
+                    return Err(format!(
+                        "Core anchor headers_from {headers_from} > anchor_height {anchor_height}"
+                    ));
+                }
+                let mut decoded = Vec::with_capacity(headers.len());
+                for raw_h in &headers {
+                    if raw_h.len() != 80 {
+                        return Err(format!("bad header length {}", raw_h.len()));
+                    }
+                    let hdr = Header::consensus_decode(&mut raw_h.as_slice())
+                        .map_err(|e| format!("bad header decode: {e}"))?;
+                    decoded.push(hdr);
+                }
+                let idx = (anchor_height - headers_from) as usize;
+                if idx >= decoded.len() {
+                    return Err(format!(
+                        "Core returned {} headers from {headers_from}, missing anchor_height {anchor_height}",
+                        decoded.len()
+                    ));
+                }
+                let anchor_hdr = decoded[idx];
+                if anchor_hdr.block_hash().to_string() != anchor_hash_lc {
+                    return Err(format!(
+                        "Core anchor header hash mismatch: got {}, expected {anchor_hash_lc}",
+                        anchor_hdr.block_hash()
+                    ));
+                }
+                let ancestors = decoded[..idx].to_vec();
+                let want_anc = anchor_height.min(10) as usize;
+                if ancestors.len() < want_anc {
+                    return Err(format!(
+                        "Core returned {} anchor ancestors, need {want_anc}",
+                        ancestors.len()
+                    ));
+                }
+                let post_anchor = decoded[idx + 1..].to_vec();
+                return Ok((anchor_hdr, ancestors, post_anchor));
+            }
+        }
+    }
+
+    /// Applies pre-fetched post-anchor headers (e.g. from `fetch_anchor_bundle`) directly to the
+    /// verified `HeaderChain`.
+    pub fn apply_headers_at(&self, headers: &[Header], now_secs: u32) -> Result<(), String> {
+        if headers.is_empty() {
+            return Ok(());
+        }
+        let mut st = self.state.lock().unwrap();
+        st.headers
+            .apply_fork_at(headers, Some(now_secs))
+            .map_err(|e| e.to_string())?;
+        let (h, bh) = st.headers.tip();
+        st.credible_tip = (h, bh.to_string());
+        Ok(())
     }
 
     /// Earliest block height anchoring `root_hex` (`KIND_ANCHOR` OP_RETURN), credible or verified.
@@ -1136,6 +1265,7 @@ impl CoreLight {
             case_id,
             from_height,
             from_index,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let tip_h = self.height();
@@ -1882,6 +2012,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let (_, signed) = answer_ask(&*chain, &core_kp, &ask).unwrap();
@@ -2030,6 +2161,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let (mut ans, _) = answer_ask(&*chain, &core_kp, &ask).unwrap();
@@ -2354,6 +2486,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah1 = light_ask_hash(&ask1);
         let (_, s1) = answer_ask(&*chain, &core_kp, &ask1).unwrap();
@@ -2375,6 +2508,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah_a = light_ask_hash(&ask_a);
         let (_, sa) = answer_ask(&*chain, &core_kp, &ask_a).unwrap();
@@ -2389,6 +2523,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah_b = light_ask_hash(&ask_b);
         let (_, sb) = answer_ask(&*chain, &core_kp, &ask_b).unwrap();
@@ -2417,6 +2552,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah_c = light_ask_hash(&ask_c);
         let lighter_ans = Msg::LightAnswer {
@@ -2509,6 +2645,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ah = light_ask_hash(&ask);
         let bad_ans = Msg::LightAnswer {

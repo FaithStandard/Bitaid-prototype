@@ -1232,7 +1232,7 @@ impl Node {
         }
     }
 
-    fn pull(&mut self, timeout: Duration) -> bool {
+    pub(crate) fn pull(&mut self, timeout: Duration) -> bool {
         let gap = self.last_pull.elapsed();
         if gap >= Duration::from_secs(10) {
             crate::say!("[{}] no message read for {:.1} s: the role was busy elsewhere", self.name, gap.as_secs_f64());

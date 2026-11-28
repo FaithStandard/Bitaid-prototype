@@ -569,6 +569,11 @@ pub enum Msg {
         /// (together `(from_height, from_index)` forms a non-gameable intra-block cursor).
         #[serde(default)]
         from_index: u32,
+        /// Optional pinned anchor block hash for cold bootstrap: when set (with empty `locator`),
+        /// the Core returns up to 10 hash-linked ancestors + the anchor header + post-anchor
+        /// headers in one `LightAnswer` (saving 11 sequential Tor RPC calls at startup).
+        #[serde(default)]
+        anchor_hash: Option<Hex32>,
     },
     /// Signed answer to `LightAsk` (§7.2): carries new 80-byte headers, Merkle-proven transactions,
     /// output status, and case records. `ask_hash` binds the answer to the exact question, and
@@ -1060,6 +1065,7 @@ mod tests {
             case_id: Some("cc".repeat(32)),
             from_height: 90,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let ask_bytes = sign(&phone, 100, ask.clone());

@@ -309,6 +309,10 @@ class MainActivity : AppCompatActivity() {
         root.addView(sectionHeader("Signet Settings"))
         nameEdit = labeledEdit(root, "Node name", "phone1")
         peerEdit = labeledEdit(root, "Core peer (.onion:port)", "")
+        root.addView(Button(this).apply {
+            text = "Paste Light Config (app_light.txt)"
+            setOnClickListener { pasteLightConfigFromClipboard() }
+        })
         coreKeyEdit = labeledEdit(root, "Core pubkey (64-hex; enables light client BITAID_CHAIN=core)", "")
         tipSourcesEdit = labeledEdit(root, "Tip sources (pk1@onion:port,pk2@onion:port)", "")
         anchorEdit = labeledEdit(root, "Anchor checkpoint (optional height:hash)", "")
@@ -416,6 +420,65 @@ class MainActivity : AppCompatActivity() {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("Bitaid Logs", sb.toString()))
         Toast.makeText(this, "Copied checks & logs to clipboard", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun pasteLightConfigFromClipboard() {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val raw = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim().orEmpty()
+        if (raw.isEmpty()) {
+            Toast.makeText(this, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+            return
+        }
+        var coreKey = ""
+        var tipSources = ""
+        var anchor = ""
+        var corePeer = ""
+
+        val lines = raw.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.size == 1 && raw.contains('|')) {
+            val parts = raw.split('|').map { it.trim() }
+            if (parts.isNotEmpty()) coreKey = parts[0]
+            if (parts.size > 1) tipSources = parts[1]
+            if (parts.size > 2) anchor = parts[2]
+        } else {
+            for (line in lines) {
+                val lower = line.lowercase()
+                when {
+                    lower.startsWith("core pubkey:") -> coreKey = line.substringAfter(':').trim()
+                    lower.startsWith("tip sources:") -> tipSources = line.substringAfter(':').trim()
+                    lower.startsWith("anchor:") -> anchor = line.substringAfter(':').trim()
+                    lower.startsWith("core peer:") -> corePeer = line.substringAfter(':').trim()
+                }
+            }
+        }
+
+        var filled = 0
+        if (corePeer.isNotEmpty()) {
+            peerEdit.setText(corePeer)
+            filled++
+        }
+        if (coreKey.isNotEmpty()) {
+            coreKeyEdit.setText(coreKey)
+            filled++
+        }
+        if (tipSources.isNotEmpty()) {
+            tipSourcesEdit.setText(tipSources)
+            filled++
+        }
+        if (anchor.isNotEmpty()) {
+            anchorEdit.setText(anchor)
+            filled++
+        }
+        if (filled == 0) {
+            Toast.makeText(
+                this,
+                "Clipboard did not match app_light.txt (Core pubkey / Tip sources / Anchor)",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        savePrefs()
+        Toast.makeText(this, "Pasted $filled light config field(s)", Toast.LENGTH_SHORT).show()
     }
 
     private fun refreshRpcStatus() {

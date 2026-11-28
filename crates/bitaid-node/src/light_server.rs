@@ -218,6 +218,7 @@ pub fn answer_ask<B: LightBackend>(
         case_id,
         from_height,
         from_index,
+        anchor_hash,
     } = ask
     else {
         return Err("expected Msg::LightAsk".into());
@@ -227,10 +228,32 @@ pub fn answer_ask<B: LightBackend>(
     let ask_hash = light_ask_hash(ask);
     let (tip_height, tip_hash) = backend.tip()?;
 
-    // 1. Resolve common ancestor from block locator (newest-first).
+    // 1. Resolve headers: either cold-bootstrap from a pinned `anchor_hash` (10 hash-linked
+    //    ancestors + anchor + post-anchor headers in one round-trip) or from `locator`.
     let mut headers: Vec<Vec<u8>> = Vec::new();
     let mut headers_from = tip_height;
-    if !locator.is_empty() {
+    if let Some(ah) = anchor_hash.as_deref().filter(|_| locator.is_empty()) {
+        if let Some(anchor_h) = backend.active_header_height(ah) {
+            let start_h = anchor_h.saturating_sub(10);
+            let end_h = tip_height.min(start_h.saturating_add(LIGHT_MAX_HEADERS as u32 - 1));
+            headers_from = start_h;
+            for h in start_h..=end_h {
+                let Some(bh) = backend.block_hash_at(h) else {
+                    break;
+                };
+                let Some(raw) = backend.raw_header(&bh) else {
+                    break;
+                };
+                if raw.len() != 80 {
+                    break;
+                }
+                headers.push(raw);
+            }
+            if headers.is_empty() {
+                headers_from = tip_height;
+            }
+        }
+    } else if !locator.is_empty() {
         let common = locator
             .iter()
             .find_map(|h| backend.active_header_height(h));
@@ -772,6 +795,7 @@ mod tests {
             case_id: Some(case_id.clone()),
             from_height: 1,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask_hash = light_ask_hash(&ask);
         let ask_raw = wire::sign(&phone_kp, 0, ask);
@@ -874,6 +898,7 @@ mod tests {
             case_id: None,
             from_height: 0,
             from_index: 0,
+            anchor_hash: None,
         };
         let ask2_raw = wire::sign(&phone_kp, 3, ask2);
         phone_link.send_outbound(&ask2_raw).unwrap();
@@ -940,6 +965,7 @@ mod tests {
             case_id: Some(case_id),
             from_height: h0,
             from_index: 0,
+            anchor_hash: None,
         };
         let (ans, signed) = answer_ask(&rpc, &core_kp, &ask).unwrap();
         assert_eq!(wire::verify(&signed).unwrap().msg, ans);
@@ -995,6 +1021,7 @@ mod tests {
                 case_id: None,
                 from_height: 0,
                 from_index: 0,
+                anchor_hash: None,
             };
             wire::verify(&wire::sign(kp, 1, ask)).unwrap()
         };
@@ -1027,5 +1054,83 @@ mod tests {
         // After 1 second refill, stranger link is admitted again.
         assert!(sched.enqueue_at(10, mk_env(&stranger_kp, 5), t0 + Duration::from_secs(1)));
         assert!(!sched.enqueue_at(10, mk_env(&stranger_kp, 6), t0 + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn anchor_hash_bootstrap_returns_ten_ancestors_anchor_and_post_anchor_headers() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(
+            0,
+            vec![TxOut {
+                value: Amount::from_sat(5_000_000_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        );
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let chain = Arc::new(MemChain::new(genesis, gen_tx));
+
+        let mut anchor_hash = String::new();
+        let mut tip_hash = BlockHash::all_zeros();
+        for h in 1..=14u32 {
+            let tx = make_tx(h, vec![]);
+            let (bh, _, hash) = chain.push_block(vec![tx], base_time + h * 60);
+            assert_eq!(bh, h);
+            if h == 12 {
+                anchor_hash = hash.to_string();
+            }
+            if h == 14 {
+                tip_hash = hash;
+            }
+        }
+
+        let core_g = Gossip::start(Some("127.0.0.1:0"), &[], None).unwrap();
+        let addr = core_g.listen_addr().unwrap().to_string();
+        let phone_g = Gossip::start(None, std::slice::from_ref(&addr), None).unwrap();
+        assert_eq!(core_g.wait_links(1, Duration::from_secs(5)), 1);
+        assert_eq!(phone_g.wait_links(1, Duration::from_secs(5)), 1);
+
+        let core_link = core_g.local_link();
+        let backend_clone = chain.clone();
+        std::thread::spawn(move || {
+            if let Some((lid, env)) = core_link.recv_ask(Duration::from_secs(5)) {
+                let (_, signed) = answer_ask(&*backend_clone, &core_kp, &env.msg).unwrap();
+                core_link.send_to(lid, &signed).unwrap();
+            }
+        });
+
+        let (anchor_hdr, ancestors, post_anchor) =
+            crate::light_client::CoreLight::fetch_anchor_bundle(
+                &phone_g.local_link(),
+                None,
+                &core_pk,
+                &phone_kp,
+                12,
+                &anchor_hash,
+                Duration::from_secs(5),
+            )
+            .expect("single LightAsk anchor bootstrap must succeed");
+
+        assert_eq!(anchor_hdr.block_hash().to_string(), anchor_hash);
+        assert_eq!(ancestors.len(), 10, "must receive 10 hash-linked ancestors (heights 2..=11)");
+        assert_eq!(post_anchor.len(), 2, "must receive post-anchor headers (heights 13..=14)");
+
+        let cl = crate::light_client::CoreLight::new_with_ancestors(
+            Network::Regtest,
+            12,
+            anchor_hdr,
+            &ancestors,
+            core_pk,
+            phone_g.local_link(),
+            phone_kp,
+        )
+        .expect("HeaderChain::new_with_ancestors must accept fetched bundle");
+        cl.apply_headers_at(&post_anchor, base_time + 20 * 60)
+            .expect("post-anchor headers must verify cleanly");
+        assert_eq!(cl.verified_tip(), (14, tip_hash));
     }
 }
