@@ -364,6 +364,8 @@ pub struct CoreLight {
     keys: Keypair,
     state: Mutex<LightState>,
     tip_sources: Mutex<Vec<Box<dyn TipSource>>>,
+    /// Serializes outbound `LightAsk` round-trips so two threads never race overlapping locators.
+    syncing: Mutex<()>,
     asks: AtomicU64,
 }
 
@@ -421,6 +423,7 @@ impl CoreLight {
                 tip_checks: HashMap::new(),
             }),
             tip_sources: Mutex::new(Vec::new()),
+            syncing: Mutex::new(()),
             asks: AtomicU64::new(0),
         })
     }
@@ -457,6 +460,11 @@ impl CoreLight {
     }
 
     pub fn sync_anchors_at(&self, min_interval: Duration, now_secs: u32) -> Result<(), String> {
+        // When throttled (message thread), skip immediately if a LightAsk is already in flight
+        // so the message thread never blocks waiting on the network.
+        if !min_interval.is_zero() && self.syncing.try_lock().is_err() {
+            return Ok(());
+        }
         let mut cursor = {
             let mut st = self.state.lock().unwrap();
             if st.distrusted {
@@ -782,7 +790,10 @@ impl CoreLight {
             ));
         }
 
-        // 1. Verify and apply headers (handles extensions and heavier reorgs).
+        // 1. Verify and apply headers (handles extensions, already-held overlaps, and reorgs).
+        // A valid fork with <= our cumulative work is a stale answer or reorg race, NOT a lie:
+        // ignore its headers and skip items on blocks we do not hold, without distrusting.
+        let mut ignored_lighter_fork = false;
         if !headers.is_empty() {
             let mut decoded = Vec::with_capacity(headers.len());
             for (i, raw) in headers.iter().enumerate() {
@@ -791,40 +802,60 @@ impl CoreLight {
                 })?;
                 decoded.push(h);
             }
-            if let Err(e) = st.headers.apply_fork_at(&decoded, Some(now_secs)) {
-                return Err(Self::mark_distrusted(&mut st, format!("header chain rejected: {e}")));
+            let prev_tip_hash = st.headers.tip().1;
+            match st.headers.apply_fork_at(&decoded, Some(now_secs)) {
+                Ok(_) => {
+                    let first_h = decoded[0].block_hash();
+                    let actual_from = st.headers.height_of(&first_h);
+                    if actual_from != Some(*headers_from) {
+                        return Err(Self::mark_distrusted(
+                            &mut st,
+                            format!(
+                                "headers_from mismatch: declared {headers_from}, actual {actual_from:?}"
+                            ),
+                        ));
+                    }
+                    let reorged = st.headers.height_of(&prev_tip_hash).is_none();
+                    // Evict any previously cached txs/outputs/records whose block was orphaned by a reorg.
+                    let LightState {
+                        headers: active,
+                        txs: cached_txs,
+                        outputs: cached_outputs,
+                        records: cached_records,
+                        anchors: cached_anchors,
+                        ..
+                    } = &mut *st;
+                    cached_txs.retain(|_, c| active.height_of(&c.block_hash).is_some());
+                    cached_outputs
+                        .retain(|_, c| c.block_hash.is_none_or(|bh| active.height_of(&bh).is_some()));
+                    for recs in cached_records.values_mut() {
+                        recs.retain(|r| active.height_of(&r.value.block_hash).is_some());
+                    }
+                    cached_anchors.retain(|_, (_, bh, _)| active.height_of(bh).is_some());
+                    if reorged && *headers_from <= st.anchors_cursor.0 {
+                        st.anchors_cursor = (headers_from.saturating_sub(1), u32::MAX);
+                    }
+                }
+                Err(bitaid_core::light::LightError::ForkNotHeavier) => {
+                    crate::say!(
+                        "light-client: ignoring stale/lighter fork from Core (tip_height={tip_height}, ours={})",
+                        st.headers.tip().0
+                    );
+                    ignored_lighter_fork = true;
+                }
+                Err(e) => {
+                    return Err(Self::mark_distrusted(
+                        &mut st,
+                        format!("header chain rejected: {e}"),
+                    ));
+                }
             }
-            let first_h = decoded[0].block_hash();
-            let actual_from = st.headers.height_of(&first_h);
-            if actual_from != Some(*headers_from) {
-                return Err(Self::mark_distrusted(
-                    &mut st,
-                    format!(
-                        "headers_from mismatch: declared {headers_from}, actual {actual_from:?}"
-                    ),
-                ));
-            }
-            // Evict any previously cached txs/outputs/records whose block was orphaned by a reorg.
-            let LightState {
-                headers: active,
-                txs: cached_txs,
-                outputs: cached_outputs,
-                records: cached_records,
-                anchors: cached_anchors,
-                ..
-            } = &mut *st;
-            cached_txs.retain(|_, c| active.height_of(&c.block_hash).is_some());
-            cached_outputs
-                .retain(|_, c| c.block_hash.is_none_or(|bh| active.height_of(&bh).is_some()));
-            for recs in cached_records.values_mut() {
-                recs.retain(|r| active.height_of(&r.value.block_hash).is_some());
-            }
-            cached_anchors.retain(|_, (_, bh, _)| active.height_of(bh).is_some());
-            // If a reorg replaced blocks at or below `anchors_cursor.0`, rewind the cursor to
-            // just before `headers_from` so records on the new fork are fetched.
-            if *headers_from <= st.anchors_cursor.0 {
-                st.anchors_cursor = (headers_from.saturating_sub(1), u32::MAX);
-            }
+        }
+
+        if ignored_lighter_fork {
+            // Do not advance `last_records_through` or distrust Core on a stale lighter fork;
+            // caller will simply ask again on the next round.
+            return Ok(());
         }
 
         // If the Core's declared tip is at our verified height, its hash must match our chain.
@@ -1037,6 +1068,7 @@ impl CoreLight {
         timeout: Duration,
         now_secs: u32,
     ) -> Result<(), String> {
+        let _sync_guard = self.syncing.lock().unwrap();
         let req_id = hex::encode(rand::random::<[u8; 16]>());
         let ask = Msg::LightAsk {
             id: req_id.clone(),
@@ -2226,5 +2258,125 @@ mod tests {
                 "all 71 records (70 in block 1 + 1 in block 2) must arrive"
             );
         }
+    }
+
+    #[test]
+    fn overlapping_same_locator_answers_and_lighter_fork_do_not_distrust() {
+        let secp = Secp256k1::new();
+        let core_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let phone_kp = Keypair::new(&secp, &mut rand::thread_rng());
+        let core_pk = hex::encode(core_kp.x_only_public_key().0.serialize());
+
+        let base_time = 1_700_000_000u32;
+        let gen_tx = make_tx(0, vec![]);
+        let (genesis, _) = mine_block(BlockHash::all_zeros(), &[gen_tx.clone()], base_time);
+        let chain = Arc::new(MemChain::new(genesis, gen_tx));
+        let (h1, _, h1_hash) = chain.push(vec![make_tx(1, vec![])], base_time + 60);
+        assert_eq!(h1, 1);
+
+        let g = Gossip::start(None, &[], None).unwrap();
+        let light = CoreLight::new(
+            Network::Regtest,
+            0,
+            genesis,
+            core_pk,
+            g.local_link(),
+            phone_kp,
+        )
+        .unwrap();
+
+        // Sync to height 1 first.
+        let ask1 = Msg::LightAsk {
+            id: "01".repeat(16),
+            locator: light.build_locator(),
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah1 = light_ask_hash(&ask1);
+        let (_, s1) = answer_ask(&*chain, &core_kp, &ask1).unwrap();
+        light
+            .apply_answer_at(&ah1, &wire::verify(&s1).unwrap(), s1.len(), base_time + 100)
+            .unwrap();
+        assert_eq!(light.verified_tip(), (1, h1_hash));
+
+        // Two overlapping asks built on the SAME locator (at height 1):
+        // Core answers ask_a at height 2, then block 3 lands and Core answers ask_b at height 3.
+        let loc_at_1 = light.build_locator();
+        let (h2, _, _) = chain.push(vec![make_tx(2, vec![])], base_time + 120);
+        assert_eq!(h2, 2);
+        let ask_a = Msg::LightAsk {
+            id: "0a".repeat(16),
+            locator: loc_at_1.clone(),
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah_a = light_ask_hash(&ask_a);
+        let (_, sa) = answer_ask(&*chain, &core_kp, &ask_a).unwrap();
+
+        let (h3, _, h3_hash) = chain.push(vec![make_tx(3, vec![])], base_time + 180);
+        assert_eq!(h3, 3);
+        let ask_b = Msg::LightAsk {
+            id: "0b".repeat(16),
+            locator: loc_at_1,
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah_b = light_ask_hash(&ask_b);
+        let (_, sb) = answer_ask(&*chain, &core_kp, &ask_b).unwrap();
+
+        // Deliver in REVERSE order: height-3 answer arrives first, height-2 answer arrives second.
+        light
+            .apply_answer_at(&ah_b, &wire::verify(&sb).unwrap(), sb.len(), base_time + 240)
+            .unwrap();
+        assert_eq!(light.verified_tip(), (3, h3_hash));
+
+        // Second (older/overlapping) answer must be a clean no-op, NOT a distrust!
+        light
+            .apply_answer_at(&ah_a, &wire::verify(&sa).unwrap(), sa.len(), base_time + 240)
+            .unwrap();
+        assert!(!light.is_distrusted());
+        assert_eq!(light.verified_tip(), (3, h3_hash));
+
+        // A valid lighter fork (height 2 on a competing branch, less work than our height 3)
+        // must be ignored, NOT distrusted!
+        let (fork_h2, fork_h2_hash) = mine_block(h1_hash, &[make_tx(99, vec![])], base_time + 125);
+        let ask_c = Msg::LightAsk {
+            id: "0c".repeat(16),
+            locator: vec![h1_hash.to_string()],
+            txids: vec![],
+            outpoints: vec![],
+            case_id: None,
+            from_height: 0,
+            from_index: 0,
+        };
+        let ah_c = light_ask_hash(&ask_c);
+        let lighter_ans = Msg::LightAnswer {
+            id: "0c".repeat(16),
+            ask_hash: ah_c.clone(),
+            tip_height: 2,
+            tip_hash: fork_h2_hash.to_string(),
+            headers_from: 2,
+            headers: vec![encode_header(&fork_h2)],
+            txs: vec![],
+            outputs: vec![],
+            records: vec![],
+            records_through: (2, u32::MAX),
+            covers: vec![],
+        };
+        let sc = wire::sign(&core_kp, 2, lighter_ans);
+        light
+            .apply_answer_at(&ah_c, &wire::verify(&sc).unwrap(), sc.len(), base_time + 240)
+            .unwrap();
+        assert!(!light.is_distrusted());
+        assert_eq!(light.verified_tip(), (3, h3_hash));
     }
 }

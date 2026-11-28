@@ -51,8 +51,10 @@ pub enum LightError {
     /// Partial Merkle tree is malformed, its root does not match the header's `merkle_root`,
     /// or the transaction's txid is not among the matched leaves.
     InvalidMerkleProof(String),
-    /// A reorg fork has less than or equal cumulative work compared to the active chain,
-    /// or its ancestor is unknown.
+    /// A valid fork has less than or equal cumulative work compared to the active chain
+    /// (stale answer or reorg race — not a proof of dishonesty).
+    ForkNotHeavier,
+    /// A reorg fork is empty or its ancestor is unknown.
     ForkRejected(String),
 }
 
@@ -98,6 +100,9 @@ impl fmt::Display for LightError {
             LightError::HeaderNotInChain(h) => write!(f, "header {h} is not in the verified chain"),
             LightError::InvalidTransaction(s) => write!(f, "invalid transaction: {s}"),
             LightError::InvalidMerkleProof(s) => write!(f, "invalid Merkle proof: {s}"),
+            LightError::ForkNotHeavier => {
+                write!(f, "fork does not have strictly more work")
+            }
             LightError::ForkRejected(s) => write!(f, "fork rejected: {s}"),
         }
     }
@@ -464,9 +469,23 @@ impl HeaderChain {
         fork: &[Header],
         now: Option<u32>,
     ) -> Result<(u32, BlockHash), LightError> {
-        let first = fork
-            .first()
-            .ok_or_else(|| LightError::ForkRejected("empty fork".into()))?;
+        if fork.is_empty() {
+            return Err(LightError::ForkRejected("empty fork".into()));
+        }
+        // Skip leading headers already present in our verified chain (e.g. an overlapping or
+        // slightly stale answer built from an older locator). If every header is already held,
+        // this is a clean no-op.
+        let mut remaining = fork;
+        while let Some(first) = remaining.first() {
+            if self.height_of(&first.block_hash()).is_some() {
+                remaining = &remaining[1..];
+            } else {
+                break;
+            }
+        }
+        let Some(first) = remaining.first() else {
+            return Ok(self.tip());
+        };
         let ancestor_height = self
             .height_of(&first.prev_blockhash)
             .ok_or_else(|| LightError::ForkRejected("unknown fork ancestor".into()))?;
@@ -484,13 +503,11 @@ impl HeaderChain {
                 .collect(),
             cum_work: self.cum_work[..keep_len].to_vec(),
         };
-        for h in fork {
+        for h in remaining {
             candidate.append_at(*h, now)?;
         }
         if candidate.total_work() <= self.total_work() {
-            return Err(LightError::ForkRejected(
-                "fork does not have strictly more work".into(),
-            ));
+            return Err(LightError::ForkNotHeavier);
         }
         *self = candidate;
         Ok(self.tip())
@@ -722,9 +739,9 @@ mod tests {
         let h1a = mine_header(chain.tip().1, root, 1_700_000_010, REGTEST_BITS);
         chain.append(h1a).unwrap();
 
-        // Equal-work competing fork of length 1 is rejected
+        // Equal-work competing fork of length 1 is rejected as ForkNotHeavier
         let h1b = mine_header(h0.block_hash(), root, 1_700_000_011, REGTEST_BITS);
-        assert!(matches!(chain.apply_fork(&[h1b]), Err(LightError::ForkRejected(_))));
+        assert!(matches!(chain.apply_fork(&[h1b]), Err(LightError::ForkNotHeavier)));
         assert_eq!(chain.tip(), (1, h1a.block_hash()));
 
         // Strictly longer (more work) fork succeeds
