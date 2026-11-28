@@ -239,7 +239,10 @@ export BITAID_REPLY_MIN=${REPLY_MIN:-900}
     # the light client's three fields (Settings): written to app_light.txt in the Windows folder too,
     # to copy to the phone instead of typing 64-character keys
     for _ in $(seq 1 20); do [ -s "$L/core.pub" ] && [ -s "$K/pool1.pub" ] && [ -s "$K/pool2.pub" ] && break; sleep 1; done
+    # the anchor: on signet the light client starts on a retarget block (every 2,016), so it can check
+    # the next difficulty window itself; regtest does not retarget, so any recent block will do
     AH=$(( $($CLI getblockcount) - 12 )); [ $AH -lt 0 ] && AH=0
+    { [ "$CHAIN" = signet ] || [ "$CHAIN" = public ]; } && AH=$(( AH / 2016 * 2016 ))
     { echo "Core pubkey: $(cat "$L/core.pub")"
       echo "Tip sources: $(cat "$K/pool1.pub")@$ONION:7701,$(cat "$K/pool2.pub")@$ONION:7702"
       echo "Anchor: $AH:$($CLI getblockhash $AH)"; } > "$WIN/app_light.txt"
