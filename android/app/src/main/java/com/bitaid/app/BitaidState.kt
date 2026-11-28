@@ -19,6 +19,8 @@ data class AlertPrompt(
     val deposit: Long,
     val reward: Long,
     val bounty: Long,
+    val distanceM: Int? = null,
+    val positionAgeSecs: Long? = null,
 )
 
 data class VerifiedLocation(
@@ -164,6 +166,8 @@ object BitaidState {
                     )
                 }
                 "Alert" -> {
+                    val dist = if (obj.has("distance_m") && !obj.isNull("distance_m")) obj.optInt("distance_m") else null
+                    val posAge = if (obj.has("position_age_secs") && !obj.isNull("position_age_secs")) obj.optLong("position_age_secs") else null
                     cur.copy(
                         alert = AlertPrompt(
                             caseId = obj.optString("case"),
@@ -171,6 +175,8 @@ object BitaidState {
                             deposit = obj.optLong("deposit"),
                             reward = obj.optLong("reward"),
                             bounty = obj.optLong("bounty"),
+                            distanceM = dist,
+                            positionAgeSecs = posAge,
                         )
                     )
                 }
@@ -216,6 +222,21 @@ object BitaidState {
                             receivedAtMs = System.currentTimeMillis(),
                         )
                     )
+                }
+                "BallotTick" -> {
+                    val tickCase = obj.optString("case")
+                    val bp = cur.ballotDue
+                    if (bp != null && bp.caseId == tickCase) {
+                        cur.copy(
+                            ballotDue = bp.copy(
+                                remainingBlocks = obj.optInt("remaining_blocks", bp.remainingBlocks),
+                                remainingSecs = obj.optLong("remaining_secs", bp.remainingSecs),
+                                receivedAtMs = System.currentTimeMillis(),
+                            )
+                        )
+                    } else {
+                        cur
+                    }
                 }
                 "BallotClosed" -> {
                     val closedCase = obj.optString("case")

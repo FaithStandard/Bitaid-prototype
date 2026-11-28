@@ -184,6 +184,8 @@ enum WireEvent {
         deposit: u64,
         reward: u64,
         bounty: u64,
+        distance_m: Option<u32>,
+        position_age_secs: Option<u64>,
     },
     AutoAccepted {
         node: String,
@@ -205,6 +207,12 @@ enum WireEvent {
         case: String,
         seats: usize,
         my_seat: usize,
+        remaining_blocks: u32,
+        remaining_secs: u64,
+    },
+    BallotTick {
+        node: String,
+        case: String,
         remaining_blocks: u32,
         remaining_secs: u64,
     },
@@ -258,6 +266,8 @@ impl From<Event> for WireEvent {
                 deposit,
                 reward,
                 bounty,
+                distance_m,
+                position_age_secs,
             } => WireEvent::Alert {
                 node,
                 case,
@@ -265,6 +275,8 @@ impl From<Event> for WireEvent {
                 deposit,
                 reward,
                 bounty,
+                distance_m,
+                position_age_secs,
             },
             Event::AutoAccepted {
                 node,
@@ -306,6 +318,17 @@ impl From<Event> for WireEvent {
                 case,
                 seats,
                 my_seat,
+                remaining_blocks,
+                remaining_secs,
+            },
+            Event::BallotTick {
+                node,
+                case,
+                remaining_blocks,
+                remaining_secs,
+            } => WireEvent::BallotTick {
+                node,
+                case,
                 remaining_blocks,
                 remaining_secs,
             },
@@ -643,6 +666,27 @@ pub extern "system" fn Java_com_bitaid_app_NativeBridge_sendOffDuty(
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         commands::send(Command::OffDuty);
+    }));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_bitaid_app_NativeBridge_sendPosition(
+    _env: JNIEnv,
+    _class: JClass,
+    lat: jdouble,
+    lon: jdouble,
+    accuracy_m: jni::sys::jfloat,
+    at_epoch_secs: jni::sys::jlong,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if lat.is_finite() && lon.is_finite() && accuracy_m.is_finite() && at_epoch_secs >= 0 {
+            commands::send(Command::Position {
+                lat,
+                lon,
+                accuracy_m,
+                at: at_epoch_secs as u64,
+            });
+        }
     }));
 }
 

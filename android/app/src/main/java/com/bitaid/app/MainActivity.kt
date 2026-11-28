@@ -655,28 +655,28 @@ class MainActivity : AppCompatActivity() {
         maxDistanceEdit = labeledEditWithHelp(
             proSection,
             "Maximum distance (metres)",
-            "Only auto-accept if the farthest point of the alert's area is within this distance.",
+            "For automatic acceptance: only auto-accept if the farthest point of the alert's area (plus GPS accuracy) is within this distance.",
             "1000",
         )
         maxDistanceEdit.inputType = InputType.TYPE_CLASS_NUMBER
         minDepositEdit = labeledEditWithHelp(
             proSection,
             "Minimum deposit (sats)",
-            "Smallest caller deposit to accept.",
+            "Smallest caller deposit for automatic acceptance. Cheaper alerts still reach you to decide by hand.",
             "0",
         )
         minDepositEdit.inputType = InputType.TYPE_CLASS_NUMBER
         minRewardEdit = labeledEditWithHelp(
             proSection,
             "Minimum reward (sats)",
-            "Smallest responder reward to accept.",
+            "Smallest responder reward for automatic acceptance. Cheaper alerts still reach you to decide by hand.",
             "0",
         )
         minRewardEdit.inputType = InputType.TYPE_CLASS_NUMBER
         minBountyEdit = labeledEditWithHelp(
             proSection,
             "Minimum bounty (sats)",
-            "Smallest bounty to accept.",
+            "Smallest bounty to accept (applies to all alerts).",
             "1",
         )
         minBountyEdit.inputType = InputType.TYPE_CLASS_NUMBER
@@ -930,7 +930,15 @@ class MainActivity : AppCompatActivity() {
 
         if (snap.alert != null) {
             alertCard.visibility = View.VISIBLE
-            alertText.text = "Emergency nearby\n" +
+            val distLine = when {
+                snap.alert.distanceM != null && (snap.alert.positionAgeSecs ?: 0L) >= 120L -> {
+                    val mins = (snap.alert.positionAgeSecs ?: 0L) / 60L
+                    "About ${snap.alert.distanceM} m from where you were $mins min ago\n"
+                }
+                snap.alert.distanceM != null -> "About ${snap.alert.distanceM} m away\n"
+                else -> ""
+            }
+            alertText.text = "Emergency nearby\n$distLine" +
                 "Deposit ${snap.alert.deposit} · Reward ${snap.alert.reward} · Bounty ${snap.alert.bounty} sats"
             alertDetailsText.text = "Case ${snap.alert.caseId.take(8)} · Cell ${snap.alert.cell}"
         } else {
@@ -1009,9 +1017,9 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Before you turn on automatic acceptance")
             .setMessage(
-                "• This phone will accept matching emergencies for you without asking.\n\n" +
-                    "• Your bond is at stake if it accepts and you do not go.\n\n" +
-                    "• It only accepts within your distance limit and above your minimums.\n\n" +
+                "• This phone will accept matching emergencies for you without asking, joining the case and unlocking the exact location.\n\n" +
+                    "• Only turn this on if you can respond right away.\n\n" +
+                    "• It only accepts within your distance limit and above your minimums, with a fresh GPS fix (under 2 min old, within 100 m accuracy).\n\n" +
                     "• Going off duty stops it immediately. It never casts a vote for you."
             )
             .setPositiveButton("I understand, turn on") { _, _ ->
@@ -1026,7 +1034,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRoleService(action: String) {
-        val pos = manualCoords() ?: recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L)?.first
+        val manual = manualCoords()
+        val pos = manual ?: recentLastKnownFix(maxAgeMs = 5 * 60 * 1000L)?.first
         if (action == BitaidService.ACTION_START_RESPONDER && pos == null) {
             BitaidState.update {
                 it.copy(status = ServiceStatus.OFF_DUTY, statusDetail = "No GPS location — enable GPS or enter coordinates")
@@ -1035,6 +1044,7 @@ class MainActivity : AppCompatActivity() {
         }
         val intent = Intent(this, BitaidService::class.java).apply {
             this.action = action
+            putExtra(BitaidService.EXTRA_MANUAL_LOC, manual != null)
             putExtra(BitaidService.EXTRA_NAME, nameEdit.text.toString().trim().ifEmpty { "phone1" })
             putExtra(BitaidService.EXTRA_PEER, peerEdit.text.toString().trim())
             putExtra(BitaidService.EXTRA_CORE_KEY, coreKeyEdit.text.toString().trim())

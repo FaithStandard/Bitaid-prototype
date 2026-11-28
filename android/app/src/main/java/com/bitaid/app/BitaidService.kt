@@ -10,10 +10,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -50,6 +54,8 @@ class BitaidService : Service() {
     private var pendingRelaunch: RoleLaunchConfig? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var locationManager: LocationManager? = null
+    private var dutyLocationListener: LocationListener? = null
     private var roleStartedAtMs: Long = 0L
     private var consecutiveQuickFails: Int = 0
 
@@ -130,13 +136,20 @@ class BitaidService : Service() {
                 consecutiveQuickFails = 0
                 wantOnDuty.set(true)
                 BitaidState.update { it.copy(warning = null) }
+                val manualLoc = intent.getBooleanExtra(EXTRA_MANUAL_LOC, false)
                 promoteForeground("Starting Tor ($role)...")
                 acquireWakeLock()
+                if (role == "responder" && !manualLoc) {
+                    startDutyLocationUpdates()
+                } else {
+                    stopDutyLocationUpdates()
+                }
                 worker.execute { startTorAndRole(cfg) }
             }
             ACTION_STOP -> {
                 wantOnDuty.set(false)
                 pendingRelaunch = null
+                stopDutyLocationUpdates()
                 NativeBridge.sendOffDuty()
                 BitaidState.update {
                     it.copy(
@@ -293,7 +306,17 @@ class BitaidService : Service() {
                     val type = BitaidState.applyNativeEvent(json)
                     when (type) {
                         "Listening" -> updateNotification("On duty — listening for alerts")
-                        "Alert" -> postAlertNotification()
+                        "Alert" -> {
+                            val (distM, posAge) = try {
+                                val obj = JSONObject(json)
+                                val d = if (obj.has("distance_m") && !obj.isNull("distance_m")) obj.optInt("distance_m") else null
+                                val a = if (obj.has("position_age_secs") && !obj.isNull("position_age_secs")) obj.optLong("position_age_secs") else null
+                                Pair(d, a)
+                            } catch (_: Exception) {
+                                Pair(null, null)
+                            }
+                            postAlertNotification(distM, posAge)
+                        }
                         "AutoAccepted" -> {
                             val distM = try {
                                 JSONObject(json).optInt("max_distance_m", 0)
@@ -434,7 +457,7 @@ class BitaidService : Service() {
             .build()
     }
 
-    private fun postAlertNotification() {
+    private fun postAlertNotification(distanceM: Int?, positionAgeSecs: Long?) {
         val pi = PendingIntent.getActivity(
             this,
             1,
@@ -443,9 +466,17 @@ class BitaidService : Service() {
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val body = when {
+            distanceM != null && (positionAgeSecs ?: 0L) >= 120L -> {
+                val mins = (positionAgeSecs ?: 0L) / 60L
+                "About $distanceM m from where you were $mins min ago — tap to review"
+            }
+            distanceM != null -> "About $distanceM m away — tap to accept or decline"
+            else -> "Tap to review and accept or decline"
+        }
         val notif = NotificationCompat.Builder(this, CHANNEL_ALERT)
             .setContentTitle("Incoming Bitaid Alert")
-            .setContentText("Tap to review and accept or decline")
+            .setContentText(body)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
@@ -541,9 +572,59 @@ class BitaidService : Service() {
         wakeLock = null
     }
 
+    private fun startDutyLocationUpdates() {
+        stopDutyLocationUpdates()
+        val hasFine = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine) return
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val listener = object : LocationListener {
+            override fun onLocationChanged(loc: Location) {
+                val atSecs = (loc.time / 1000L).coerceAtLeast(0L)
+                NativeBridge.sendPosition(loc.latitude, loc.longitude, loc.accuracy, atSecs)
+            }
+        }
+        try {
+            if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                lm.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    30_000L,
+                    100f,
+                    listener,
+                    Looper.getMainLooper(),
+                )
+            }
+            if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                lm.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    60_000L,
+                    100f,
+                    listener,
+                    Looper.getMainLooper(),
+                )
+            }
+            locationManager = lm
+            dutyLocationListener = listener
+        } catch (_: SecurityException) {
+        }
+    }
+
+    private fun stopDutyLocationUpdates() {
+        dutyLocationListener?.let { l ->
+            try {
+                locationManager?.removeUpdates(l)
+            } catch (_: Exception) {
+            }
+        }
+        dutyLocationListener = null
+    }
+
     override fun onDestroy() {
         wantOnDuty.set(false)
         pendingRelaunch = null
+        stopDutyLocationUpdates()
         NativeBridge.sendOffDuty()
         NativeBridge.setTorDormant(true)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
@@ -569,6 +650,7 @@ class BitaidService : Service() {
         const val EXTRA_SAT_SCALE = "sat_scale"
         const val EXTRA_TIME_SCALE = "time_scale"
         const val EXTRA_HAS_LOC = "has_loc"
+        const val EXTRA_MANUAL_LOC = "manual_loc"
         const val EXTRA_LAT = "lat"
         const val EXTRA_LON = "lon"
         const val EXTRA_AUTO_ACCEPT = "auto_accept"

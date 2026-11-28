@@ -20,7 +20,16 @@ pub enum Event {
     Warning { node: String, text: String },
     /// an alert in the responder's cells passed its checks: the app shows it, and with
     /// `--ask-accept` the role waits for Accept or Decline
-    Alert { node: String, case: String, cell: String, deposit: u64, reward: u64, bounty: u64 },
+    Alert {
+        node: String,
+        case: String,
+        cell: String,
+        deposit: u64,
+        reward: u64,
+        bounty: u64,
+        distance_m: Option<u32>,
+        position_age_secs: Option<u64>,
+    },
     /// an alert matched the responder's `--auto-accept` policy and was accepted without prompting
     AutoAccepted {
         node: String,
@@ -39,6 +48,13 @@ pub enum Event {
         case: String,
         seats: usize,
         my_seat: usize,
+        remaining_blocks: u32,
+        remaining_secs: u64,
+    },
+    /// updated remaining blocks/seconds for an open ballot prompt as new blocks arrive
+    BallotTick {
+        node: String,
+        case: String,
         remaining_blocks: u32,
         remaining_secs: u64,
     },

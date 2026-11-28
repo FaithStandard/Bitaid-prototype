@@ -20,6 +20,8 @@ pub enum Command {
     Vote { case: String, classes: Vec<String>, achieved: bool, misuse: bool },
     /// stop listening for new alerts (a case already accepted runs to its end)
     OffDuty,
+    /// live GPS position update while a responder is on duty (`at` is Unix epoch seconds)
+    Position { lat: f64, lon: f64, accuracy_m: f32, at: u64 },
 }
 
 static QUEUE: Mutex<Vec<Command>> = Mutex::new(Vec::new());

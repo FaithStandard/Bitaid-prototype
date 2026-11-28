@@ -726,6 +726,10 @@ impl CoreLight {
         self.state.lock().unwrap().headers.tip()
     }
 
+    pub fn median_block_spacing_secs(&self) -> u64 {
+        self.state.lock().unwrap().headers.median_block_spacing_secs()
+    }
+
     /// Returns cached `(unspent, spent_by, height, trust)` for an outpoint, if known.
     pub fn output_status(&self, op: &OutPoint) -> Option<(bool, Option<Txid>, u32, Trust)> {
         let st = self.state.lock().unwrap();

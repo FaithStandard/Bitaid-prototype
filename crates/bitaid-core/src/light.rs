@@ -371,6 +371,25 @@ impl HeaderChain {
         self.start_height
     }
 
+    /// Median inter-block spacing (in seconds) across the last 11 held headers (including
+    /// hash-linked ancestors), falling back to network target spacing when fewer than 2 headers
+    /// are held. Clamped to at least 1 second so rapid regtest mining never yields 0.
+    pub fn median_block_spacing_secs(&self) -> u64 {
+        let recent = self.recent_window();
+        if recent.len() < 2 {
+            return match self.network {
+                Network::Regtest => 2,
+                _ => 600,
+            };
+        }
+        let mut gaps: Vec<u64> = recent
+            .windows(2)
+            .map(|w| w[1].time.saturating_sub(w[0].time).max(1) as u64)
+            .collect();
+        gaps.sort_unstable();
+        gaps[gaps.len() / 2]
+    }
+
     pub fn tip(&self) -> (u32, BlockHash) {
         let idx = self.headers.len() - 1;
         (self.start_height + idx as u32, self.hashes[idx])
